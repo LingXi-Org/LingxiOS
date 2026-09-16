@@ -1,7 +1,7 @@
 import { MemoryModelBudgetStore } from '../src/control-plane/memory-store.js'
 import { durableProtocol } from './protocol-fixture.js'
 import { MemoryStepStore } from '../src/control-plane/steps.js'
-import { appendResearchEvidence } from '../src/context/research-evidence.js'
+import { appendReadEvidence, appendResearchEvidence } from '../src/context/research-evidence.js'
 import { createTaskContract } from '../src/context/task-contract.js'
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
@@ -178,14 +178,20 @@ it('uses the original evidence across hops and rejects a tampered final envelope
   assert.equal(messages.length, 1)
 })
 
-it('promotes recorded research text into the next model input and validates final citations', async () => {
+for (const actionName of ['research.read', 'knowledge.read_source']) it(`promotes recorded ${actionName} text and rejects forged evidence`, async () => {
   const messages: AssistantMessage[] = []
   let completion: unknown
   const source = { text: 'Observed research finding.', finalUrl: 'https://example.com/paper', sha256: 'a'.repeat(64) }
+  const result = { ok: true, value: source, ...(actionName === 'knowledge.read_source' ? { evidence: [{
+    sourceId: source.finalUrl, sourceVersion: `sha256:${source.sha256}`, chunkId: 'page:0', title: 'Paper', excerpt: source.text, truncated: true,
+  }] } : {}) }
+  const [namespace, method] = actionName.split('.')
   const service = new ControlPlaneService({ modelBudgets: new MemoryModelBudgetStore(), steps: new MemoryStepStore(), work: new MemoryWorkStore(), sessions: new MemorySessionStore(), events: new MemoryEventStore(), actions: new MemoryActionLedger(),
     contextProvider: { loadContext: async () => ({ persona: { name: 'A', role: 'assistant', instructions: '' }, capabilities: ['research'],
       messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Read the paper and cite its finding.', createdAt: 'now' }] }) },
-    capabilityResolver: { resolve: async () => [{ name: 'research', methods: ['read'] }] }, actionExecutor: { prepare: async () => {}, execute: async () => ({ ok: true, value: source }) },
+    tools: [{ name: actionName.replace('.', '__'), action: actionName, effect: 'read', approval: false, semanticVersion: '1', description: 'Read source',
+      parameters: { type: 'object', properties: { url: { type: 'string' } }, additionalProperties: false } }],
+    capabilityResolver: { resolve: async () => [{ name: namespace!, methods: [method!] }] }, actionExecutor: { prepare: async () => {}, execute: async () => result },
     delivery: { onEvent: async () => {}, deliverMessage: async (_work, message) => { messages.push(message) } } })
   await service.enqueue({ id: 'research', tenantId: 't', agentId: 'a', sessionId: 's', principalId: 'u', kind: 'turn', lane: 'interactive', triggerRef: 'm', meta: { text: 'Read the paper and cite its finding.' } })
   const work = (await service.claim('worker'))!
@@ -207,12 +213,14 @@ it('promotes recorded research text into the next model input and validates fina
       altered.request!.evidence!.items[0]!.excerpt = 'Invented replacement'
       await assert.rejects(service.saveSession(work, altered), /evidence cannot be rewritten/)
       const forged = structuredClone(saved)
-      forged.request!.evidence = appendResearchEvidence(saved.request!.evidence!, 'missing', { ok: true, value: { ...source, sha256: 'c'.repeat(64) } })
-      await assert.rejects(service.saveSession(work, forged), /current research read intent/)
-      const other = { runId: work.id, cellId: 'other', callIndex: 0, idempotencyKey: JSON.stringify([work.id, 'other', 0]), action: 'research.read', args: { url: source.finalUrl } }
+      forged.request!.evidence = appendReadEvidence(saved.request!.evidence!, 'missing', { ...result,
+        value: { ...source, sha256: 'c'.repeat(64) }, ...(result.evidence ? { evidence: result.evidence.map(item => ({ ...item, sourceVersion: 'forged' })) } : {}) }, actionName)
+      await assert.rejects(service.saveSession(work, forged), /current authorized read intent/)
+      const other = { runId: work.id, cellId: 'other', callIndex: 0, idempotencyKey: JSON.stringify([work.id, 'other', 0]), action: actionName, args: { url: source.finalUrl } }
       const receipt = await service.executeAction(work, other)
       const invented = structuredClone(saved)
-      invented.request!.evidence = appendResearchEvidence(saved.request!.evidence!, other.idempotencyKey, { ...receipt, value: { ...source, sha256: 'b'.repeat(64) } })
+      invented.request!.evidence = appendReadEvidence(saved.request!.evidence!, other.idempotencyKey, { ...receipt, value: { ...source, sha256: 'b'.repeat(64) },
+        ...(receipt.evidence ? { evidence: receipt.evidence.map(item => ({ ...item, sourceVersion: 'invented' })) } : {}) }, actionName)
       invented.request!.evidence.items.at(-1)!.excerpt = 'Invented addition'
       await assert.rejects(service.saveSession(work, invented), /does not match recorded/)
       const text = '[Observed research finding](#cite-S1).'
@@ -220,7 +228,7 @@ it('promotes recorded research text into the next model input and validates fina
     }, structured: async () => { throw new Error('unexpected') }, compact: async () => { throw new Error('unexpected') },
   }
   await new AgentRuntime(host, model, { execute: async (_work, _run, _cell, _code, _signal, options) => {
-    const action = { runId: work.id, cellId: 'read', callIndex: 0, idempotencyKey: JSON.stringify([work.id, 'read', 0]), action: 'research.read', args: { url: source.finalUrl } }
+    const action = { runId: work.id, cellId: 'read', callIndex: 0, idempotencyKey: JSON.stringify([work.id, 'read', 0]), action: actionName, args: { url: source.finalUrl } }
     await options?.onHostAction?.({ stage: 'started', action })
     const result = await service.executeAction(work, action)
     await options?.onHostAction?.({ stage: 'completed', action, result })
@@ -228,7 +236,8 @@ it('promotes recorded research text into the next model input and validates fina
   } }).runWork(work)
   assert.equal(calls, 2)
   assert.equal(messages.length, 1, JSON.stringify(completion))
-  assert.deepEqual(messages[0]!.envelope!.citations[0]!.sources, [{ sourceId: source.finalUrl, sourceVersion: `sha256:${source.sha256}`, chunkIds: [JSON.stringify([work.id, 'read', 0])] }])
+  assert.deepEqual(messages[0]!.envelope!.citations[0]!.sources, [{ sourceId: source.finalUrl, sourceVersion: `sha256:${source.sha256}`,
+    chunkIds: [actionName === 'research.read' ? JSON.stringify([work.id, 'read', 0]) : 'page:0'], ...(result.evidence ? { truncated: true } : {}) }])
   assert.equal(messages[0]!.envelope!.citations[0]!.support, 'not_assessed')
 })
 

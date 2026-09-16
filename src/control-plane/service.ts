@@ -8,7 +8,7 @@ import { canonicalJson } from '../context/compiler.js'
 import { toolContractHash } from '../tools/contracts.js'
 import { snapshotObligations } from '../outcome/obligations.js'
 import { modelPricing } from '../model/execution.js'
-import { appendResearchEvidence } from '../context/research-evidence.js'
+import { appendReadEvidence } from '../context/research-evidence.js'
 import { appendResourceCheck } from '../context/resource-checks.js'
 import { createTaskContract } from '../context/task-contract.js'
 import { snapshotAttachments } from '../context/attachments.js'
@@ -1003,10 +1003,11 @@ export class ControlPlaneService {
         if (!key || !intent || intent.workId !== work.id || intent.tenantId !== work.tenantId
           || intent.principalId !== (work.principalId ?? null) || intent.agentId !== work.agentId
           || intent.sessionId !== work.sessionId || intent.threadId !== (work.threadId ?? null)
-          || intent.requestVersion !== session.request!.revisions.length + 1 || intent.action.action !== 'research.read') throw new ControlPlaneError(409, 'evidence lacks a current research read intent')
+          || intent.requestVersion !== session.request!.revisions.length + 1
+          || intent.action.action !== 'research.read' && !this.deps.tools?.some(tool => tool.action === intent.action.action && tool.effect === 'read')) throw new ControlPlaneError(409, 'evidence lacks a current authorized read intent')
         const result = await this.deps.actions.find(key)
         if (!result) throw new ControlPlaneError(409, 'evidence lacks a recorded research read')
-        expected = appendResearchEvidence(expected, key, result)
+        expected = appendReadEvidence(expected, key, result, intent.action.action)
       }
       if (!isDeepStrictEqual(expected, next)) throw new ControlPlaneError(409, 'evidence does not match recorded research reads')
     }

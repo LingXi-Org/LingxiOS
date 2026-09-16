@@ -106,7 +106,7 @@ for (const format of ['object', 'plain text'] as const) it(`preserves ${format} 
       messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Create a file.', createdAt: 'now' }] }),
     executeAction: async () => ({ ok: true }), loadSession: async () => null, saveSession: async () => {}, emitEvent: async () => {},
     commitResult: async (_work, message) => {
-      assert.equal(message.envelope.goalOutcome.status, format === 'object' ? 'blocked' : 'partial')
+      assert.equal(message.envelope.goalOutcome.status, 'partial')
       assert.equal(message.body, 'File created.')
       assert.deepEqual(message.envelope.artifacts, [artifact])
       assert.equal(message.envelope.assessment, undefined)
@@ -268,7 +268,7 @@ it('reviews complex candidates against original requirements, bounds corrections
     }
     if (mode === 'exhausted') {
       assert.equal(body, 'Comparison with costs.')
-      assert.match(completion?.goalOutcome?.gaps?.[0] ?? '', /Content acceptance correction budget exhausted/)
+      assert.match(JSON.stringify(completion?.goalOutcome?.gaps), /Content acceptance correction budget exhausted/)
       assert.match(JSON.stringify(completion?.goalOutcome?.gaps), /did not confirm the expected fields/)
       assert.match(JSON.stringify(completion?.goalOutcome?.gaps), /include costs.*Costs are missing/)
     }
@@ -441,7 +441,7 @@ it('discards an unexecuted model candidate when steering arrives during generati
   assert.deepEqual(saved?.request?.revisions, revisions)
 })
 
-it('commits a bounded partial delivery on root budget exhaustion, retaining artifacts and honoring late signals', async () => {
+it('fails without a fabricated answer on root budget exhaustion and honors late signals', async () => {
   for (const mode of ['normal', 'steer', 'cancel', 'lease_lost'] as const) {
     const work: TurnContext['work'] = { id: 'w', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }
     let executed = false
@@ -458,17 +458,7 @@ it('commits a bounded partial delivery on root budget exhaustion, retaining arti
         messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Create the requested report', createdAt: 'now' }] }),
       executeAction: async () => { throw new Error('unexpected') }, emitEvent: async () => {},
       loadSession: async () => null, saveSession: async (_work, session) => { saved = structuredClone(session) },
-      commitResult: async (_work, message) => {
-        committed = true
-        assert.deepEqual(saved?.history.at(-1), { role: 'assistant', content: message.body })
-        assert.match(JSON.stringify(saved?.history), /private tool output/)
-        assert.doesNotMatch(message.body, /private tool output/)
-        assert.deepEqual(message.envelope?.artifacts, [artifact])
-        assert.equal(message.envelope?.requestVersion, mode === 'steer' ? 2 : 1)
-        assert.equal(message.envelope?.goalOutcome.status, 'partial')
-        assert.equal(message.envelope?.goalOutcome.verification, 'not_run')
-        assert.match(JSON.stringify(message.envelope?.goalOutcome.gaps), /budget exhausted/)
-      },
+      commitResult: async () => { committed = true },
       completeWork: async (_work, result) => { completion = result }, yieldWork: async () => {},
     }
     const model: ModelDriver = {
@@ -482,8 +472,9 @@ it('commits a bounded partial delivery on root budget exhaustion, retaining arti
     assert.throws(() => new AgentRuntime(host, model, kernels, { rootModelBudget: { maxModelCalls: 0 } }), /positive safe integer/)
     await new AgentRuntime(host, model, kernels, { rootModelBudget: { maxModelCalls: 1 } }).runWork(work)
     assert.equal(calls, 1)
-    assert.equal(committed, mode === 'normal' || mode === 'steer')
-    assert.equal(completion?.status, mode === 'cancel' ? 'cancelled' : undefined)
+    assert.equal(committed, false)
+    assert.equal(completion?.status, mode === 'cancel' ? 'cancelled' : mode === 'lease_lost' ? undefined : 'failed')
+    if (mode === 'normal') assert.match(completion?.error ?? '', /budget exhausted/)
     if (mode === 'steer') assert.equal(saved?.request?.revisions[0]?.text, 'Changed requirement')
   }
 })

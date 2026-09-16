@@ -234,7 +234,9 @@ it('assembles the public app through HTTP model and Python, persisting results a
     reviseBeforeCommit = true
     assert.equal(await worker.runNext(), true)
     assert.equal(reviseBeforeCommit, false)
-    assert.equal((await app.readMessage(lateIdentity))?.envelope?.goalOutcome.status, 'blocked')
+    assert.equal((await app.readMessage(lateIdentity))?.envelope?.goalOutcome.status, 'partial')
+    assert.equal((await app.readMessage(lateIdentity))?.body, '4')
+    assert.match(JSON.stringify((await app.readOutcome(lateIdentity))?.gaps), /ignores the revision/)
     assert.deepEqual((await db.query('SELECT outbox.* FROM lingxios.agent_delivery_outbox outbox JOIN lingxios.agent_results result ON result.id=outbox.result_id WHERE result.work_id=$1', [lateIdentity.runId])).rows, [])
     exhaustBudget = true
     const partialIdentity = { ...identity, runId: 'partial-request', sessionId: 'partial-session' }
@@ -242,12 +244,10 @@ it('assembles the public app through HTTP model and Python, persisting results a
     await app.enqueue({ id: partialIdentity.runId, ...partialIdentity, principalId: 'user', text: 'Calculate and explain the result.' })
     assert.equal(await worker.runNext(), true)
     assert.equal(requests.length - beforePartial, 16)
-    const partialMessage = await app.readMessage(partialIdentity)
-    assert.ok(partialMessage)
-    assert.deepEqual(await app.readOutcome(partialIdentity), { status: 'partial', verification: 'not_run', requestVersion: 1,
-      gaps: ['Execution stopped before verified completion', 'root work model budget exhausted'] })
-    const partialHistory = (await db.query<{ history: unknown[] }>('SELECT history FROM lingxios.agent_os_sessions WHERE session_id=$1', [partialIdentity.sessionId])).rows[0]!.history
-    assert.deepEqual(partialHistory.at(-1), { role: 'assistant', content: partialMessage.body })
+    assert.equal(await app.readMessage(partialIdentity), null)
+    assert.deepEqual(await app.readOutcome(partialIdentity), { status: 'blocked', verification: 'inconclusive', requestVersion: 1,
+      gaps: ['Model call, token, cost or execution-time budget exhausted'] })
+    assert.equal((await app.readRunState(partialIdentity))?.run.status, 'failed')
     assert.equal(await worker.runNext(), false)
 
     missingArtifact = true

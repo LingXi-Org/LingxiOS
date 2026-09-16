@@ -138,6 +138,8 @@ export function actionKeyOf(action: Pick<HostAction, 'runId' | 'cellId' | 'callI
 }
 
 export interface HostActionResult {
+  /** Source excerpts returned by an authorized read; the runtime assigns citation markers. */
+  evidence?: Array<Omit<import('../context/evidence.js').EvidenceItem, 'marker' | 'actionKey'>>
   observations?: Array<{ resourceType: string; resourceId: string; version: string; completeness: 'full' | 'summary' }>
   ok: boolean
   executionState?: 'rejected' | 'no_effect' | 'succeeded' | 'awaiting_approval' | 'unknown'

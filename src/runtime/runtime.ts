@@ -1,4 +1,4 @@
-import { appendResearchEvidence } from '../context/research-evidence.js'
+import { appendReadEvidence } from '../context/research-evidence.js'
 import { contextItem, observationItems } from '../context/compiler.js'
 import { buildPromptContext, PROMPT_CONTRACT_VERSION } from '../prompts/provider.js'
 import { executionSnapshot, type ExecutionSnapshot } from './execution-policy.js'
@@ -28,7 +28,7 @@ import type { MemorySnapshot } from '../memory/types.js'
  * against it.
  */
 import {
-  ApprovalPendingError, KernelCancelledError, KernelExecutionError, KernelTimeoutError,
+  AgentOSError, ApprovalPendingError, KernelCancelledError, KernelExecutionError, KernelTimeoutError,
   LeaseLostError, ModelDriverError, RunCancelledError, errorMessage,
 } from '../errors.js'
 import type { HostPort } from '../host/port.js'
@@ -375,16 +375,37 @@ export class AgentRuntime {
     let nextStreamPartIndex = 0
     let streamedText = ''
     let finalText = ''
-    let fallbackText: string | undefined
     let finalEnvelope: ResponseEnvelope | undefined
     let lastGood: { text: string; envelope: ResponseEnvelope } | undefined
-    let contentCheckExhausted = false
+    let terminalError: Error | undefined
     let acceptanceGaps: string[] = []
     const artifacts: KernelArtifact[] = [...context.priorArtifacts ?? []]
     const executedSteps = [...(context.executionSteps ?? [])]
     const evidence = () => session.request?.evidence ?? snapshotEvidence(`${work.id}:evidence:1`, [])
     let protocolCorrection: ModelItem | null = null
     let pendingCompaction: ReturnType<typeof prepareCompaction> | undefined
+
+    const rememberCandidate = async (body: string, liveContext: TurnContext, gaps: string[] = []) => {
+      const text = body.trim()
+      const assessment: GoalAssessment = { status: 'partial', checks: [], gaps }
+      if (!text || text.length > 100_000 || this.policy.validateAssistantText(text, liveContext)
+        || this.policy.validateCompletion?.(text, assessment, liveContext)) return
+      let envelope: ResponseEnvelope
+      try {
+        envelope = createResponseEnvelope(text, { status: 'partial', verification: 'inconclusive',
+          requestVersion: (session.request?.revisions.length ?? 0) + 1, ...(gaps.length ? { gaps } : {}) },
+        evidence(), artifacts, session.request?.contract, session.request?.resourceChecks)
+      } catch { return /* Invalid citations or artifacts must never become a partial delivery. */ }
+      await this.hostFor(work).saveStep(work, { id: `candidate:${randomUUID()}`, kind: 'runtime.candidate',
+        requestVersion: envelope.requestVersion, input: {}, output: JSON.stringify(envelope), artifacts: [] })
+      lastGood = { text, envelope }
+    }
+    const savedCandidate = context.executionSteps?.findLast(step => step.kind === 'runtime.candidate'
+      && step.requestVersion === (session.request?.revisions.length ?? 0) + 1)
+    if (savedCandidate?.output) {
+      const candidate = JSON.parse(savedCandidate.output) as ResponseEnvelope
+      await rememberCandidate(candidate.body, context, candidate.goalOutcome.gaps)
+    }
 
     const applySteering = async () => {
       const steers = signals.drainSteer()
@@ -393,8 +414,8 @@ export class AgentRuntime {
         pendingCompaction = undefined
         this.previews.get(runId)?.buffer.discard()
         budget.observe({ revisions: steers })
-        fallbackText = undefined
         lastGood = undefined
+        terminalError = undefined
         acceptanceGaps = []
         if (session.request) {
           for (const steer of steers) {
@@ -558,11 +579,8 @@ export class AgentRuntime {
           }
           continue
         }
-        if (error instanceof ModelBudgetExceededError && !lastGood) { acceptanceGaps.push(error.message); break }
-        if (lastGood) {
-          finalText = lastGood.text
-          finalEnvelope = { ...lastGood.envelope, goalOutcome: { ...lastGood.envelope.goalOutcome,
-            status: 'partial', verification: 'inconclusive', gaps: [...(lastGood.envelope.goalOutcome.gaps ?? []), `Later model call failed: ${errorMessage(error)}`] } }
+        if (error instanceof ModelBudgetExceededError || lastGood) {
+          terminalError = error instanceof Error ? error : new Error('Model call failed')
           break
         }
         throw error
@@ -605,26 +623,12 @@ export class AgentRuntime {
             data: { violation: errorMessage(error), candidateType: 'final_json' } })
           session.history.push(...turn.output)
           await this.hostFor(work).saveSession(work, session)
+          // A failed self-check does not invalidate an independently valid answer body.
+          let body: unknown
+          try { body = JSON.parse(turn.finalCandidate!).body } catch { /* No structured body to preserve. */ }
+          if (typeof body === 'string') await rememberCandidate(body, liveContext, ['Final response assessment is invalid'])
           if (!budget.consume('response_protocol', errorMessage(error))) {
-            contentCheckExhausted = true
-            acceptanceGaps.push('Final assessment protocol correction exhausted: ' + errorMessage(error))
-            // A malformed self-check must not discard otherwise deliverable partial content.
-            try {
-              let body: unknown = turn.finalCandidate
-              try {
-                const value: unknown = JSON.parse(turn.finalCandidate!)
-                body = typeof value === 'string' || typeof value === 'number' ? String(value)
-                  : value && typeof value === 'object' && !Array.isArray(value) ? Reflect.get(value, 'body') : undefined
-              } catch {
-                if (/^\s*[{[]/.test(turn.finalCandidate!)) body = undefined
-              }
-              if (typeof body === 'string' && body.trim() && body.length <= 100_000
-                && !this.policy.validateAssistantText(body, liveContext)) {
-                createResponseEnvelope(body, { status: 'partial', verification: 'not_run',
-                  requestVersion: (session.request?.revisions.length ?? 0) + 1, gaps: acceptanceGaps }, evidence(), artifacts)
-                fallbackText = body.trim()
-              }
-            } catch { /* Invalid citations have no separately validated answer body. */ }
+            terminalError = new AgentOSError('response_protocol_exhausted', 'Final assessment protocol correction exhausted')
             break
           }
           protocolCorrection = { role: 'user', content: 'Correct only the final JSON object against the original request. '
@@ -634,14 +638,7 @@ export class AgentRuntime {
       }
 
       if (assessment?.status === 'partial' && budget.consume('content_acceptance', JSON.stringify(assessment.gaps))) {
-        if (session.request && !this.policy.validateAssistantText(turn.text, liveContext)) {
-          try {
-            lastGood = { text: turn.text.trim(), envelope: createResponseEnvelope(turn.text.trim(), {
-              status: 'partial', verification: 'not_run', requestVersion: session.request.revisions.length + 1,
-              gaps: assessment.gaps,
-            }, evidence(), artifacts, session.request.contract, session.request.resourceChecks, assessment) }
-          } catch { /* Invalid citations or envelope fields are not a deliverable candidate. */ }
-        }
+        await rememberCandidate(turn.text, liveContext, assessment.gaps)
         session.history.push(...turn.output)
         await this.hostFor(work).saveSession(work, session)
         await this.event(work, runId, { kind: 'response.withheld', stage: 'failed', visibility: 'internal',
@@ -659,6 +656,7 @@ export class AgentRuntime {
       if (calls.length === 0) {
         let violation = this.policy.validateAssistantText(turn.text, liveContext)
         if (!violation) violation = this.policy.validateCompletion?.(turn.text, assessment ?? { status: 'satisfied', checks: [], gaps: [] }, liveContext) ?? null
+        if (!violation) await rememberCandidate(turn.text, liveContext, assessment?.gaps)
         let contentCheckError: string | undefined
         let resourceGaps: string[] = []
         if (liveContext.pendingApproval?.approved === false) resourceGaps.push('The human rejected the required action; the original requested change was not completed')
@@ -722,10 +720,10 @@ export class AgentRuntime {
           contentCheckError = 'error' in check ? check.error : undefined
           acceptanceGaps = [...resourceGaps, ...(contentCheckError ? [contentCheckError] : []),
             ...check.missing.map(item => `Content review finding for ${JSON.stringify(item.quote)}: ${item.reason}`)]
+          await rememberCandidate(turn.text, liveContext, [...(assessment?.gaps ?? []), ...acceptanceGaps])
           if (check.missing.length) {
             if (!budget.consume('content_acceptance', 'candidate requirements remain unmet')) {
-              contentCheckExhausted = true
-              fallbackText = turn.text.trim()
+              terminalError = new AgentOSError('content_acceptance_exhausted', 'Content acceptance correction budget exhausted')
               break
             }
             protocolCorrection = { role: 'user', content: 'The candidate was withheld by a fallible content review. '
@@ -755,9 +753,12 @@ export class AgentRuntime {
           await this.event(work, runId, {
             kind: 'response.withheld', stage: 'failed', visibility: 'internal', data: { violation },
           })
-          protocolCorrection = this.correctionOrThrowMessage(budget, 'response_protocol',
-            `Your previous candidate was withheld because ${violation}. Re-evaluate the current request and respond within protocol.`,
-            `model repeatedly violated the visible response protocol: ${violation}`)
+          if (!budget.consume('response_protocol', violation)) {
+            terminalError = new AgentOSError('response_protocol_exhausted', 'Response protocol correction exhausted')
+            break
+          }
+          protocolCorrection = { role: 'user', content:
+            `Your previous candidate was withheld because ${violation}. Re-evaluate the current request and respond within protocol.` }
           continue
         }
         session.history.push(...turn.output)
@@ -807,10 +808,9 @@ export class AgentRuntime {
           if (failure?.status === 'rejected') throw failure.reason
           outcomes = settled.map(result => (result as PromiseFulfilledResult<Awaited<ReturnType<AgentRuntime['executeCall']>>>).value)
         } catch (error) {
-          if (!(error instanceof ModelBudgetExceededError)) throw error
-          acceptanceGaps.push(error.message)
-          fallbackText = lastGood?.text
-          contentCheckExhausted = true
+          if (!(error instanceof ModelBudgetExceededError) && !(error instanceof AgentOSError) && !lastGood) throw error
+          if (error instanceof LeaseLostError || error instanceof RunCancelledError || error instanceof KernelCancelledError) throw error
+          terminalError = error instanceof Error ? error : new Error('Tool execution failed')
           break execution
         }
         for (const outcome of outcomes) {
@@ -824,25 +824,23 @@ export class AgentRuntime {
 
     }
 
-    if (finalText && !streamedText) {
-      session.history.push({ role: 'assistant', content: finalText })
-      await this.hostFor(work).saveSession(work, session)
-      await this.event(work, runId, { kind: 'model.delta', stage: 'delta', visibility: 'user',
-        data: { delta: finalText, partType: 'text', partIndex: nextStreamPartIndex++, partStart: true, requestVersion: (session.request?.revisions.length ?? 0) + 1 } })
-      streamedText = finalText
-    }
     if (!finalText) {
       await signals.refresh()
       if (signals.leaseLost()) throw signals.leaseLost()!
       if (signals.lifecycle.signal.aborted) throw new RunCancelledError('lifecycle')
       await applySteering()
-      finalText = fallbackText ?? (contentCheckExhausted
-        ? '候选答复仍存在未解决的内容验收问题，本轮修正次数已用尽。执行记录已保存，但请求要求和资源后置条件尚未全部验证；已发生的操作不会自动撤销。'
-        : '本轮处理预算已用尽，尚未形成完整答复。执行记录已保存，但请求要求和资源后置条件尚未全部验证；已发生的操作不会自动撤销。')
+      if (!lastGood) throw terminalError ?? new AgentOSError('no_valid_response', 'No valid answer was produced for the current request')
+      // Recheck current authorization and product policy before publishing a retained candidate.
+      const currentContext = await this.hostFor(work).loadContext(work)
+      const gaps = [...new Set([...(lastGood.envelope.goalOutcome.gaps ?? []), ...acceptanceGaps,
+        ...(terminalError ? [publicFailure(terminalError)] : [])])]
+      if (this.policy.validateAssistantText(lastGood.text, currentContext)
+        || this.policy.validateCompletion?.(lastGood.text, { status: 'partial', checks: [], gaps }, currentContext)) {
+        throw new AgentOSError('response_protocol_exhausted', 'Retained answer no longer satisfies the response policy')
+      }
+      finalText = lastGood.text
       finalEnvelope = createResponseEnvelope(finalText, {
-        status: contentCheckExhausted ? 'blocked' : 'partial', verification: 'not_run', requestVersion: (session.request?.revisions.length ?? 0) + 1,
-        gaps: [contentCheckExhausted ? 'Content acceptance correction budget exhausted; goal acceptance remains unchecked'
-          : 'Execution stopped before verified completion', ...acceptanceGaps],
+        status: 'partial', verification: 'inconclusive', requestVersion: (session.request?.revisions.length ?? 0) + 1, gaps,
       }, evidence(), artifacts, session.request?.contract, session.request?.resourceChecks)
       session.history.push({ role: 'assistant', content: finalText })
       await this.hostFor(work).saveSession(work, session)
@@ -880,7 +878,7 @@ export class AgentRuntime {
     content: string,
     failure: string,
   ): ModelItem {
-    if (!budget.consume(category, failure)) throw new ModelBudgetExceededError(`Execution stalled: ${failure}`)
+    if (!budget.consume(category, failure)) throw new AgentOSError(`${category}_exhausted`, `${category} correction exhausted`)
     return { role: 'user', content: (budget.rediagnose ? 'The same operation has failed three times without new evidence. Diagnose the cause and change the approach before retrying. ' : '') + content }
   }
 
@@ -1011,7 +1009,7 @@ export class AgentRuntime {
       let correction: ModelItem | undefined
       if (failures.length) {
         const failure = JSON.stringify(failures.map(receipt => [receipt.action, receipt.result.code ?? receipt.result.executionState ?? 'tool_error']))
-        if (!budget.consume('kernel_error', failure)) throw new ModelBudgetExceededError('Three failed continuations without new resource or action state')
+        if (!budget.consume('kernel_error', failure)) throw new AgentOSError('kernel_error_exhausted', 'Tool execution failed after bounded correction')
         correction = { role: 'user', content: 'Inspect the recorded failures before proceeding. Reconcile unknown effects; do not repeat them under a new identity.' }
       } else {
         const facts = progressFacts({ artifacts: execution.artifacts, observations: receipts.map(receipt => ({ action: receipt.action, result: receipt.result })) })
@@ -1029,8 +1027,8 @@ export class AgentRuntime {
         },
       })
       for (const receipt of receipts) {
-        if (receipt.action === 'research.read' && session.request?.evidence) {
-          session.request.evidence = appendResearchEvidence(session.request.evidence, receipt.idempotencyKey, receipt.result)
+        if (session.request?.evidence) {
+          session.request.evidence = appendReadEvidence(session.request.evidence, receipt.idempotencyKey, receipt.result, receipt.action)
         }
         if (receipt.action !== 'task.contract' || !receipt.result.ok || receipt.result.directive?.type !== 'task_contract') continue
         const draft = receipt.result.directive.data
@@ -1161,9 +1159,10 @@ export class AgentRuntime {
         session.history.push({ type: 'function_call_output', callId, output: step.output })
         const journal = JSON.parse(step.output) as { receipts?: Array<{ action: string; idempotencyKey: string; result: HostActionResult }> }
         for (const receipt of journal.receipts ?? []) {
-          if (receipt.action === 'research.read' && session.request?.evidence) {
-            session.request.evidence = appendResearchEvidence(session.request.evidence, receipt.idempotencyKey, receipt.result)
-          } else if (receipt.action === 'task.check_resource' && session.request) {
+          if (session.request?.evidence) {
+            session.request.evidence = appendReadEvidence(session.request.evidence, receipt.idempotencyKey, receipt.result, receipt.action)
+          }
+          if (receipt.action === 'task.check_resource' && session.request) {
             session.request.resourceChecks = appendResourceCheck(session.request.resourceChecks ?? [], receipt.idempotencyKey,
               receipt.result, session.request.revisions.length + 1)
           } else if (receipt.action === 'task.contract' && receipt.result.ok && receipt.result.directive?.type === 'task_contract' && session.request) {
@@ -1261,17 +1260,34 @@ export class AgentRuntime {
     await this.event(work, runId, {
       kind: cancelled ? 'run.cancelled' : 'run.failed', stage: status, visibility: 'user',
       data: {
-        error: errorMessage(error),
+        error: publicFailure(error),
         ...(error instanceof ModelDriverError ? { modelDiagnostics: error.diagnostics } : {}),
       },
     }).catch((eventError: unknown) => {
       log.error('terminal event emission failed', { error: eventError })
     })
-    await this.hostFor(work).completeWork(work, { status: error instanceof ModelBudgetExceededError ? 'completed' : status, error: errorMessage(error), goalOutcome: {
+    await this.hostFor(work).completeWork(work, { status, error: publicFailure(error), goalOutcome: {
       status: 'blocked', verification: 'inconclusive', requestVersion: (session?.request?.revisions.length ?? 0) + 1,
-      gaps: [cancelled ? 'Execution was cancelled' : 'Execution failed before verified delivery'],
+      gaps: [cancelled ? 'Execution was cancelled' : publicFailure(error)],
     } }).catch((completeError: unknown) => {
       log.error('terminal completion failed', { error: completeError })
     })
   }
+}
+
+function publicFailure(error: unknown): string {
+  if (error instanceof ModelDriverError) return error.diagnostics.kind === 'protocol'
+    ? 'Model returned an invalid response format' : `Model provider request failed${error.diagnostics.status ? ` (HTTP ${error.diagnostics.status})` : ''}`
+  if (error instanceof AgentOSError) {
+    switch (error.code) {
+      case 'model_budget_exhausted': return 'Model call, token, cost or execution-time budget exhausted'
+      case 'content_acceptance_exhausted': return 'Content acceptance correction budget exhausted'
+      case 'response_protocol_exhausted': return 'Final assessment protocol correction exhausted'
+      case 'tool_protocol_exhausted': return 'Tool protocol correction exhausted'
+      case 'kernel_error_exhausted': case 'kernel_execution_failed': return 'Tool execution failed after bounded correction'
+      case 'kernel_timeout': return 'Tool execution timed out'
+      case 'no_valid_response': return 'No valid answer was produced for the current request'
+    }
+  }
+  return errorMessage(error)
 }
