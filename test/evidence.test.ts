@@ -14,6 +14,39 @@ import { AgentRuntime } from '../src/runtime/runtime.js'
 import type { HostPort } from '../src/host/port.js'
 import { sessionKeyOf, type AssistantMessage } from '../src/protocol/types.js'
 import type { ModelDriver } from '../src/model/driver.js'
+import { snapshotRequest } from '../src/context/request.js'
+import type { SessionRecord } from '../src/protocol/types.js'
+
+it('records attachment range citations and reauthorizes snapshots before reads, actions and delivery', async () => {
+  let revoked = false
+  const service = new ControlPlaneService({ modelBudgets: new MemoryModelBudgetStore(),steps: new MemoryStepStore(),work: new MemoryWorkStore(),
+    sessions: new MemorySessionStore(),events: new MemoryEventStore(),actions: new MemoryActionLedger(),
+    contextProvider: { authorizeRequest: async (_work, request) => {
+      assert.equal(request.attachments[0]!.id,'file')
+      if (revoked) throw new Error('source permission revoked')
+    }, loadContext: async () => ({ persona: { name: 'A',role: '',instructions: '' },capabilities: [],
+      messages: [{ ref: 'm',authorId: 'u',authorName: 'U',authorKind: 'human',body: 'Read file',createdAt: 'now' }] }) },
+    capabilityResolver: { resolve: async () => [] },actionExecutor: { prepare: async () => {},execute: async () => { throw new Error('unexpected') } },
+    delivery: { onEvent: async () => {},deliverMessage: async () => {} } })
+  await service.enqueue({ id: 'attachment',tenantId: 't',agentId: 'a',sessionId: 's',principalId: 'u',kind: 'turn',lane: 'interactive',triggerRef: 'm',
+    meta: { text: 'Read file',attachments: [{ id: 'file',sourceVersion: 'v1',name: 'facts.txt',mimeType: 'text/plain',size: 18,text: 'Before. Value: 47.' }] } })
+  const work = (await service.claim('worker'))!, key = sessionKeyOf(work)
+  const session: SessionRecord = { key,tenantId: 't',agentId: 'a',sessionId: 's',history: [],appliedWorkIds: [work.id],revision: 0,compactionEpoch: 0,
+    request: snapshotRequest(await service.loadContext(work)) }
+  session.revision = (await service.saveSession(work,session)).revision
+  const action = { runId: work.id,cellId: 'read',callIndex: 0,idempotencyKey: JSON.stringify([work.id,'read',0]),action: 'task.read_attachment',
+    args: { id: 'file',sourceVersion: 'v1',offset: 8,limit: 16000 } }
+  const receipt = await service.executeAction(work,action)
+  assert.deepEqual(receipt.evidence,[{ sourceId: 'attachment:file',sourceVersion: 'v1',title: 'facts.txt',chunkId: 'file:8:18',excerpt: 'Value: 47.',truncated: true }])
+  session.request!.evidence = appendReadEvidence(session.request!.evidence,action.idempotencyKey,receipt,action.action)
+  session.revision = (await service.saveSession(work,session)).revision
+  const body = '[Value: 47](#cite-S1)', envelope = createResponseEnvelope(body,{ status: 'partial',verification: 'inconclusive',requestVersion: 1 },session.request!.evidence)
+  revoked = true
+  await assert.rejects(service.getSession(work,key),/source permission revoked/)
+  await assert.rejects(service.loadContext(work),/source permission revoked/)
+  await assert.rejects(service.executeAction(work,action),/source permission revoked/)
+  await assert.rejects(service.commitResult(work,{ version: 2,runId: work.id,agentId: 'a',sessionId: 's',body,envelope }),/source permission revoked/)
+})
 
 it('delivers the latest recorded version of each artifact path', () => {
   const first = { path: 'report.txt', size: 3, mime: 'text/plain', sha256: 'a'.repeat(64) }

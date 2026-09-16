@@ -264,7 +264,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         ...helperTools.map(tool => ({ name: tool.action.split('.')[0]!, methods: [tool.action.split('.')[1]!] })),
         ...memory?[{name:'memory',methods:memory.tools.filter(tool=>tool.action.startsWith('memory.')).map(tool=>tool.action.split('.')[1]!)}]:[]]
     } },
-    contextProvider: { async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal) {
+    contextProvider: { ...(contextProvider.authorizeRequest ? { authorizeRequest: contextProvider.authorizeRequest.bind(contextProvider) } : {}),
+      async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal) {
       if (behavior && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) && work.meta?.['harnessHash'] !== behavior.hash) throw new Error('harness version mismatch; resume with the pinned deployment or drain the old run')
       const context = { ...await contextProvider.loadContext(work, signal), ...(behavior ? { harness: structuredClone(behavior) } : {}) }
       if (work.conversation) {

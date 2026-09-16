@@ -34,6 +34,7 @@ it('assembles the public app through HTTP model and Python, persisting results a
   }
   const requests: Array<{ messages: Array<{ role: string; content: string }> }> = []
   let contentChecks = 0
+  let requestChecks = 0
   const server = http.createServer((req, res) => {
     const buffers: Buffer[] = []
     req.on('data', (chunk: Buffer) => buffers.push(chunk))
@@ -81,7 +82,10 @@ it('assembles the public app through HTTP model and Python, persisting results a
       return context.dynamic ? [{ role: 'user' as const, content: `Injected context: ${JSON.stringify(context.dynamic)}` }] : []
     }
   }
-  const contextProvider: ContextProvider = { loadContext: async (work) => {
+  const contextProvider: ContextProvider = { authorizeRequest: async (work, request) => {
+    assert.equal(request.workId,work.id)
+    requestChecks++
+  }, loadContext: async (work) => {
     const persona = { name: 'Injected assistant', role: 'assistant', instructions: 'Use injected context.' }
     return { persona, capabilities: [], dynamic: { tenant: work.tenantId },
       messages: [{ ref: work.triggerRef, authorId: work.principalId!, authorName: String(work.meta?.['authorName'] ?? 'User'), authorKind: 'human' as const, body: String(work.meta?.['text']), createdAt: work.createdAt ?? '' }],
@@ -137,6 +141,7 @@ it('assembles the public app through HTTP model and Python, persisting results a
     assert.equal(requests.length, 2)
     assert.equal((await app.readMessage(identity))?.body, '4')
     assert.equal(contentChecks, 1)
+    assert.ok(requestChecks > 0, 'the assembled app must reauthorize persisted request sources')
     const traces = (await db.query<{ data: Record<string, unknown>; expires_at: string }>(
       "SELECT data,expires_at FROM lingxios.agent_run_events WHERE run_id=$1 AND kind LIKE 'model.%' AND data ? 'input' OR run_id=$1 AND kind LIKE 'model.%' AND data ? 'output'", [identity.runId])).rows
     assert.ok(traces.length >= 2)

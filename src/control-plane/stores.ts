@@ -223,6 +223,8 @@ export interface ActionLedgerStore {
 
 /** Assembles everything but `work` in a TurnContext. */
 export interface ContextProvider {
+  /** Reauthorize persisted source material before session reads, tools and delivery. */
+  authorizeRequest?(work: Omit<WorkItem, 'leaseToken'>, request: import('../context/request.js').RequestSnapshot): Promise<void>
   loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal): Promise<{
     /** IM providers must authorize this audience before returning evidence, memory or dynamic resource data. */
     audience?: import('../collaboration/types.js').Audience

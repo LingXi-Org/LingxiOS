@@ -418,6 +418,7 @@ export class ControlPlaneService {
       if (context.promptContextCandidate) context.promptContextCandidate = { ...context.promptContextCandidate, capabilities: context.capabilities }
     }
     const { steps, requestVersion } = snapshot
+    if (snapshot.session?.request) await this.deps.contextProvider.authorizeRequest?.(work, snapshot.session.request)
     const checkpoint = steps.findLast(step => step.kind === 'runtime.checkpoint' && step.requestVersion === requestVersion)
     const priorArtifacts = new Map<string, KernelArtifact>()
     if (work.fence > 1) {
@@ -565,7 +566,12 @@ export class ControlPlaneService {
       } else if (action.action === 'task.read_attachment') {
         const request = (await this.getSession(proof, sessionKeyOf(work)))?.request
         if (!request || request.workId !== work.id) throw new Error('attachment read requires the current request snapshot')
-        result = { ok: true, value: readRequestAttachment(request, action.args) }
+        const value = readRequestAttachment(request, action.args)
+        const attachment = [...request.attachments, ...[...(request.inheritedRevisions ?? []), ...request.revisions]
+          .flatMap(revision => revision.attachments ?? [])].find(item => item.id === value.id && item.sourceVersion === value.sourceVersion)!
+        result = { ok: true, value, evidence: value.text.trim() ? [{ sourceId: `attachment:${value.id}`, sourceVersion: value.sourceVersion,
+          title: attachment.name, chunkId: `${value.id}:${value.offset}:${value.nextOffset}`, excerpt: value.text,
+          truncated: value.offset > 0 || value.truncated }] : [] }
       } else if (action.action === 'task.contract') {
         const request = (await this.getSession(proof, sessionKeyOf(work)))?.request
         if (!request || request.workId !== work.id) throw new Error('task contract requires the current request snapshot')
@@ -858,6 +864,7 @@ export class ControlPlaneService {
       || session.sessionId !== work.sessionId || session.threadId !== work.threadId)) {
       throw new ControlPlaneError(409, 'stored session identity mismatch')
     }
+    if (session?.request) await this.deps.contextProvider.authorizeRequest?.(work, session.request)
     return session
   }
 
@@ -1004,7 +1011,7 @@ export class ControlPlaneService {
           || intent.principalId !== (work.principalId ?? null) || intent.agentId !== work.agentId
           || intent.sessionId !== work.sessionId || intent.threadId !== (work.threadId ?? null)
           || intent.requestVersion !== session.request!.revisions.length + 1
-          || intent.action.action !== 'research.read' && !this.deps.tools?.some(tool => tool.action === intent.action.action && tool.effect === 'read')) throw new ControlPlaneError(409, 'evidence lacks a current authorized read intent')
+          || !['research.read','task.read_attachment'].includes(intent.action.action) && !this.deps.tools?.some(tool => tool.action === intent.action.action && tool.effect === 'read')) throw new ControlPlaneError(409, 'evidence lacks a current authorized read intent')
         const result = await this.deps.actions.find(key)
         if (!result) throw new ControlPlaneError(409, 'evidence lacks a recorded research read')
         expected = appendReadEvidence(expected, key, result, intent.action.action)

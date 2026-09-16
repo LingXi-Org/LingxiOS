@@ -116,7 +116,7 @@ export function readRequestAttachment(request: RequestSnapshot, args: Record<str
     .flatMap(revision => revision.attachments ?? [])].filter(item => item.id === args['id'] && item.sourceVersion === args['sourceVersion'])
   const attachment = matches[0]
   if (!attachment || matches.some(item => item.text !== attachment.text)) throw new Error('attachment version is missing or ambiguous')
-  if (attachment.text === undefined) throw new Error('attachment text is unavailable; metadata does not verify its contents')
+  if (attachment.text === undefined) throw new Error(`attachment text is unavailable (${attachment.contentStatus ?? 'unavailable'}); metadata does not verify its contents`)
   const offset = args['offset'] as number
   const limit = args['limit'] as number
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > attachment.text.length
