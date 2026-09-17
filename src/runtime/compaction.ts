@@ -8,6 +8,7 @@ import type { ModelDriver } from '../model/driver.js'
 import type { ModelItem, SessionRecord } from '../protocol/types.js'
 import { COMPACTION_PROMPT } from '../context/compiler.js'
 import { isDeepStrictEqual } from 'node:util'
+import { inputTokens } from '../model/profile.js'
 
 export function boundSummary(raw: string, maxChars: number): string {
   const value = JSON.parse(raw) as Record<string, unknown>
@@ -42,9 +43,9 @@ export const DEFAULT_COMPACTION: CompactionOptions = {
 }
 
 /** Conservative byte bound for byte-based tokenizers, including multilingual input. */
-export function estimateTokens(items: readonly ModelItem[]): number {
+export function estimateTokens(items: readonly ModelItem[], model: Pick<ModelDriver, 'countTokens'> = {}): number {
   // ponytail: byte bound underuses context; use a model tokenizer when utilization matters.
-  return new TextEncoder().encode(JSON.stringify(items)).length
+  return inputTokens(model, items)
 }
 
 export interface CompactionOutcome {
@@ -81,7 +82,7 @@ export async function compactIfNeeded(
   overheadTokens = 0,
   background = false,
 ): Promise<CompactionOutcome> {
-  const estimated = estimateTokens(session.history) + overheadTokens
+  const estimated = estimateTokens(session.history, model) + overheadTokens
   const softLimit = Math.floor(options.contextWindowTokens * options.softRatio)
   if (estimated < softLimit) return { compacted: false }
   // Nothing to fold: the tail alone exceeds the limit. Let the model turn
@@ -117,12 +118,16 @@ export async function compactIfNeeded(
     'role' in item && item.content === `${SUMMARY_PREFIX}${priorSummary}`)) {
     summarize.unshift(summaryItem(priorSummary))
   }
+  // Small prefixes cannot justify a summary call whose bounded output may be larger.
+  if (background && JSON.stringify(summarize).length < options.maxSummaryChars) return { compacted: false }
   try {
     const call = await model.compact({ instructions: COMPACTION_PROMPT.instructions, prompt: COMPACTION_PROMPT.manifest, items: summarize, signal, interruptible: background, admission: background ? 'background' : 'foreground' })
     const combined = boundSummary(call.value, options.maxSummaryChars)
     const usage = { model: call.model, ...call.usage }
+    const history = [summaryItem(combined), ...keep]
+    if (estimateTokens(history, model) >= estimateTokens(session.history, model)) return { compacted: false }
     session.summary = combined
-    session.history = [summaryItem(combined), ...keep]
+    session.history = history
     session.compactionEpoch += 1
     return { compacted: true, usage }
   } catch (error) {
@@ -135,8 +140,13 @@ export async function compactIfNeeded(
 /** Compute off the live history. Installation permits appends, but never replacement or revised requirements. */
 export function prepareCompaction(session: SessionRecord, model: ModelDriver, options: CompactionOptions,
   signal?: AbortSignal, overheadTokens = 0) {
+  const requirements = (request: SessionRecord['request']) => {
+    if (!request) return request
+    const { evidence: _evidence, resourceChecks: _checks, contract: _contract, ...original } = request
+    return original
+  }
   const base = { history: structuredClone(session.history), summary: session.summary,
-    epoch: session.compactionEpoch, request: structuredClone(session.request) }
+    epoch: session.compactionEpoch, request: structuredClone(requirements(session.request)) }
   const copy = { ...session, history: structuredClone(base.history) }
   const stop = new AbortController()
   let outcome: CompactionOutcome | undefined
@@ -149,7 +159,7 @@ export function prepareCompaction(session: SessionRecord, model: ModelDriver, op
     cancel() { stop.abort(new Error('compaction candidate no longer needed')) },
     install(current: SessionRecord): CompactionOutcome {
       if (!outcome?.compacted || current.compactionEpoch !== base.epoch || current.summary !== base.summary
-        || !isDeepStrictEqual(current.request, base.request)
+        || !isDeepStrictEqual(requirements(current.request), base.request)
         || !isDeepStrictEqual(current.history.slice(0, base.history.length), base.history)) return { compacted: false }
       current.history = [...copy.history, ...current.history.slice(base.history.length)]
       current.summary = copy.summary!

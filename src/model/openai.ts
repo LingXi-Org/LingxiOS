@@ -200,7 +200,7 @@ export class OpenAIChatDriver implements ModelDriver {
     this.configurationFingerprint = createHash('sha256').update(JSON.stringify({
       wire: 'openai-chat-completions-v1', model: modelId, baseUrl: this.baseUrl,
       reasoningEffort: options.reasoningEffort ?? null, maxOutputTokens: this.maxOutputTokens,
-      contextWindowTokens: this.contextWindowTokens, maxThinkingTokens: this.maxThinkingTokens, tool: 'ipython-v1',
+      contextWindowTokens: this.contextWindowTokens, maxThinkingTokens: this.maxThinkingTokens, compactionThinking: false, tool: 'ipython-v1',
       capabilities: this.profile,
     })).digest('hex')
   }
@@ -398,6 +398,8 @@ export class OpenAIChatDriver implements ModelDriver {
     if (!this.profile.jsonObject) throw new Error('selected model does not support JSON object output')
     const response = await this.request({
       model: this.modelId,
+      ...(this.options.maxThinkingTokens !== undefined || this.options.reasoningEffort
+        ? { enable_thinking: false, thinking_budget: undefined, reasoning_effort: undefined } : {}),
       messages: [
         {
           role: 'system',

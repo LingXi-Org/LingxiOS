@@ -140,3 +140,17 @@ it('sends only instructions and data to the provider, never local prompt manifes
   } })
   await driver.structured({ instructions: prompt.instructions, prompt: prompt.manifest, input: { evidence: 'untrusted' } })
 })
+
+it('does not charge local prompt manifests against the provider context window', async () => {
+  const prompt = compileAuxiliaryPrompt('review', 'Return JSON.')
+  prompt.manifest.sections.push({ source: 'diagnostic'.repeat(2000), version: '1', trust: 'observation', truncated: false, placement: 'data', sha256: '0'.repeat(64), bytes: 0 })
+  let calls = 0
+  const driver: ModelDriver = { contextWindowTokens: 2000, maxOutputTokens: 100,
+    run: async () => { throw new Error('unexpected turn') }, compact: async () => { throw new Error('unexpected compaction') },
+    structured: async () => { calls++; return { value: {}, model: 'fake', usage: { available: true, inputTokens: 20, outputTokens: 2 } } } }
+  const model = executionModel({ reserveModelCall: async () => ({ allowed: true, remainingCalls: 9, remainingTokens: 999999, remainingCostMicros: 999999, deadlineAt: new Date(Date.now() + 5000).toISOString() }),
+    recordModelUsage: async () => {} }, driver, context.work, DEFAULT_MODEL_BUDGET)
+  await model.structured({ instructions: prompt.instructions, prompt: prompt.manifest, input: {} })
+  assert.throws(() => model.structured({ instructions: prompt.instructions, prompt: prompt.manifest, input: { prompt: 'required data'.repeat(2000) } }), /context budget/)
+  assert.equal(calls, 1)
+})

@@ -479,6 +479,35 @@ it('fails without a fabricated answer on root budget exhaustion and honors late 
   }
 })
 
+it('keeps direct tool values once in model history while preserving durable receipts and evidence', async () => {
+  const work: TurnContext['work'] = { id: 'direct', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }
+  const result = { ok: true, value: { text: 'unique-read-value' }, evidence: [{ sourceId: 'source', sourceVersion: 'v1', chunkId: 'chunk', title: 'Source', excerpt: 'unique-read-value' }] }
+  let calls = 0, persisted = false, delivered = false
+  const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
+    loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: ['data'],
+      tools: [{ name: 'data__read', action: 'data.read', effect: 'read', approval: false, description: 'Read', parameters: { type: 'object', properties: {}, additionalProperties: false } }],
+      messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Read the data.', createdAt: 'now' }] }),
+    executeAction: async (_work, action) => action.action === 'task.inspect' ? { ok: true, value: { requestVersion: 1, pending: [] } } : result,
+    loadSession: async () => null, saveSession: async () => {}, emitEvent: async () => {},
+    saveStep: async (_work, step) => {
+      if (step.kind !== 'data__read' || !step.output) return
+      assert.deepEqual(JSON.parse(step.output).receipts[0].result, result)
+      persisted = true
+    }, commitResult: async () => { delivered = true }, completeWork: async () => {}, yieldWork: async () => {} }
+  const usage = { available: false, inputTokens: 0, outputTokens: 0 }
+  const model: ModelDriver = { compact: async () => { throw new Error('unexpected compaction') },
+    structured: async () => ({ value: { missing: [] }, model: 'test', usage }), run: async request => {
+      if (++calls === 1) return { text: '', output: [{ type: 'function_call', callId: 'read', name: 'data__read', arguments: '{}' }], usage }
+      const output = request.items.find(item => 'type' in item && item.type === 'function_call_output')
+      assert.ok(output && 'output' in output)
+      assert.deepEqual(JSON.parse(output.output), { ok: true, value: result.value })
+      assert.match(JSON.stringify(request.items), /Retrieved evidence follows/)
+      return { text: 'Read the value.', output: [{ role: 'assistant', content: 'Read the value.' }], usage }
+    } }
+  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected Python') } }).runWork(work)
+  assert.deepEqual({ calls, persisted, delivered }, { calls: 2, persisted: true, delivered: true })
+})
+
 it('preserves unknown action outcomes in public events and model receipts', async () => {
   const work: TurnContext['work'] = { id: 'w', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }
   const result = { ok: false, executionState: 'unknown' as const, error: 'receipt unavailable' }

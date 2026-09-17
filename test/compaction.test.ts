@@ -45,7 +45,7 @@ function longHistory(count: number): ModelItem[] {
 }
 
 it('installs async compaction only on unchanged history and requirements, preserving appended tool outputs', async () => {
-  const options = { ...DEFAULT_COMPACTION, contextWindowTokens: 1000, keepTailItems: 2 }
+  const options = { ...DEFAULT_COMPACTION, contextWindowTokens: 1000, keepTailItems: 2, maxSummaryChars: 640 }
   const original = session([...longHistory(8), { type: 'function_call', callId: 'pending', name: 'tool', arguments: '{}' }, ...longHistory(4)])
   let finish!: () => void
   const gate = new Promise<void>(resolve => { finish = resolve })
@@ -70,6 +70,32 @@ it('installs async compaction only on unchanged history and requirements, preser
     assert.equal(stale.install(current).compacted, false)
     assert.deepEqual(current, revised)
   }
+})
+
+it('keeps useful pending summaries when reads add evidence or derived checks', async () => {
+  const current = session(longHistory(10))
+  current.request = { version: 1, workId: 'w', tenantId: 't1', sessionId: 's1', authorId: 'u', sourceRef: 'm',
+    originalText: 'Read the sources.', revisions: [], attachments: [], evidence: { version: 1, id: 'e', items: [] } }
+  const candidate = prepareCompaction(current, fakeDriver(), { ...DEFAULT_COMPACTION, contextWindowTokens: 1000, keepTailItems: 2, maxSummaryChars: 640 })
+  current.request.evidence = { version: 1, id: 'read', items: [{ marker: 'S1', sourceId: 'source', sourceVersion: 'v1', chunkId: 'chunk', title: 'Source', excerpt: 'new fact' }] }
+  current.request.resourceChecks = []
+  const request = structuredClone(current.request)
+  await candidate.settled
+  assert.equal(candidate.install(current).compacted, true)
+  assert.deepEqual(current.request, request)
+})
+
+it('skips tiny background prefixes and never installs a larger summary', async () => {
+  const current = session(Array.from({ length: 25 }, () => ({ role: 'user', content: 'small' })))
+  let calls = 0
+  const model = fakeDriver({ compact: async () => { calls++; return { value: JSON.stringify({ observedResults: 'x'.repeat(3000), decisions: '', remainingWork: '', uncertainties: '' }), model: 'fake', usage: { available: false, inputTokens: 0, outputTokens: 0 } } } })
+  const before = structuredClone(current)
+  const candidate = prepareCompaction(current, model, { ...DEFAULT_COMPACTION, contextWindowTokens: 100 })
+  await candidate.settled
+  assert.equal(candidate.install(current).compacted, false)
+  assert.equal(calls, 0)
+  assert.equal((await compactIfNeeded(current, '', model, { ...DEFAULT_COMPACTION, contextWindowTokens: 100 })).compacted, false)
+  assert.deepEqual(current, before)
 })
 
 describe('estimateTokens', () => {

@@ -42,6 +42,7 @@ import type { KernelArtifact, HostActionResult } from '../protocol/types.js'
 import type { KernelExecutor, KernelExecutionOptions } from '../kernel/manager.js'
 import { nullLogger, type Logger } from '../logging.js'
 import type { ModelDriver } from '../model/driver.js'
+import { inputTokens, modelProfile } from '../model/profile.js'
 import { RUN_SEQUENCE_SPAN } from '../protocol/constants.js'
 import {
   sessionKeyOf, actionKeyOf,
@@ -461,9 +462,10 @@ export class AgentRuntime {
         this.onDemandAttachments && modelTools.some(tool => tool.action === 'task.read_attachment')) : []), ...(protocolCorrection ? [protocolCorrection] : [])]
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
-      const estimateOverhead = () => estimateTokens([{ role: 'system', content: instructions }, ...supplementalItems])
-        + (model.maxOutputTokens ?? 8_192) + (model.maxThinkingTokens ?? 0) + (model.toolDefinitionTokens ?? 1_024)
-        + Buffer.byteLength(JSON.stringify(modelTools.map(tool => ({ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.parameters } }))))
+      const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
+        items: observationItems([...history, ...supplementalItems], 'turn-context'), tools: modelTools, codeExecution })
+      const profile = modelProfile(model), reservedTokens = profile.maxOutputTokens + profile.maxThinkingTokens + 512
+      const estimateOverhead = () => inputTokens(model, modelInputFor([])) + reservedTokens
       let overheadTokens = estimateOverhead()
       let memoryForModel = liveContext.memory
       const hadMemory=!!memoryForModel
@@ -476,13 +478,12 @@ export class AgentRuntime {
       }
       // A soft threshold schedules work, not a foreground wait. Hard-budget compaction is mandatory.
       const hardLimit = this.compaction.contextWindowTokens * this.compaction.hardRatio
-      if (pendingCompaction && estimateTokens(session.history) + overheadTokens >= hardLimit) {
-        pendingCompaction.cancel()
+      if (pendingCompaction && estimateTokens(session.history, model) + overheadTokens >= hardLimit) {
         await pendingCompaction.settled
       }
       const prepared = pendingCompaction?.ready ? pendingCompaction.install(session) : { compacted: false }
       if (pendingCompaction?.ready) pendingCompaction = undefined
-      const compacted = prepared.compacted ? prepared : this.asyncCompaction && estimateTokens(session.history) + overheadTokens < hardLimit
+      const compacted = prepared.compacted ? prepared : this.asyncCompaction && estimateTokens(session.history, model) + overheadTokens < hardLimit
         ? { compacted: false } : await compactIfNeeded(session, instructions, model, this.compaction, signals.generationSignal(), overheadTokens)
           .catch((error): CompactionOutcome => {
             if (!signals.hasSteer() && (!memoryForModel || !(error instanceof HardLimitExceededError))) throw error
@@ -490,7 +491,7 @@ export class AgentRuntime {
           })
       if (signals.hasSteer()) continue
       if (this.asyncCompaction && !pendingCompaction && session.history.length > this.compaction.keepTailItems
-        && estimateTokens(session.history) + overheadTokens >= this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8) {
+        && estimateTokens(session.history, model) + overheadTokens >= this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8) {
         sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
           { ...this.compaction, softRatio: this.compaction.softRatio * 0.8 }, signals.generationSignal(), overheadTokens))
       }
@@ -502,19 +503,18 @@ export class AgentRuntime {
           data: { epoch: session.compactionEpoch, ...(compacted.usage ? { usage: compacted.usage } : {}) },
         })
       }
-      if (memoryForModel && estimateTokens(session.history)+overheadTokens>this.compaction.contextWindowTokens*this.compaction.hardRatio) {
+      if (memoryForModel && inputTokens(model, modelInputFor(session.history))+reservedTokens>hardLimit) {
         const original=memoryForModel
         renderMemory(undefined)
-        const available=Math.floor(this.compaction.contextWindowTokens*this.compaction.hardRatio)-estimateTokens(session.history)-overheadTokens-512
+        const available=Math.floor(hardLimit)-estimateTokens(session.history, model)-overheadTokens-512
         if (available>512) renderMemory(fitMemorySnapshot(original,this.compaction.contextWindowTokens,available))
-        if (estimateTokens(session.history)+overheadTokens>this.compaction.contextWindowTokens*this.compaction.hardRatio) renderMemory(undefined)
+        if (inputTokens(model, modelInputFor(session.history))+reservedTokens>hardLimit) renderMemory(undefined)
       }
-      if (estimateTokens(session.history) + overheadTokens > this.compaction.contextWindowTokens * this.compaction.hardRatio) {
+      if (inputTokens(model, modelInputFor(session.history)) + reservedTokens > hardLimit) {
         throw new HardLimitExceededError('input and reserved output exceed the context budget; original request was preserved')
       }
 
-      const modelItems = observationItems([...session.history, ...supplementalItems], 'turn-context')
-      const modelInput = { instructions, items: modelItems, tools: modelTools, codeExecution }
+      const modelInput = modelInputFor(session.history), modelItems = modelInput.items
       const inputSha256 = createHash('sha256').update(JSON.stringify(modelInput)).digest('hex')
       const modelCallId = model.nextCallId?.() ?? `${work.id}:${work.fence}:model:${hop + 1}`
       const sample = Number.parseInt(inputSha256.slice(0, 8), 16) / 0xffffffff < this.modelTrace.sampleRate
@@ -779,7 +779,7 @@ export class AgentRuntime {
       session.history.push(...turn.output)
       await this.hostFor(work).saveSession(work, session)
       if (this.asyncCompaction && !pendingCompaction && session.history.length > this.compaction.keepTailItems
-        && estimateTokens(session.history) + overheadTokens >= this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8) {
+        && estimateTokens(session.history, model) + overheadTokens >= this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8) {
         sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model, { ...this.compaction, softRatio: this.compaction.softRatio * 0.8 },
           signals.generationSignal(), overheadTokens))
       }
@@ -1015,7 +1015,9 @@ export class AgentRuntime {
         const facts = progressFacts({ artifacts: execution.artifacts, observations: receipts.map(receipt => ({ action: receipt.action, result: receipt.result })) })
         if (JSON.stringify(facts) !== '{}') budget.observe(facts)
       }
-      session.history.push({ type: 'function_call_output', callId: call.callId, output })
+      const { evidence: _evidence, ...directResult } = receipts[0]?.result ?? { ok: false }
+      session.history.push({ type: 'function_call_output', callId: call.callId,
+        output: call.name === 'ipython' ? output : boundedToolOutput(directResult, undefined, receiptReferences(receipts)) })
       await this.event(work, runId, {
         kind: 'ipython.completed', stage: 'completed', visibility: 'internal',
         data: {

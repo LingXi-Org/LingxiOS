@@ -132,8 +132,8 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
   const model = source.singleAttempt?.() ?? source
   const admission = executionClassOf(work) === 'operation' ? 'background' as const : 'foreground' as const
   const { invoke, nextCallId } = modelExecution(host, model, work, limits, emit)
-  const check = (request: unknown) => {
-    if (!fitsModel(model, request)) throw new Error('model call exceeds its context budget; original input was not truncated')
+  const check = ({ prompt: _prompt, signal: _signal, ...input }: { prompt?: PromptManifest; signal?: AbortSignal | undefined }) => {
+    if (!fitsModel(model, input)) throw new Error('model call exceeds its context budget; original input was not truncated')
   }
   return {
     ...(model.previewFormat ? { previewFormat: model.previewFormat } : {}),
