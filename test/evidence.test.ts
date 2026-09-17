@@ -17,6 +17,19 @@ import type { ModelDriver } from '../src/model/driver.js'
 import { snapshotRequest } from '../src/context/request.js'
 import type { SessionRecord } from '../src/protocol/types.js'
 
+it('keeps read evidence identities stable across JSONB key ordering and multiple reads', () => {
+  const first = { sourceId: 'attachment:a',sourceVersion: 'v1',title: 'A',chunkId: 'a:0:8',excerpt: 'Value: 7',truncated: true }
+  const second = { ...first,sourceId: 'attachment:b',title: 'B',chunkId: 'b:0:8',excerpt: 'Value: 9' }
+  const reorder = <T>(value: T): T => JSON.parse(JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).reverse()) : item)) as T
+  const initial = snapshotEvidence('initial',[])
+  const expected = appendReadEvidence(appendReadEvidence(initial,'a',{ ok: true,evidence: [first] },'task.read_attachment'),
+    'b',{ ok: true,evidence: [second] },'task.read_attachment')
+  const persisted = appendReadEvidence(reorder(appendReadEvidence(initial,'a',{ ok: true,evidence: [reorder(first)] },'task.read_attachment')),
+    'b',{ ok: true,evidence: [reorder(second)] },'task.read_attachment')
+  assert.deepEqual(persisted,expected)
+})
+
 it('records attachment range citations and reauthorizes snapshots before reads, actions and delivery', async () => {
   let revoked = false
   const service = new ControlPlaneService({ modelBudgets: new MemoryModelBudgetStore(),steps: new MemoryStepStore(),work: new MemoryWorkStore(),

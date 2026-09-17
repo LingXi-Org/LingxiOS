@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { HostActionResult } from '../protocol/types.js'
 import { snapshotEvidence, type EvidenceSnapshot } from './evidence.js'
+import { canonicalJson } from './compiler.js'
 
 export function appendReadEvidence(snapshot: EvidenceSnapshot, actionKey: string, result: HostActionResult, action: string): EvidenceSnapshot {
   if (action === 'research.read') snapshot = appendResearchEvidence(snapshot, actionKey, result)
@@ -16,7 +17,7 @@ export function appendReadEvidence(snapshot: EvidenceSnapshot, actionKey: string
     items.push({ ...source, marker: `S${number}`, actionKey })
   }
   return items.length === snapshot.items.length ? snapshot
-    : snapshotEvidence(`evidence:${createHash('sha256').update(JSON.stringify(items)).digest('hex')}`, items)
+    : snapshotEvidence(`evidence:${createHash('sha256').update(canonicalJson(items)).digest('hex')}`, items)
 }
 
 /** Promote only the text actually returned by a successful recorded read. */
@@ -34,5 +35,5 @@ export function appendResearchEvidence(snapshot: EvidenceSnapshot, actionKey: st
   const items = [...snapshot.items, { marker: `S${number}`, actionKey, sourceId: value['finalUrl'],
     sourceVersion: `sha256:${value['sha256']}`, chunkId: actionKey, title: value['finalUrl'].slice(0, 2000),
     excerpt: value['text'], url: value['finalUrl'], ...(value['truncated'] === true ? { truncated: true } : {}) }]
-  return snapshotEvidence(`evidence:${createHash('sha256').update(JSON.stringify(items)).digest('hex')}`, items)
+  return snapshotEvidence(`evidence:${createHash('sha256').update(canonicalJson(items)).digest('hex')}`, items)
 }
