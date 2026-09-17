@@ -182,7 +182,7 @@ export class ControlPlaneServer {
       return
     }
     if (method === 'POST' && path === '/v5/work/claim') {
-      if (body['protocol'] !== AGENT_OS_PROTOCOL_VERSION) throw new ControlPlaneError(409, 'upgrade worker: claims require the per-run recovery protocol', 'protocol_mismatch')
+      if (body['protocol'] !== AGENT_OS_PROTOCOL_VERSION) throw new ControlPlaneError(409, 'upgrade worker: claims require the committed citation-evidence protocol', 'protocol_mismatch')
       if (body['requestId'] !== undefined && typeof body['requestId'] !== 'string') {
         throw new ControlPlaneError(400, 'requestId must be a string')
       }

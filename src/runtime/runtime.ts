@@ -448,6 +448,7 @@ export class AgentRuntime {
       // Dynamic context stays outside conversational history; memory snapshots
       // are recorded separately with the model call for traceability.
       const liveContext = hop === 0 ? context : await this.hostFor(work).loadContext(work)
+      liveContext.evidence = evidence().items
       if (liveContext.memory) liveContext.memory=fitMemorySnapshot(liveContext.memory,this.compaction.contextWindowTokens)
       const execution = hop === 0 ? initialExecution : executionSnapshot(liveContext, this.policy)
       const { codeExecution } = execution
@@ -835,6 +836,7 @@ export class AgentRuntime {
       if (!lastGood) throw terminalError ?? new AgentOSError('no_valid_response', 'No valid answer was produced for the current request')
       // Recheck current authorization and product policy before publishing a retained candidate.
       const currentContext = await this.hostFor(work).loadContext(work)
+      currentContext.evidence = evidence().items
       const gaps = [...new Set([...(lastGood.envelope.goalOutcome.gaps ?? []), ...acceptanceGaps,
         ...(terminalError ? [publicFailure(terminalError)] : [])])]
       if (this.policy.validateAssistantText(lastGood.text, currentContext)

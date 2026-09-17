@@ -3,13 +3,15 @@ export { releaseVersions } from '../versions.js'
 export type { ConversationIdentity, ThreadIdentity, Audience, Visibility, IMDeliveryContext, IMDeliveryReceipt } from '../collaboration/types.js'
 import { isGoalOutcome, type GoalOutcome } from '../protocol/outcome.js'
 import type { CitationAnnotation, ResponseEnvelope } from '../outcome/envelope.js'
+import { citationSources, snapshotCitationEvidence } from '../context/evidence.js'
 import { RUN_SEQUENCE_SPAN } from '../protocol/constants.js'
 import type { RunState, DeliveryState } from '../app/jobs.js'
 import type { RunStreamEvent, PreviewUpdate } from '../app/realtime.js'
 export type { RunStreamEvent, PreviewUpdate } from '../app/realtime.js'
 export type { RunState, RunSnapshot, DeliveryState } from '../app/jobs.js'
 export type { AssistantMessage, RunEvent } from '../protocol/types.js'
-export type { ResponseEnvelope } from '../outcome/envelope.js'
+export type { ResponseEnvelope, CitationAnnotation } from '../outcome/envelope.js'
+export type { CitationEvidence } from '../context/evidence.js'
 export type { TrustedPresentation } from '../presentation/definition.js'
 
 export interface RunView {
@@ -134,16 +136,32 @@ export type ResponseSegment = { type: 'text'; text: string } | { type: 'citation
 /** Text values are display data; callers must not insert them as raw HTML. */
 export function responseSegments(envelope: ResponseEnvelope): ResponseSegment[] {
   const segments: ResponseSegment[] = []
+  const evidence = envelope.citationEvidence === undefined ? undefined : snapshotCitationEvidence(envelope.citationEvidence)
+  const cited = new Set<string>()
   let offset = 0
   for (const annotation of envelope.citations) {
     if (!Number.isSafeInteger(annotation.start) || !Number.isSafeInteger(annotation.end)
       || annotation.start < offset || annotation.end <= annotation.start || annotation.end > envelope.body.length) {
       throw new Error('invalid citation span')
     }
+    if (evidence) {
+      const link = /^\[([^\]\n]+)\]\(#cite-(S[1-9]\d*(?:,S[1-9]\d*)*)\)$/.exec(envelope.body.slice(annotation.start, annotation.end))
+      if (!link || link[1] !== annotation.text || [...new Set(link[2]!.split(','))].join(',') !== annotation.markers.join(',')) {
+        throw new Error('citation text does not match its Markdown span')
+      }
+      const sources = citationSources(annotation.markers, evidence)
+      if (annotation.support !== 'not_assessed' || sources.length !== annotation.sources.length || sources.some((source, index) => {
+        const recorded = annotation.sources[index]!
+        return source.sourceId !== recorded.sourceId || source.sourceVersion !== recorded.sourceVersion
+          || source.truncated !== recorded.truncated || JSON.stringify(source.chunkIds) !== JSON.stringify(recorded.chunkIds)
+      })) throw new Error('citation excerpts do not match recorded sources')
+      for (const marker of annotation.markers) cited.add(marker)
+    }
     if (annotation.start > offset) segments.push({ type: 'text', text: envelope.body.slice(offset, annotation.start) })
     segments.push({ type: 'citation', text: annotation.text, annotation: structuredClone(annotation) })
     offset = annotation.end
   }
+  if (evidence?.some(item => !cited.has(item.marker))) throw new Error('unreferenced citation evidence')
   if (offset < envelope.body.length) segments.push({ type: 'text', text: envelope.body.slice(offset) })
   for (const component of envelope.presentations ?? []) segments.push({ type: 'presentation', component: structuredClone(component) })
   return segments

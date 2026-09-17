@@ -58,7 +58,7 @@ assert.equal(typeof createLingxiOS, 'function')
 assert.equal(typeof startWorker, 'function')
 assert.equal(typeof createWorker, 'function')
 for (const retired of ['lingxiloop','lecture-deck']) await assert.rejects(import(${JSON.stringify(pkg.name)} + '/' + retired), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' })
-const browserContext = vm.createContext({ structuredClone })
+const browserContext = vm.createContext({ structuredClone, TextEncoder })
 async function browserModule(url) {
   const module = new vm.SourceTextModule(await readFile(url, 'utf8'), { context: browserContext, identifier: url.href })
   await module.link((specifier, parent) => {
@@ -71,6 +71,13 @@ const ui = await browserModule(new URL(import.meta.resolve(${JSON.stringify(`${p
 await ui.evaluate()
 assert.equal(ui.namespace.createRunView('w').message, null)
 assert.equal(JSON.stringify(ui.namespace.releaseVersions), JSON.stringify(releaseVersions))
+const citedBody = '[Supported answer](#cite-S1)'
+const citedEnvelope = { version: 1, body: citedBody, requestVersion: 1, evidenceSnapshotId: 'e', artifacts: [],
+  goalOutcome: { status: 'partial', verification: 'not_run', requestVersion: 1 },
+  citations: [{ start: 0, end: citedBody.length, text: 'Supported answer', markers: ['S1'], support: 'not_assessed',
+    sources: [{ sourceId: 'source', sourceVersion: 'v1', chunkIds: ['chunk'] }] }],
+  citationEvidence: [{ marker: 'S1', sourceId: 'source', sourceVersion: 'v1', chunkId: 'chunk', title: 'Title', excerpt: 'Original source paragraph.' }] }
+assert.equal(ui.namespace.responseSegments(citedEnvelope)[0].text, 'Supported answer')
 await assert.rejects(startWorker({}), /missing required/)
 for (const path of Object.values(packageResources())) await access(path)
 const report = await doctor({ env: {} })

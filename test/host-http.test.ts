@@ -61,7 +61,7 @@ it('preserves goal outcomes and enforces session leases over real HTTP', async (
       assert.equal(response.status, 400)
       assert.deepEqual(await response.json(), { error: 'request body must be a JSON object' })
     }
-    for (const protocol of [undefined, 8, '9', 10]) {
+    for (const protocol of [undefined, 9, '10', 11]) {
       const response = await fetch(`http://127.0.0.1:${port}/v5/work/claim`, { method: 'POST',
         headers: { authorization: 'Bearer test-secret', 'content-type': 'application/json' },
         body: JSON.stringify({ protocol, workerId: 'old-worker', workKinds: ['turn'] }) })
@@ -70,7 +70,7 @@ it('preserves goal outcomes and enforces session leases over real HTTP', async (
     }
     for (const workerId of [123, true, ['worker'], null]) {
       const response = await fetch(`http://127.0.0.1:${port}/v5/work/claim`, { method: 'POST',
-        headers: { authorization: 'Bearer test-secret', 'content-type': 'application/json' }, body: JSON.stringify({ protocol: 9, workerId, workKinds: ['turn'] }) })
+        headers: { authorization: 'Bearer test-secret', 'content-type': 'application/json' }, body: JSON.stringify({ protocol: 10, workerId, workKinds: ['turn'] }) })
       assert.equal(response.status, 400)
       assert.deepEqual(await response.json(), { error: 'workerId must be a string' })
     }

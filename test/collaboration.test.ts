@@ -16,6 +16,7 @@ import { graphNodes } from '../src/collaboration/graphs.js'
 import { authorizedScopes, identityOf } from '../src/memory/access.js'
 import { imDeliveryContext } from '../src/collaboration/conversations.js'
 import { validateStateUpdate } from '../src/collaboration/state.js'
+import { consumeRunStreamEvent, createRunView, type AssistantMessage, type RunStreamEvent } from '../src/ui/index.js'
 
 const policy: ConversationPolicy = { tenantId: 'tenant', conversationId: 'room', version: 1, kind: 'group',
   owner: { kind: 'participant', id: 'u' }, defaultAgentId: 'lead', participants: [
@@ -64,6 +65,34 @@ async function setup(options: Partial<LingxiOSOptions> = {}) {
   }
   return { db, pool, control, host, save, commit, action, async close() { await control.stop(); await db.close() } }
 }
+
+it('delivers and replays the same frozen citation excerpts after the source changes', async () => {
+  const evidence = [{ marker: 'S1', sourceId: 'source', sourceVersion: 'v1', chunkId: 'chunk', title: 'Source', excerpt: 'Original paragraph.' }]
+  const sent: AssistantMessage[] = []
+  const f = await setup({ contextProvider: { loadContext: async work => ({ audience: work.conversation!.audience,
+    persona: { name: 'A', role: '', instructions: '' }, capabilities: [], messages: [], evidence }) },
+    delivery: { onEvent: async () => {}, deliverMessage: async (_work, result) => { sent.push(result); return { messageId: 'cited-result' } } } })
+  try {
+    const run = (await f.control.conversations.ingest(message('cited'))).runs[0]!
+    await f.commit((await f.host.claimWork())!, 'Explanation. [Supported finding](#cite-S1).')
+    const committed = (await f.control.readRunState(run))!.message!
+    evidence[0]!.excerpt = 'Changed later'
+    for (let n = 0; n < 100 && !sent.length; n++) await delay(25)
+    assert.deepEqual(sent, [committed])
+    assert.equal(committed.envelope.citationEvidence![0]!.excerpt, 'Original paragraph.')
+    for (let n = 0; n < 2; n++) {
+      const replay = await (await f.control.streamRun(run)).text()
+      let view = createRunView(run.runId)
+      for (const line of replay.split('\n').filter(line => line.startsWith('data: '))) {
+        view = consumeRunStreamEvent(view, JSON.parse(line.slice(6)) as RunStreamEvent)
+      }
+      assert.deepEqual(view.message, committed)
+      assert.equal(view.draft, '')
+    }
+    assert.deepEqual(await f.control.readMessage(run), committed)
+    assert.equal(await f.control.readRunState({ ...run, tenantId: 'other' }), null)
+  } finally { await f.close() }
+})
 
 it('binds IM ownership, audiences, targeted reply slots, causal identities and execution sessions', async () => {
   const f = await setup()

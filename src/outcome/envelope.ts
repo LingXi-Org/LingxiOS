@@ -1,5 +1,5 @@
 import { createTaskContract, type TaskContract } from '../context/task-contract.js'
-import type { EvidenceSnapshot } from '../context/evidence.js'
+import { citationSources, snapshotCitationEvidence, type CitationEvidence, type EvidenceSnapshot } from '../context/evidence.js'
 import { isGoalOutcome, type GoalOutcome } from '../protocol/outcome.js'
 import type { KernelArtifact } from '../protocol/types.js'
 import type { ResourceCheckRecord } from '../context/resource-checks.js'
@@ -22,6 +22,8 @@ export interface ResponseEnvelope {
   requestVersion: number
   evidenceSnapshotId: string
   citations: CitationAnnotation[]
+  /** Absent on historical results. New results freeze only the excerpts they cite. */
+  citationEvidence?: CitationEvidence[]
   artifacts: KernelArtifact[]
   goalOutcome: GoalOutcome
   taskContract?: TaskContract
@@ -55,15 +57,13 @@ export function createResponseEnvelope(body: string, goalOutcome: GoalOutcome, e
   const pattern = /\[([^\]\n]+)\]\(#cite-(S[1-9]\d*(?:,S[1-9]\d*)*)\)/g
   for (const match of body.matchAll(pattern)) {
     const markers = [...new Set(match[2]!.split(','))]
-    const sources = markers.map((marker) => {
-      const items = evidence.items.filter((item) => item.marker === marker)
-      if (!items.length) throw new Error(`unknown citation marker: ${marker}`)
-      return { sourceId: items[0]!.sourceId, sourceVersion: items[0]!.sourceVersion, chunkIds: items.map((item) => item.chunkId), ...(items.some(item => item.truncated) ? { truncated: true as const } : {}) }
-    })
+    const sources = citationSources(markers, evidence.items)
     citations.push({ start: match.index, end: match.index + match[0].length, text: match[1]!, markers, sources, support: 'not_assessed' })
   }
   if (body.replace(pattern, '').includes('#cite-')) throw new Error('malformed citation marker')
-  return { version: 1, body, requestVersion: goalOutcome.requestVersion, evidenceSnapshotId: evidence.id, citations,
+  const cited = new Set(citations.flatMap(citation => citation.markers))
+  const citationEvidence = snapshotCitationEvidence(evidence.items.filter(item => cited.has(item.marker)))
+  return { version: 1, body, requestVersion: goalOutcome.requestVersion, evidenceSnapshotId: evidence.id, citations, citationEvidence,
     artifacts: checkedArtifacts, ...(taskContract ? { taskContract: structuredClone(taskContract) } : {}),
     ...(resourceChecks?.length ? { resourceChecks: structuredClone([...resourceChecks]) } : {}),
     ...(assessment ? { assessment: structuredClone(assessment) } : {}), goalOutcome: structuredClone(goalOutcome) }

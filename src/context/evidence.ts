@@ -18,6 +18,28 @@ export interface EvidenceSnapshot {
   items: EvidenceItem[]
 }
 
+/** Public source material; action ledger identities are not presentation data. */
+export type CitationEvidence = Omit<EvidenceItem, 'actionKey'>
+
+export function snapshotCitationEvidence(items: readonly EvidenceItem[]): CitationEvidence[] {
+  const checked = snapshotEvidence('citation-evidence', items).items.map(({ marker, sourceId, sourceVersion, chunkId, title, excerpt, url, truncated }) => ({
+    marker, sourceId, sourceVersion, chunkId, title, excerpt, ...(url === undefined ? {} : { url }), ...(truncated === undefined ? {} : { truncated }),
+  }))
+  if (new TextEncoder().encode(JSON.stringify(checked)).byteLength > 256 * 1024) {
+    throw new Error('Cited excerpts exceed 256 KiB. Read narrower source ranges and cite those markers; do not replace excerpts with invented summaries.')
+  }
+  return checked
+}
+
+export function citationSources(markers: readonly string[], evidence: readonly EvidenceItem[]) {
+  return markers.map(marker => {
+    const items = evidence.filter(item => item.marker === marker)
+    if (!items.length) throw new Error(`unknown citation marker: ${marker}`)
+    return { sourceId: items[0]!.sourceId, sourceVersion: items[0]!.sourceVersion,
+      chunkIds: items.map(item => item.chunkId), ...(items.some(item => item.truncated) ? { truncated: true as const } : {}) }
+  })
+}
+
 export function snapshotEvidence(id: string, items: readonly EvidenceItem[]): EvidenceSnapshot {
   if (typeof id !== 'string' || !id.trim() || !Array.isArray(items) || items.length > 200) throw new Error('invalid evidence snapshot')
   const sources = new Map<string, string>()

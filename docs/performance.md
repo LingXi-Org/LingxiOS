@@ -1,6 +1,8 @@
 # 性能优化实施与验证
 
-对应《LingxiOS_v3.1.0_性能优化简案》和《LingxiOS_async_blocking_audit》；当前版本 **3.2.12 / schema 10 / control-plane protocol 9**。框架回归、受控基准和产品端到端验收是不同的证据，不能互相替代。
+对应《LingxiOS_v3.1.0_性能优化简案》和《LingxiOS_async_blocking_audit》；当前版本 **3.2.13 / schema 10 / control-plane protocol 10**。框架回归、受控基准和产品端到端验收是不同的证据，不能互相替代。
+
+3.2.13 为已提交引用保留去重后的原文节选；没有新增 schema 迁移，升级须排空旧 Worker 并同时替换 host/Worker。下文性能测量及 protocol 9 的领取/恢复改动仍是对应旧版本的记录，不能视为 3.2.13 的性能复测。
 
 ## 实现与边界
 

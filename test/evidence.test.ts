@@ -16,6 +16,8 @@ import { sessionKeyOf, type AssistantMessage } from '../src/protocol/types.js'
 import type { ModelDriver } from '../src/model/driver.js'
 import { snapshotRequest } from '../src/context/request.js'
 import type { SessionRecord } from '../src/protocol/types.js'
+import { DefaultRuntimePolicy } from '../src/runtime/policy.js'
+import type { TurnContext } from '../src/protocol/types.js'
 
 it('keeps read evidence identities stable across JSONB key ordering and multiple reads', () => {
   const first = { sourceId: 'attachment:a',sourceVersion: 'v1',title: 'A',chunkId: 'a:0:8',excerpt: 'Value: 7',truncated: true }
@@ -175,7 +177,13 @@ it('uses the original evidence across hops and rejects a tampered final envelope
       return { text, output: [{ role: 'assistant', content: text }], usage: { available: false, inputTokens: 0, outputTokens: 0 } }
     }, structured: async () => { throw new Error('unexpected') }, compact: async () => { throw new Error('unexpected') },
   }
-  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected') } }).runWork(work)
+  class EvidencePolicy extends DefaultRuntimePolicy {
+    override validateAssistantText(_text: string, context: TurnContext) {
+      assert.equal(context.evidence?.[0]?.excerpt, 'ORIGINAL_EVIDENCE')
+      return null
+    }
+  }
+  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected') } }, { policy: new EvidencePolicy() }).runWork(work)
   assert.equal(calls, 2)
   assert.equal(messages.length, 1)
   await assert.rejects(service.commitResult(work, { ...messages[0]!, threadId: 'another-thread' }), /stream identity/)
@@ -189,6 +197,13 @@ it('uses the original evidence across hops and rejects a tampered final envelope
   const tampered = structuredClone(messages[0]!)
   tampered.envelope!.citations[0]!.sources[0]!.sourceVersion = 'forged'
   await assert.rejects(service.commitResult(work, tampered), /inconsistent/)
+  assert.equal(messages[0]!.envelope.citationEvidence?.[0]?.excerpt, 'ORIGINAL_EVIDENCE')
+  const forgedExcerpt = structuredClone(messages[0]!)
+  forgedExcerpt.envelope.citationEvidence![0]!.excerpt = 'Invented source paragraph'
+  await assert.rejects(service.commitResult(work, forgedExcerpt), /inconsistent/)
+  const omittedExcerpt = structuredClone(messages[0]!)
+  delete omittedExcerpt.envelope.citationEvidence
+  await assert.rejects(service.commitResult(work, omittedExcerpt), /inconsistent/)
   const { envelope: _envelope, ...withoutEnvelope } = messages[0]!
   await assert.rejects(service.commitResult(work, withoutEnvelope as AssistantMessage), /envelope is required/)
   await assert.rejects(service.commitResult(work, { ...messages[0]!, data: { goalOutcome: messages[0]!.envelope.goalOutcome } } as AssistantMessage), /stream identity/)
@@ -222,6 +237,42 @@ it('uses the original evidence across hops and rejects a tampered final envelope
   await service.addSteer(work.id, 'Updated requirement before delivery')
   await assert.rejects(service.commitResult(work, withContract), /version is stale/)
   assert.equal(messages.length, 1)
+})
+
+it('freezes only cited chunks once, including multiple sources and repeated markers', () => {
+  const items = [
+    { marker: 'S1', sourceId: 'a', sourceVersion: 'v1', chunkId: 'a:1', title: 'Source A', excerpt: 'First paragraph.', actionKey: 'internal-read' },
+    { marker: 'S1', sourceId: 'a', sourceVersion: 'v1', chunkId: 'a:2', title: 'Source A', excerpt: 'Second paragraph.', truncated: true },
+    { marker: 'S2', sourceId: 'b', sourceVersion: 'v2', chunkId: 'b:1', title: 'Source B', excerpt: 'Other finding.', url: 'https://example.com/b' },
+    { marker: 'S3', sourceId: 'c', sourceVersion: 'v3', chunkId: 'c:1', title: 'Not cited', excerpt: 'PRIVATE UNUSED MATERIAL' },
+  ]
+  const snapshot = snapshotEvidence('e', items)
+  const body = 'Intro. [**First** finding](#cite-S1,S1) and [combined finding](#cite-S1,S2).'
+  const envelope = createResponseEnvelope(body, { status: 'partial', verification: 'not_run', requestVersion: 1 }, snapshot)
+  const expected = items.slice(0, 3).map(({ actionKey: _actionKey, ...item }) => item)
+  assert.deepEqual(envelope.citationEvidence, expected)
+  snapshot.items[0]!.excerpt = 'Changed after committing'
+  assert.deepEqual(envelope.citationEvidence, expected)
+  assert.equal(responseSegments(envelope).filter(segment => segment.type === 'citation').length, 2)
+  assert.doesNotMatch(JSON.stringify(envelope), /internal-read|PRIVATE UNUSED MATERIAL/)
+  const historical = { ...envelope }; delete historical.citationEvidence
+  assert.deepEqual(responseSegments(historical), responseSegments(envelope))
+  const missing = structuredClone(envelope); missing.citationEvidence!.pop()
+  assert.throws(() => responseSegments(missing), /unknown citation marker/)
+  const wrong = structuredClone(envelope); wrong.citationEvidence![0]!.sourceVersion = 'wrong'
+  assert.throws(() => responseSegments(wrong), /conflicting|recorded sources/)
+  const unused = structuredClone(envelope); unused.citationEvidence!.push(items[3]!)
+  assert.throws(() => responseSegments(unused), /unreferenced citation evidence/)
+})
+
+it('bounds cited JSON by UTF-8 bytes without silently truncating source text', () => {
+  const source = { marker: 'S1', sourceId: 'a', sourceVersion: 'v1', chunkId: 'c', title: 'Title', excerpt: '界'.repeat(60_000) }
+  const outcome = { status: 'partial' as const, verification: 'not_run' as const, requestVersion: 1 }
+  const evidence = snapshotEvidence('e', [source, { ...source, marker: 'S2', sourceId: 'b' }])
+  const one = createResponseEnvelope('[Finding](#cite-S1)', outcome, evidence)
+  assert.equal(one.citationEvidence![0]!.excerpt, source.excerpt)
+  assert.throws(() => createResponseEnvelope('[Findings](#cite-S1,S2)', outcome, evidence), /256 KiB.*narrower source ranges/)
+  assert.deepEqual(createResponseEnvelope('No citation', outcome, evidence).citationEvidence, [])
 })
 
 for (const actionName of ['research.read', 'knowledge.read_source']) it(`promotes recorded ${actionName} text and rejects forged evidence`, async () => {
