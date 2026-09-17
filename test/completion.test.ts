@@ -20,6 +20,13 @@ it('uses explicit action delivery as a hard receipt obligation and only uses wor
   const { deliveryMode: _mode, ...automatic } = request
   assert.equal(requiresReview({ ...automatic, originalText: '请发送邮件通知老师。' }, [], []), true)
   assert.equal(requiresReview({ ...request, deliveryMode: 'text', originalText: '请解释如何发送邮件。' }, [], []), false)
+  for (const deliveryMode of ['auto','text'] as const) {
+    const answer = { ...request, mode: 'execute' as const, deliveryMode, originalText: 'What is 17 plus 26?' }
+    assert.equal(businessActionDeliveryGap(answer, false), null)
+    assert.equal(requiresReview(answer, [], []), true)
+  }
+  assert.match(businessActionDeliveryGap({ ...automatic, mode: 'execute' }, false)!, /no durable successful receipt/)
+  assert.match(businessActionDeliveryGap({ ...request, mode: 'execute' }, false)!, /no durable successful receipt/)
 })
 
 it('requires settled actions and a reviewed committed response, and binds delegation to real scoped child work', async () => {

@@ -22,7 +22,7 @@ export function requiresReview(request: RequestSnapshot, steps: readonly Executi
  * receipts are deliberately not accepted as evidence that the action happened.
  */
 export function businessActionDeliveryGap(request: RequestSnapshot, hasSuccessfulReceipt: boolean, hasCheckedArtifact = false): string | null {
-  const required = request.deliveryMode === 'action' || request.mode === 'execute' && !request.obligations?.length && !hasCheckedArtifact
+  const required = request.deliveryMode === 'action' || request.deliveryMode === undefined && request.mode === 'execute' && !request.obligations?.length && !hasCheckedArtifact
   if (!required || hasSuccessfulReceipt) return null
   return 'Requested business action has no durable successful receipt for the current request version'
 }
