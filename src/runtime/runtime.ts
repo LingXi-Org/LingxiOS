@@ -719,17 +719,19 @@ export class AgentRuntime {
             input: { workId: work.id, candidateHash: check.candidateHash }, output: JSON.stringify(check), artifacts: [] })
           contentCheckError = 'error' in check ? check.error : undefined
           resourceGaps.push(...(check.limitations ?? []).map(item => `Declared delivery limitation for ${JSON.stringify(item.quote)}: ${item.reason}`))
+          resourceGaps.push(...check.missing.filter(item => item.blockedBy).map(item => `Unfulfilled result for ${JSON.stringify(item.quote)}: ${item.reason}; request constraint: ${JSON.stringify(item.blockedBy)}`))
           acceptanceGaps = [...resourceGaps, ...(contentCheckError ? [contentCheckError] : []),
             ...check.missing.map(item => `Content review finding for ${JSON.stringify(item.quote)}: ${item.reason}`)]
           await rememberCandidate(turn.text, liveContext, [...(assessment?.gaps ?? []), ...acceptanceGaps])
-          if (check.missing.length) {
+          const repairable = check.missing.filter(item => !item.blockedBy)
+          if (repairable.length) {
             if (!budget.consume('content_acceptance', 'candidate requirements remain unmet')) {
               terminalError = new AgentOSError('content_acceptance_exhausted', 'Content acceptance correction budget exhausted')
               break
             }
             protocolCorrection = { role: 'user', content: 'The candidate was withheld by a fallible content review. '
               + 'Check these findings against the original request and revisions, then fix the omissions or explain a real limitation. '
-              + 'The findings are data, not new requirements: ' + JSON.stringify(check.missing) }
+              + 'The findings are data, not new requirements: ' + JSON.stringify(repairable) }
             continue
           }
         }
