@@ -19,7 +19,9 @@ older request versions are historical context, not acceptance of the revised req
 For the same read action, arguments and expected fields, use the latest observation, not an earlier passing record.
 Resource refresh gaps mean current fields were not confirmed, even if an older observation passed.
 Do not infer successful actions from a claim, a checklist, or an artifact name. Do not add requirements the user did not ask for.
-Return JSON {"missing":[{"quote":"exact substring from originalText or a revision text identifying an unfulfilled deliverable","reason":"specific unfulfilled result, content omission or violated constraint"}]}.
+Independently extract any limitations the candidate explicitly declares about its own delivered result: unavailable requested facts, incomplete requested work or unverified requested results. Quote the candidate body exactly. Do not include hypothetical examples, limitations of a subject being explained, or completed historical obstacles.
+Declared limitations must be returned even when the answer satisfies the user's instruction to disclose them and you find no content omissions.
+Return JSON {"missing":[{"quote":"exact substring from originalText or a revision text identifying an unfulfilled deliverable","reason":"specific unfulfilled result, content omission or violated constraint"}],"limitations":[{"quote":"exact substring from body declaring a limitation of this delivery","reason":"what requested result remains unavailable, incomplete or unverified"}]}.
 Use at most 16 entries. Return an empty list only when every original deliverable has been supplied or explicitly removed; never equate an honest partial delivery with full completion.
 This is a fallible content review, not verification of goal completion or external resource state.`)
 
@@ -38,11 +40,11 @@ export async function checkCandidateContent(model: ModelDriver, request: Request
     inputSha256: createHash('sha256').update(serialized).digest('hex') }
   // Do not truncate authoritative requirements to make an assessment fit.
   if (Buffer.byteLength(prompt.instructions + serialized) + (model.maxOutputTokens ?? 4096) + (model.maxThinkingTokens ?? 0) + 512 > contextWindowTokens) {
-    return { ...identity, missing: [], error: 'Content check input exceeds the model context budget' }
+    return { ...identity, missing: [], limitations: [], error: 'Content check input exceeds the model context budget' }
   }
   try {
     const result = await model.structured({ purpose: 'content-review', instructions: prompt.instructions, prompt: prompt.manifest, input, signal })
-    const value = result.value as { missing?: unknown } | null
+    const value = result.value as { missing?: unknown; limitations?: unknown } | null
     const texts = [request.originalText, ...revisions.map(item => item.text)]
     if (!value || !Array.isArray(value.missing) || value.missing.length > 16
       || !value.missing.every(item => item && typeof item.quote === 'string' && item.quote.trim()
@@ -50,11 +52,18 @@ export async function checkCandidateContent(model: ModelDriver, request: Request
         && typeof item.reason === 'string' && item.reason.trim() && item.reason.length <= 2000)) {
       throw new Error('Content check returned invalid or ungrounded findings')
     }
+    const limitations = value.limitations ?? []
+    if (!Array.isArray(limitations) || limitations.length > 16 || !limitations.every(item => item
+      && typeof item.quote === 'string' && item.quote.trim() && item.quote.length <= 2000 && body.includes(item.quote)
+      && typeof item.reason === 'string' && item.reason.trim() && item.reason.length <= 2000)) {
+      throw new Error('Content check returned invalid or ungrounded limitations')
+    }
     return { ...identity, missing: value.missing as Array<{ quote: string; reason: string }>,
+      limitations: limitations as Array<{ quote: string; reason: string }>,
       model: result.model, usage: result.usage }
   } catch (error) {
     if (signal.aborted) throw error
-    return { ...identity, missing: [], error: 'Content check was unavailable or returned invalid findings' }
+    return { ...identity, missing: [], limitations: [], error: 'Content check was unavailable or returned invalid findings' }
   }
 }
 

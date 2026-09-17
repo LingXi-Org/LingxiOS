@@ -718,6 +718,7 @@ export class AgentRuntime {
           await this.hostFor(work).saveStep(work, { id: `review:${randomUUID()}`, kind: 'runtime.review', requestVersion: check.requestVersion,
             input: { workId: work.id, candidateHash: check.candidateHash }, output: JSON.stringify(check), artifacts: [] })
           contentCheckError = 'error' in check ? check.error : undefined
+          resourceGaps.push(...(check.limitations ?? []).map(item => `Declared delivery limitation for ${JSON.stringify(item.quote)}: ${item.reason}`))
           acceptanceGaps = [...resourceGaps, ...(contentCheckError ? [contentCheckError] : []),
             ...check.missing.map(item => `Content review finding for ${JSON.stringify(item.quote)}: ${item.reason}`)]
           await rememberCandidate(turn.text, liveContext, [...(assessment?.gaps ?? []), ...acceptanceGaps])

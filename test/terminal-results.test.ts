@@ -13,7 +13,7 @@ import { durableProtocol } from './protocol-fixture.js'
 const usage = { available: true, inputTokens: 10, outputTokens: 10 }
 const unexpected = async (): Promise<never> => { throw new Error('unexpected call') }
 
-for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume', 'revised', 'review'] as const) {
+for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume', 'revised', 'review', 'declared_partial'] as const) {
   it(`terminates ${mode} with only a validated current-version answer`, async () => {
     const work: TurnContext['work'] = { id: 'w', tenantId: 't', agentId: 'a', principalId: 'u', sessionId: 's',
       kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'secret' }
@@ -24,7 +24,7 @@ for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume'
     const host: HostPort = { ...durableProtocol(), claimWork: async () => null,
       heartbeat: async () => ({ ok: true, ...(mode === 'revised' ? { steer: [{ id: 'r', text: 'Changed task.', createdAt: 'now' }] } : {}) }),
       loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: [],
-        messages: [{ ref: 'm', authorId: 'u', authorName: 'User', authorKind: 'human', body: mode === 'review' ? 'Answer first and second parts.' : 'Answer both parts.', createdAt: 'now' }],
+        messages: [{ ref: 'm', authorId: 'u', authorName: 'User', authorKind: 'human', body: ['review','declared_partial'].includes(mode) ? 'Answer first and second parts.' : 'Answer both parts.', createdAt: 'now' }],
         ...(['resume','revised'].includes(mode) ? { executionSteps: [{ id: 'saved', kind: 'runtime.candidate', requestVersion: 1,
           input: {}, output: JSON.stringify(envelope), artifacts: [] }] } : {}) }),
       executeAction: async () => ({ ok: true, value: { requestVersion: 1, pending: [], truncated: false } }),
@@ -33,10 +33,11 @@ for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume'
       commitResult: async (_work, message) => { messages.push(message) },
       completeWork: async (_work, value) => { completion = value }, yieldWork: async () => {} }
     const model: ModelDriver = { compact: unexpected, structured: async () => ({ value: { missing: mode === 'review'
-      ? [{ quote: 'second parts.', reason: 'The requested result remains unavailable despite the disclosed limitation.' }] : [] }, model: 'test', usage }),
+      ? [{ quote: 'second parts.', reason: 'The requested result remains unavailable despite the disclosed limitation.' }] : [],
+      limitations: mode === 'declared_partial' ? [{ quote: 'The second part is unavailable.', reason: 'The second result remains unavailable.' }] : [] }, model: 'test', usage }),
       run: async () => {
         turns++
-        if (mode === 'review') return { text: 'Verified portion. The second part is unavailable.', output: [{ role: 'assistant', content: 'Verified portion. The second part is unavailable.' }], usage }
+        if (['review','declared_partial'].includes(mode)) return { text: 'Verified portion. The second part is unavailable.', output: [{ role: 'assistant', content: 'Verified portion. The second part is unavailable.' }], usage }
         if (mode === 'resume' || mode === 'revised' || mode === 'budget' && turns > 1) throw new ModelBudgetExceededError('root work model budget exhausted')
         if (mode === 'provider' && turns > 1) throw new ModelDriverError('provider echoed a private credential', { kind: 'provider', status: 400, finishReasons: [] })
         if (mode === 'format') return { text: '', output: [], finalCandidate: '{"invalid":true}', usage }
@@ -51,10 +52,11 @@ for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume'
       assert.equal(events.filter(event => event.kind === 'model.delta').length, 0)
     } else {
       assert.equal(messages.length, 1)
-      assert.equal(messages[0]!.body, mode === 'review' ? 'Verified portion. The second part is unavailable.' : 'Verified portion.')
+      assert.equal(messages[0]!.body, ['review','declared_partial'].includes(mode) ? 'Verified portion. The second part is unavailable.' : 'Verified portion.')
       assert.equal(messages[0]!.envelope.goalOutcome.status, 'partial')
       assert.equal(messages[0]!.envelope.goalOutcome.verification, 'inconclusive')
-      assert.match(JSON.stringify(messages[0]!.envelope.goalOutcome.gaps), mode === 'provider' ? /HTTP 400/ : mode === 'review' ? /remains unavailable/ : /budget exhausted/)
+      assert.match(JSON.stringify(messages[0]!.envelope.goalOutcome.gaps), mode === 'provider' ? /HTTP 400/ : ['review','declared_partial'].includes(mode) ? /remains unavailable/ : /budget exhausted/)
+      if (mode === 'declared_partial') assert.equal(turns, 1)
       assert.doesNotMatch(JSON.stringify(messages), /private credential|候选答复仍存在/)
     }
   })
@@ -78,4 +80,13 @@ it('reviews the same evidence and recorded attachment reads without loading an u
   'The answer is 47.', [], 32000, new AbortController().signal, [], [], { steps: [{ kind: 'task__read_attachment', output: 'The answer is 47.' }] })
   assert.equal(reviewed,true)
   assert.deepEqual(result.missing,[])
+})
+
+it('rejects a delivery limitation that is not grounded in the candidate body', async () => {
+  const model: ModelDriver = { run: unexpected, compact: unexpected, structured: async () => ({
+    value: { missing: [], limitations: [{ quote: 'Unstated limitation.', reason: 'Invented missing result.' }] }, model: 'test', usage }) }
+  const result = await checkCandidateContent(model, { version: 1, workId: 'w', tenantId: 't', sessionId: 's', authorId: 'u', sourceRef: 'm',
+    originalText: 'Calculate 17+26.', revisions: [], attachments: [], evidence: snapshotEvidence('e', []) }, '43', [], 32000, new AbortController().signal)
+  assert.equal('error' in result && result.error, 'Content check was unavailable or returned invalid findings')
+  assert.deepEqual(result.limitations, [])
 })
