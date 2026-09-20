@@ -26,6 +26,9 @@ import {
 import { nullLogger, type Logger } from '../logging.js'
 import type { KernelToManager, ManagerToKernel } from '../protocol/kernel-wire.js'
 import { sessionKeyOf, actionKeyOf, type CapabilityGrant, type HostAction, type HostActionResult, type KernelExecution, type WorkItem } from '../protocol/types.js'
+import { captureWorkspace, restoreWorkspace } from './workspace.js'
+import { freezeKernel } from './freeze.js'
+import type { WorkspaceEntry, WorkspaceSnapshot, WorkspaceLimits } from '../protocol/workspace.js'
 
 export interface KernelHostBridge {
   execute(work: WorkItem, action: HostAction, signal?: AbortSignal): Promise<HostActionResult>
@@ -42,6 +45,10 @@ export interface KernelExecutionOptions {
 
 /** Port the runtime depends on; {@link KernelManager} is the implementation. */
 export interface KernelExecutor {
+  restoreWorkspace?(work: WorkItem, snapshot: WorkspaceSnapshot, limits: WorkspaceLimits,
+    read: (entry: Extract<WorkspaceEntry, { kind: 'file' }>, signal: AbortSignal) => Promise<Uint8Array>, signal: AbortSignal, discardUncommitted?: boolean): Promise<void>
+  captureWorkspace?(work: WorkItem, snapshot: WorkspaceSnapshot, limits: WorkspaceLimits,
+    upload: (path: string, bytes: Uint8Array, signal: AbortSignal) => Promise<Extract<WorkspaceEntry, { kind: 'file' }>>, signal: AbortSignal): Promise<WorkspaceEntry[]>
   execute(
     work: WorkItem, runId: string, cellId: string, code: string,
     signal?: AbortSignal, options?: KernelExecutionOptions,
@@ -98,6 +105,24 @@ class PersistentKernel {
   private pending: PendingExecution | null = null
   private queued = 0
   lastUsedAt = Date.now()
+  workspaceGeneration = -1
+
+  async freeze(signal: AbortSignal) {
+    if (this.busy || !this.child?.pid || this.dead) throw new Error('kernel is not idle for a workspace checkpoint')
+    this.queued++
+    try {
+      const resume = await freezeKernel(this.child.pid, signal)
+      return () => { try { resume() } finally { this.queued--; this.lastUsedAt = Date.now(); this.onIdle() } }
+    } catch (error) { this.queued--; this.onIdle(); throw error }
+  }
+
+  async stopForRestore(signal: AbortSignal) {
+    const child = this.child
+    const exited = child && child.exitCode === null && child.signalCode === null
+      ? new Promise<void>(resolveExit => child.once('exit', () => resolveExit())) : Promise.resolve()
+    this.terminate(new KernelCancelledError('workspace restore'), 'SIGKILL')
+    await abortable(exited, signal)
+  }
 
   constructor(
     readonly key: string,
@@ -485,6 +510,7 @@ export class KernelManager implements ManagedKernelExecutor {
       this.kernels.set(key, kernel)
     }
     try {
+      kernel.workspaceGeneration = -1
       return await kernel.execute(work, runId, cellId, code, signal, options)
     } finally {
       if (kernel.dead && this.kernels.get(key) === kernel) {
@@ -492,6 +518,31 @@ export class KernelManager implements ManagedKernelExecutor {
         this.wakeCapacityWaiters()
       }
     }
+  }
+
+  async restoreWorkspace(work: WorkItem, snapshot: WorkspaceSnapshot, limits: WorkspaceLimits,
+    read: (entry: Extract<WorkspaceEntry, { kind: 'file' }>, signal: AbortSignal) => Promise<Uint8Array>, signal: AbortSignal, discardUncommitted = false) {
+    const key = this.key(work), kernel = this.kernels.get(key)
+    if (kernel && !kernel.dead && kernel.workspaceGeneration === snapshot.generation) return
+    if (kernel) { await kernel.stopForRestore(signal); this.kernels.delete(key); this.wakeCapacityWaiters() }
+    await restoreWorkspace(this.homeOf(work), snapshot, limits, read, signal, discardUncommitted)
+  }
+
+  async captureWorkspace(work: WorkItem, snapshot: WorkspaceSnapshot, limits: WorkspaceLimits,
+    upload: (path: string, bytes: Uint8Array, signal: AbortSignal) => Promise<Extract<WorkspaceEntry, { kind: 'file' }>>, signal: AbortSignal) {
+    const kernel = this.kernels.get(this.key(work))
+    if (!kernel) throw new Error('checkpoint kernel is unavailable')
+    const resume = await kernel.freeze(signal)
+    try {
+      let entries: WorkspaceEntry[]
+      try { entries = await captureWorkspace(this.homeOf(work), snapshot, limits, upload, signal) }
+      catch (error) {
+        if (!(error instanceof Error) || error.message !== 'workspace changed during checkpoint') throw error
+        entries = await captureWorkspace(this.homeOf(work), snapshot, limits, upload, signal)
+      }
+      kernel.workspaceGeneration = snapshot.generation + 1
+      return entries
+    } finally { resume() }
   }
 
   sweepIdle(now = Date.now()): number {

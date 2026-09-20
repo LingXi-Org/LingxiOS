@@ -10,6 +10,9 @@ import type {
 import type { ModelBudgetLimits, ModelBudgetReservation } from '../control-plane/stores.js'
 
 export interface HostPort {
+  loadWorkspace?(work: WorkItem, signal?: AbortSignal): Promise<import('../protocol/workspace.js').WorkspaceState | null>
+  stageWorkspaceFile?(work: WorkItem, path: string, bytes: Uint8Array, signal?: AbortSignal): Promise<Extract<import('../protocol/workspace.js').WorkspaceEntry, { kind: 'file' }>>
+  readWorkspaceFile?(work: WorkItem, entry: Extract<import('../protocol/workspace.js').WorkspaceEntry, { kind: 'file' }>, signal?: AbortSignal): Promise<Uint8Array>
   /** Private worker review channel; it is not exposed through the agent tool catalog or Kernel SDK. */
   prepareMemoryReview?(work: WorkItem,action: HostAction,signal?: AbortSignal): Promise<import('../memory/types.js').MemoryReviewRequest | null>
   recordMemoryReview?(work: WorkItem,action: HostAction,hash: string,review: import('../memory/types.js').MemoryReview,signal?: AbortSignal): Promise<void>

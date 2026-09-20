@@ -10,12 +10,13 @@ import { AgentRuntime } from '../src/runtime/runtime.js'
 import { OpenAIChatDriver } from '../src/model/openai.js'
 import { HttpHostClient } from '../src/host/http-client.js'
 import type { SqlPool } from '../src/control-plane/pg-store.js'
-import type { RunStreamEvent } from '../src/app/realtime.js'
+import type { RunStreamEvent, RealtimeStore } from '../src/app/realtime.js'
+import type { PreviewSnapshot } from '../src/protocol/preview.js'
 import { consumeRunStreamEvent, createRunView } from '../src/ui/index.js'
 import { abortable } from '../src/deadline.js'
 import { nullLogger } from '../src/logging.js'
 
-it('streams safe body over worker HTTP and browser SSE before usage/verification, then replays the committed result', async t => {
+for (const shared of [false, true]) it(`streams safe body over worker HTTP and ${shared ? 'another control plane' : 'local'} SSE before usage/verification, then replays the committed result`, async t => {
   const db = new PGlite()
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
   // PGlite has one connection. Hold it across BEGIN/COMMIT so concurrent SSE cannot see uncommitted rows.
@@ -37,7 +38,23 @@ it('streams safe body over worker HTTP and browser SSE before usage/verification
   }, async connect() { return { query, release: await acquire() } } }
   const logger = { ...nullLogger, warn: (message: string, fields?: Record<string, unknown>) => t.diagnostic(message + ' ' + JSON.stringify(fields)),
     error: (message: string, fields?: Record<string, unknown>) => t.diagnostic(message + ' ' + JSON.stringify(fields)) }
-  const app = await createLingxiOS({ database: pool, logger, realtime: { allowDraft: () => true } })
+  let snapshot: PreviewSnapshot | null = null
+  const listeners = new Set<() => void>()
+  const store: RealtimeStore = {
+    async update(identity, _owner, fence, frame, seed) {
+      if (seed) snapshot = structuredClone(seed)
+      else if (frame.kind === 'reset') snapshot = { runId: identity.runId, fence, requestVersion: frame.requestVersion, attemptId: frame.attemptId, seq: frame.seq, draft: '' }
+      else if (snapshot && snapshot.seq + 1 === frame.seq) snapshot = { ...snapshot, seq: frame.seq, draft: snapshot.draft + frame.text }
+      else return 'missing'
+      for (const notify of listeners) notify()
+      return 'applied'
+    },
+    async read() { return snapshot },
+    async clear() { snapshot = null; for (const notify of listeners) notify() },
+    async subscribe(_identity, notify) { listeners.add(notify); return () => { listeners.delete(notify) } },
+  }
+  const app = await createLingxiOS({ database: pool, logger, realtime: { allowDraft: () => true, ...(shared ? { store } : {}) } })
+  const readerApp = shared ? await createLingxiOS({ database: pool, logger, realtime: { allowDraft: () => true, store } }) : app
   const identity = { runId: 'stream', tenantId: 'tenant', agentId: 'agent', sessionId: 'session', principalId: 'human' }
   await app.enqueue({ id: identity.runId, ...identity, text: 'Say hello', mode: 'chat' })
   const controlPort = await app.listenControlPlane({ serviceToken: 'test-service', port: 0 })
@@ -67,7 +84,7 @@ it('streams safe body over worker HTTP and browser SSE before usage/verification
   const browser = http.createServer((request, result) => {
     const closed = new AbortController()
     result.once('close', () => closed.abort())
-    void app.streamRun(identity, { signal: closed.signal, lastEventId: request.headers['last-event-id'] as string | undefined ?? null }).then(async response => {
+    void readerApp.streamRun(identity, { signal: closed.signal, lastEventId: request.headers['last-event-id'] as string | undefined ?? null }).then(async response => {
       result.writeHead(response.status, Object.fromEntries(response.headers))
       await pipeline(Readable.fromWeb(response.body!), result)
     }).catch(() => result.destroy())
@@ -134,6 +151,7 @@ it('streams safe body over worker HTTP and browser SSE before usage/verification
     releaseModel(); stopBrowser.abort()
     await running.catch(() => {}); await consume.catch(() => {})
     await new Promise<void>(resolve => { browser.close(() => resolve()); browser.closeAllConnections() })
-    await app.stop(); await db.close()
+    await readerApp.stop(); await app.stop(); await db.close()
+    assert.equal(listeners.size, 0)
   }
 })

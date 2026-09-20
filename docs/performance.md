@@ -1,8 +1,8 @@
 # 性能优化实施与验证
 
-对应《LingxiOS_v3.1.0_性能优化简案》和《LingxiOS_async_blocking_audit》；当前版本 **3.2.13 / schema 10 / control-plane protocol 10**。框架回归、受控基准和产品端到端验收是不同的证据，不能互相替代。
+对应《LingxiOS_v3.1.0_性能优化简案》和《LingxiOS_async_blocking_audit》；当前版本 **3.3.0 / schema 11 / control-plane protocol 11**。框架回归、受控基准和产品端到端验收是不同的证据，不能互相替代。
 
-3.2.13 为已提交引用保留去重后的原文节选；没有新增 schema 迁移，升级须排空旧 Worker 并同时替换 host/Worker。下文性能测量及 protocol 9 的领取/恢复改动仍是对应旧版本的记录，不能视为 3.2.13 的性能复测。
+3.3.0 增加可选共享预览、私有产物对象和逐 Python 单元目录检查点，须显式应用 migration013、排空旧 Worker 并同时替换 host/Worker。下文性能测量及 protocol 9 的领取/恢复改动仍是对应旧版本的记录，不能视为 3.3.0 的性能复测。
 
 ## 实现与边界
 
@@ -55,7 +55,7 @@ HTTP 路由须从认证上下文构造完整 identity，再返回 `control.strea
 
 ## 数据库升级与回退
 
-新安装只应用 `packageResources().schema`。已有 schema 10 必须在产品迁移锁下按序应用 **migration011 → migration012**；schema 9 先应用 migration010。012 添加 durable memory-capture 表并扩展 cancel/preempt 通知，保持 schema marker 10；启动额外检查新表，因此不能只看旧的 schema marker。迁移不自动执行、不删除业务/记忆数据。
+新安装只应用 `packageResources().schema`。已有 schema 10 必须在产品迁移锁下按序应用 **migration011 → migration012 → migration013**；schema 9 先应用 migration010。012 添加 durable memory-capture 表并扩展 cancel/preempt 通知，保持 schema marker 10；启动额外检查新表，因此不能只看旧的 schema marker。迁移不自动执行、不删除业务/记忆数据。
 
 先暂停 ingress、排空并停止旧 Worker、保留数据库及 artifact 备份；迁移后同时部署匹配的 3.2.12 host/Worker，readiness 后恢复。**protocol 9 是领取/恢复分阶段合约**；新宿主以 409/protocol_mismatch 拒绝旧 Worker，不能依赖混版滚动运行。自定义 HostPort 应按 `claim → 注册/心跳 → recoverWork → 执行` 接入，不要重新把恢复放回 claim。
 

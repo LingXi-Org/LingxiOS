@@ -40,10 +40,18 @@ const model = createServer(async (req, res) => {
   res.end(`data: ${JSON.stringify({ model: 'fixture', choices: [{ index: 0, delta, finish_reason: modelCalls === 1 ? 'tool_calls' : 'stop' }] })}\n\ndata: [DONE]\n\n`)
 })
 let controlPort
+let pendingClaims = 0
+const retiredWorkers = new Set()
 const proxy = createServer(async (req, res) => {
+  const claim = req.url.endsWith('/claim')
+  if (claim) pendingClaims++
   const chunks = []
   for await (const chunk of req) chunks.push(chunk)
   try {
+    if (claim && retiredWorkers.has(JSON.parse(Buffer.concat(chunks).toString()).workerId)) {
+      res.writeHead(200, { 'content-type': 'application/json' }).end('null')
+      return
+    }
     const response = await fetch(`http://127.0.0.1:${controlPort}${req.url}`, {
       method: req.method, headers: {
         authorization: req.headers.authorization ?? '', 'content-type': req.headers['content-type'] ?? 'application/json',
@@ -58,17 +66,21 @@ const proxy = createServer(async (req, res) => {
     }
     res.writeHead(response.status, { 'content-type': 'application/json' }).end(await response.text())
   } catch { res.writeHead(502).end('{}') }
+  finally { if (claim) pendingClaims-- }
 })
 async function until(check) {
   const deadline = Date.now() + 20_000
   while (!(await check())) {
     if (Date.now() >= deadline) assert.fail(JSON.stringify({ error: 'worker recovery condition timed out', modelCalls,
       workers: children.map(entry => entry.stderr),
-      work: (await pool.query('SELECT id,status,error,goal_outcome FROM lingxios.agent_work_items ORDER BY created_at')).rows }))
+      work: (await pool.query('SELECT id,status,leased_by,lease_expires_at,heartbeat_at,error,goal_outcome FROM lingxios.agent_work_items ORDER BY created_at')).rows }))
     await delay(25)
   }
 }
 async function expireWorker(id) {
+  // Drain forwarded claims before simulating lease expiry; a claim already in flight can outlive SIGKILL.
+  retiredWorkers.add(id)
+  await until(() => pendingClaims === 0)
   await pool.query("UPDATE lingxios.agent_work_items SET lease_expires_at=NOW()-INTERVAL '1 minute' WHERE leased_by=$1 AND status='leased'", [id])
   await pool.query("UPDATE lingxios.agent_os_session_leases SET expires_at=NOW()-INTERVAL '1 minute' WHERE work_id IN (SELECT id FROM lingxios.agent_work_items WHERE leased_by=$1)", [id])
   await pool.query("UPDATE lingxios.agent_os_workers SET last_seen_at=NOW()-INTERVAL '1 day' WHERE worker_id=$1", [id])

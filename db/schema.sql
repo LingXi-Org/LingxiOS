@@ -627,5 +627,16 @@ CREATE TABLE lingxios.agent_memory_capture (
   attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts>=0),
   claim_token TEXT, claim_until TIMESTAMPTZ, completed_at TIMESTAMPTZ
 );
-INSERT INTO lingxios.schema_version(singleton, version) VALUES(TRUE, 10);
+ALTER TABLE lingxios.agent_steps ADD COLUMN workspace_checkpoint JSONB;
+CREATE TABLE lingxios.agent_workspace_checkpoints (
+  session_key TEXT PRIMARY KEY REFERENCES lingxios.agent_os_sessions(session_key) ON DELETE CASCADE,
+  generation BIGINT NOT NULL CHECK(generation > 0),
+  entries JSONB NOT NULL CHECK(jsonb_typeof(entries)='array' AND jsonb_array_length(entries)<=4096),
+  work_id TEXT NOT NULL REFERENCES lingxios.agent_work_items(id),
+  fence BIGINT NOT NULL CHECK(fence>0),
+  request_version INTEGER NOT NULL CHECK(request_version>0),
+  step_id TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO lingxios.schema_version(singleton, version) VALUES(TRUE, 11);
 COMMIT;

@@ -64,6 +64,8 @@ import { releaseVersions } from '../versions.js'
 import { LATENCY_BUCKETS, type MetricsRegistry } from '../metrics.js'
 import { CandidateBodyParser } from '../model/preview.js'
 import { PreviewBuffer } from './preview.js'
+import { checkedWorkspaceEntries, workspaceLimits, type WorkspaceState } from '../protocol/workspace.js'
+import type { ExecutionStep } from '../control-plane/steps.js'
 
 export interface WorkProcessorContext {
   host: HostPort
@@ -132,6 +134,7 @@ export class AgentRuntime {
   private readonly eventTails = new Map<string, Promise<void>>()
   private readonly hostsByRun = new Map<string, HostPort>()
   private readonly controls = new Map<string, AttemptSignals>()
+  private readonly workspaces = new Map<string, WorkspaceState | null>()
   private readonly auxiliary = new Set<Promise<void>>()
 
   async refreshControls(): Promise<void> { await Promise.all([...this.controls.values()].map(signals => signals.refresh())) }
@@ -338,6 +341,7 @@ export class AgentRuntime {
         .observe((performance.now() - began) / 1000, { lane: work.lane })
       signals.stop()
       this.controls.delete(runId)
+      this.workspaces.delete(runId)
       this.eventSeqByRun.delete(runId)
       this.eventTails.delete(runId)
       this.hostsByRun.delete(runId)
@@ -958,6 +962,7 @@ export class AgentRuntime {
       input: { callId: call.callId, ...(call.name === 'ipython' ? { code } : { arguments: call.arguments }) }, artifacts: [] as KernelArtifact[] }
     try {
       await this.hostFor(work).saveStep(work, step)
+      if (call.name === 'ipython') await this.prepareWorkspace(work, signals.lifecycle.signal)
       const hostToolPartIndices = new Map<string, number>()
       const executionOptions: KernelExecutionOptions = {
         capabilities,
@@ -1009,7 +1014,7 @@ export class AgentRuntime {
           stdout: execution.stdout, stderr: execution.stderr, result: execution.result,
           truncated: execution.truncated, artifacts: execution.artifacts, receipts,
         }, undefined, capabilities.some(grant => grant.name === 'observations') ? receiptReferences(receipts) : [])
-      await this.hostFor(work).saveStep(work, { ...step, output, artifacts: execution.artifacts })
+      await this.saveExecutionStep(work, { ...step, output, artifacts: execution.artifacts }, signals.lifecycle.signal)
       const failures = receipts.filter(receipt => !receipt.result.ok && !receipt.result.approval)
       let correction: ModelItem | undefined
       if (failures.length) {
@@ -1066,8 +1071,8 @@ export class AgentRuntime {
       return { nextStreamPartIndex, terminal: false, ...(correction ? { correction } : {}) }
     } catch (error) {
       if (error instanceof ApprovalPendingError || error instanceof KernelTimeoutError || error instanceof KernelExecutionError) {
-        await this.hostFor(work).saveStep(work, { ...step, output: boundedToolOutput({ error: errorMessage(error), receipts,
-          ...(error instanceof ApprovalPendingError ? { approvalPending: error.approvalId } : {}) }) })
+        await this.saveExecutionStep(work, { ...step, output: boundedToolOutput({ error: errorMessage(error), receipts,
+          ...(error instanceof ApprovalPendingError ? { approvalPending: error.approvalId } : {}) }) }, signals.lifecycle.signal, error instanceof KernelTimeoutError)
       }
       if (error instanceof ApprovalPendingError) {
         const goalOutcome: GoalOutcome = {
@@ -1115,6 +1120,39 @@ export class AgentRuntime {
       }
       throw error
     }
+  }
+
+  private async prepareWorkspace(work: WorkItem, lifecycle: AbortSignal) {
+    if (this.workspaces.has(work.id)) return
+    const host = this.hostFor(work), state = await host.loadWorkspace?.(work, lifecycle) ?? null
+    if (state) {
+      if (!Number.isSafeInteger(state.snapshot.generation) || state.snapshot.generation < 0) throw new Error('invalid workspace generation')
+      state.limits = workspaceLimits(state.limits)
+      state.snapshot.entries = checkedWorkspaceEntries(state.snapshot.entries, state.limits)
+      if (!this.kernels.restoreWorkspace || !this.kernels.captureWorkspace || !host.readWorkspaceFile || !host.stageWorkspaceFile) throw new Error('worker does not support workspace recovery')
+      const signal = AbortSignal.any([lifecycle, AbortSignal.timeout(state.limits.timeoutMs)]), began = performance.now()
+      await this.kernels.restoreWorkspace(work, state.snapshot, state.limits, (entry, signal) => host.readWorkspaceFile!(work, entry, signal), signal)
+      this.metrics?.histogram('agentos_workspace_restore_seconds', 'Workspace restoration latency', LATENCY_BUCKETS).observe((performance.now() - began) / 1000)
+    }
+    this.workspaces.set(work.id, state)
+  }
+
+  private async saveExecutionStep(work: WorkItem, step: ExecutionStep, lifecycle: AbortSignal, interrupted = false) {
+    const state = this.workspaces.get(work.id), host = this.hostFor(work)
+    if (step.kind !== 'ipython' || !state) return host.saveStep(work, step, lifecycle)
+    const signal = AbortSignal.any([lifecycle, AbortSignal.timeout(state.limits.timeoutMs)]), began = performance.now()
+    // A killed cell has no safe file boundary. Roll its partial directory back before recording its error.
+    if (interrupted) await this.kernels.restoreWorkspace!(work, state.snapshot, state.limits,
+      (entry, signal) => host.readWorkspaceFile!(work, entry, signal), signal, true)
+    const entries = interrupted ? state.snapshot.entries : await this.kernels.captureWorkspace!(work, state.snapshot, state.limits,
+      async (path, bytes, signal) => {
+        const entry = await host.stageWorkspaceFile!(work, path, bytes, signal)
+        this.metrics?.counter('agentos_workspace_uploaded_bytes_total', 'Changed workspace bytes uploaded').inc({}, bytes.byteLength)
+        return entry
+      }, signal)
+    await host.saveStep(work, { ...step, workspace: { baseGeneration: state.snapshot.generation, entries } }, signal)
+    state.snapshot = { generation: state.snapshot.generation + 1, entries }
+    this.metrics?.histogram('agentos_workspace_checkpoint_seconds', 'Workspace capture and commit latency', LATENCY_BUCKETS).observe((performance.now() - began) / 1000)
   }
 
   private async executeDirect(work: WorkItem, call: Extract<ModelItem, { type: 'function_call' }>, options: KernelExecutionOptions, signal: AbortSignal): Promise<import('../protocol/types.js').KernelExecution> {

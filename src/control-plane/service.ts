@@ -47,8 +47,11 @@ import type {
   DeliveryPort, EventStore, ModelBudgetLimits, ModelBudgetStore, SessionStore, WorkStore,
 } from './stores.js'
 import { isModelItem } from './stores.js'
+import type { createWorkspaceStore } from '../app/workspaces.js'
+import { workspacePath, type WorkspaceEntry } from '../protocol/workspace.js'
 
 export interface ControlPlaneDeps {
+  workspace?: ReturnType<typeof createWorkspaceStore>
   contextSnapshot?: (work: Omit<WorkItem, 'leaseToken'>) => Promise<{
     session: SessionRecord | null; steps: import('./steps.js').ExecutionStep[]; requestVersion: number
   }>
@@ -135,13 +138,41 @@ export class ControlPlaneService {
     return this.deps.verifyCandidate(work, candidate, signal)
   }
 
-  async saveStep(proof: LeaseProof, step: import('./steps.js').ExecutionStep): Promise<void> {
+  async loadWorkspace(proof: LeaseProof) {
+    const work = await this.requireLease(proof, { rejectCancelled: true })
+    return this.deps.workspace ? { snapshot: await this.deps.workspace.load(work), limits: this.deps.workspace.limits } : null
+  }
+
+  async stageWorkspaceFile(proof: LeaseProof, path: string, bytes: Uint8Array, signal?: AbortSignal) {
+    const work = await this.requireLease(proof, { rejectCancelled: true })
+    if (!this.deps.workspace) throw new ControlPlaneError(501, 'workspace checkpoints are unavailable')
+    workspacePath(path)
+    if (!(bytes instanceof Uint8Array)) throw new ControlPlaneError(400, 'workspace bytes required')
+    const entry = await this.deps.workspace.stage(work, path, bytes, signal)
+    await this.requireLease(proof, { rejectCancelled: true })
+    return entry
+  }
+
+  async readWorkspaceFile(proof: LeaseProof, entry: Extract<WorkspaceEntry, { kind: 'file' }>, signal?: AbortSignal) {
+    const work = await this.requireLease(proof, { rejectCancelled: true })
+    if (!this.deps.workspace || !entry || entry.kind !== 'file') throw new ControlPlaneError(400, 'workspace file required')
+    const bytes = await this.deps.workspace.read(work, entry, signal)
+    await this.requireLease(proof, { rejectCancelled: true })
+    return bytes
+  }
+
+  async saveStep(proof: LeaseProof, step: import('./steps.js').ExecutionStep, signal?: AbortSignal): Promise<void> {
     const work = await this.requireLease(proof, { rejectCancelled: true })
     if (!step || typeof step.id !== 'string' || !step.id || step.id.length > 512
       || !Number.isSafeInteger(step.requestVersion) || step.requestVersion < 1 || typeof step.kind !== 'string'
       || !step.input || typeof step.input !== 'object' || Array.isArray(step.input)
       || JSON.stringify(step.input).length > 1_000_000 || step.output !== undefined && (typeof step.output !== 'string' || step.output.length > 1_000_000)) throw new ControlPlaneError(400, 'invalid execution step')
     snapshotArtifacts(step.artifacts)
+    if (this.deps.workspace && step.kind === 'ipython' && step.output !== undefined && !step.workspace) throw new ControlPlaneError(409, 'completed Python steps require a workspace checkpoint')
+    if (step.workspace) {
+      if (!this.deps.workspace || step.kind !== 'ipython' || step.output === undefined) throw new ControlPlaneError(400, 'unexpected workspace checkpoint')
+      step = { ...step, workspace: await this.deps.workspace.validate(work, step.workspace, signal) }
+    }
     if (step.kind === 'runtime.checkpoint') {
       const state = step.input
       if (typeof state['last'] !== 'string' || !Number.isSafeInteger(state['count']) || Number(state['count']) < 0 || Number(state['count']) > 6

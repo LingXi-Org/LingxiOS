@@ -6,6 +6,7 @@ export async function checkStorage(database: SqlQueryable): Promise<void> {
     .catch((cause: unknown) => { throw new Error('LingxiOS schema is missing or unavailable; explicitly install the packaged schema before startup', { cause }) })
   if (rows[0]?.['version'] !== releaseVersions.schema) throw new Error(`LingxiOS requires the initial schema version ${releaseVersions.schema}`)
   const probes = {
+    agent_workspace_checkpoints: 'session_key,generation,entries,work_id,fence,request_version,step_id,updated_at',
     agent_conversations: 'tenant_id,id,version,policy',
     agent_conversation_threads: 'tenant_id,conversation_id,id',
     agent_im_messages: 'tenant_id,conversation_id,message_id,version,thread_id,fingerprint,input,audience,outcome',
@@ -19,7 +20,7 @@ export async function checkStorage(database: SqlQueryable): Promise<void> {
     agent_shared_operations: 'seq,tenant_id,conversation_id,thread_key,state_id,operation_id,fingerprint,origin,changes,result',
     agent_results: 'id,work_id,request_version,fence,home_epoch,message,committed_at',
     agent_attempts: 'work_id,fence,lease_token_hash,worker_id,started_at,heartbeat_at,lease_expires_at,ended_at,reason',
-    agent_steps: 'step_seq,work_id,step_id,request_version,kind,input_hash,progress_hash,input,output,artifacts,created_at,completed_at',
+    agent_steps: 'step_seq,work_id,step_id,request_version,kind,input_hash,progress_hash,input,output,artifacts,workspace_checkpoint,created_at,completed_at',
     agent_verifications: 'work_id,request_version,candidate_hash,checker,status,evidence,observed_at',
     agent_work_items: 'id,fence,tenant_id,agent_id,session_id,thread_id,kind,lane,trigger_ref,principal_id,priority,status,created_at,available_at,attempts,preemptions,lease_token_hash,leased_by,lease_expires_at,cancel_requested_at,preempt_requested_at,steer_inputs,strategy_snapshot,result_id,goal_outcome,error,meta,conversation,finished_at,updated_at',
     agent_model_budgets: 'root_work_id,max_model_calls,max_tokens,max_cost_micros,deadline_at,model_calls,tokens,cost_micros,updated_at',

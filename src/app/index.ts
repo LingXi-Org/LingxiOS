@@ -4,6 +4,9 @@ import type { VerificationRecord } from '../outcome/verification.js'
 import { flushOutbox, drainOutboxes } from '../control-plane/outbox.js'
 import { Wakeup, listenWakeups } from '../control-plane/wakeup.js'
 import { createRealtime, type RealtimeOptions } from './realtime.js'
+import type { RuntimeObjectStore } from './object-store.js'
+import { createWorkspaceStore } from './workspaces.js'
+import type { WorkspaceLimits } from '../protocol/workspace.js'
 import { resumeDependents } from '../control-plane/dependencies.js'
 import { candidateHash } from '../outcome/verification.js'
 import { candidateActions, inspectActions } from '../outcome/action-check.js'
@@ -68,6 +71,8 @@ import { enqueueChild, requestSnapshot } from './jobs.js'
 export interface LingxiOSOptions {
   performance?: { notifications?: boolean; outboxConcurrency?: number; contextSnapshot?: boolean }
   realtime?: RealtimeOptions
+  objects?: RuntimeObjectStore
+  workspace?: Partial<WorkspaceLimits>
   harness?: HarnessProfile
   skills?: readonly SkillDefinition[]
   presentations?: readonly PresentationDefinition[]
@@ -187,6 +192,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   const realtime = createRealtime(options.database, runWakeup, shutdown.signal, options.realtime)
   const logger = options.logger ?? createLogger()
   const homesRoot = resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes')
+  if (options.workspace && !options.objects) throw new ConfigError('workspace checkpoints require shared object storage')
+  const workspace = options.workspace ? createWorkspaceStore(options.database, options.objects!, options.workspace) : undefined
   const modelBudget = { ...DEFAULT_MODEL_BUDGET, ...loadModelBudget(), ...options.modelBudget }
   if ((process.env['NODE_ENV'] === 'production' || options.modelBudget?.maxCostMicros !== undefined || process.env['AGENT_OS_MAX_COST_MICROS'] !== undefined)
     && !(modelBudget.inputCostMicrosPerMillion > 0 || modelBudget.outputCostMicrosPerMillion > 0)) {
@@ -238,7 +245,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   const integration = {
     tools: [...TASK_TOOLS, ...definitions.map(toolSpecification)],
     actionExecutor: toolExecutor(options.database, definitions, (work, input, signal) => createNativeArtifact(
-      resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), work, input, signal), options.memory),
+      resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), work, input, signal, options.objects), options.memory),
     capabilityResolver: { async resolve(work: Omit<WorkItem, 'leaseToken'>) {
       await authorizeConversationWork(options.database, work)
       if (memory && ['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind)) return [{ name: work.kind,
@@ -353,8 +360,9 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     ...memory ? { memory } : {},
     ...(integration?.tools ? { tools: integration.tools } : {}),
     steps: new PgStepStore(options.database),
+    ...(workspace ? { workspace } : {}),
     verifyCandidate: async (work, candidate, signal) => {
-      const records = [...await inspectArtifacts(homesRoot, work, candidate.artifacts, signal),
+      const records = [...await inspectArtifacts(homesRoot, work, candidate.artifacts, signal, options.objects),
         ...await inspectActions(options.database, work, candidate.requestVersion, integration?.tools ?? [], integration?.actionExecutor)]
       const hash = candidateHash(candidate)
       await withTransaction(options.database, async client => {
@@ -377,8 +385,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     events: new PgEventStore(options.database, Boolean(integration?.delivery)), actions: new PgActionLedger(options.database),
     modelBudgets: new PgModelBudgetStore(options.database), modelBudget,
     artifactStager: {
-      stage: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal),
-      stream: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal),
+      stage: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal, options.objects),
+      stream: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal, options.objects),
     },
     contextProvider: integration.contextProvider,
     ...options.performance?.contextSnapshot === false ? {} : { contextSnapshot: (work: Omit<WorkItem, 'leaseToken'>) => sessions.context(work) },
@@ -394,7 +402,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       onEvent: async () => { if (options.performance?.notifications !== false) runWakeup.notify(); background('events', flushEvents) },
       deliverMessage: async (work, message) => {
         const recordMemory = options.memory && !work.conversation?.internal && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind)
-        await persistArtifacts(resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), work, message)
+        await persistArtifacts(resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), work, message, options.objects)
         await withTransaction(options.database, async client => {
           const current = await client.query(
             `SELECT id FROM lingxios.agent_work_items
@@ -505,7 +513,10 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     prepareMemoryReview: (work,action) => service.prepareMemoryReview(work,action),
     recordMemoryReview: (work,action,hash,review) => service.recordMemoryReview(work,action,hash,review),
     verifyCandidate: (work, candidate, signal) => service.verifyCandidate(work, candidate, signal),
-    saveStep: (work, step) => service.saveStep(work, step),
+    saveStep: (work, step, signal) => service.saveStep(work, step, signal),
+    loadWorkspace: work => service.loadWorkspace(work),
+    stageWorkspaceFile: (work, path, bytes, signal) => service.stageWorkspaceFile(work, path, bytes, signal),
+    readWorkspaceFile: (work, entry, signal) => service.readWorkspaceFile(work, entry, signal),
     claimWork: async () => { throw new Error('connect a worker before claiming work') },
     heartbeat: work => service.heartbeat(work),
     loadContext: (work, signal) => service.loadContext(work, false, signal), executeAction: (work, action, signal) => service.executeAction(work, action, signal),
@@ -554,6 +565,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   }, 1_000)
   const maintenanceTimer = setInterval(() => {
     background('storage maintenance', () => maintainStorage(options.database, homesRoot))
+    if (workspace) background('workspace maintenance', () => workspace.maintenance(shutdown.signal))
     background('metrics', () => refreshMetrics(options.database, metrics))
   }, 60_000)
   deliveryTimer.unref(); maintenanceTimer.unref()
@@ -650,10 +662,14 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         return { state: 'queued' as const }
       })
     },
-    maintenance: () => maintainStorage(options.database, homesRoot),
+    maintenance: async () => {
+      const result = await maintainStorage(options.database, homesRoot)
+      if (workspace) await workspace.maintenance(shutdown.signal)
+      return result
+    },
     /** Authenticate and authorize the caller before using this server API. */
     readArtifact: (identity: MessageIdentity & Pick<RequestInput, 'principalId' | 'threadId'>, path: string) =>
-      readArtifact(options.database, resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), identity, path),
+      readArtifact(options.database, resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), identity, path, options.objects),
     continueInput: (input: InputContinuation) => continueInput(options.database, input),
     resolveAction: async (input: ActionResolutionInput) => {
       const { tenantId, agentId, sessionId, principalId, threadId, ...resolution } = input

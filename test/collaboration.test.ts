@@ -315,7 +315,7 @@ it('migrates schema 9 without resetting business data and matches the fresh sche
   try {
     await migrated.exec(await readFile(new URL('../../test/fixtures/schema-9.sql', import.meta.url), 'utf8'))
     await migrated.exec("INSERT INTO lingxios.agent_work_items(id,tenant_id,agent_id,session_id,kind,lane,trigger_ref,status) VALUES('old','t','a','s','turn','interactive','m','succeeded')")
-    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission']) {
+    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission', '013-distributed-workspaces']) {
       await migrated.exec(await readFile(new URL(`../../db/migrations/${migration}.sql`, import.meta.url), 'utf8'))
     }
     await fresh.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))

@@ -11,9 +11,11 @@ import type { MessageIdentity, RequestInput } from './index.js'
 import type { ArtifactInput } from '../tools/definition.js'
 import { authorizeRunRead } from '../collaboration/api.js'
 import { ByteBudget } from '../resource-quota.js'
+import { objectScope, objectSignal, readCheckedObject, type RuntimeObjectStore } from './object-store.js'
+import { abortable } from '../deadline.js'
 const artifactBytes = new ByteBudget()
 
-export async function createNativeArtifact(homesRoot: string, work: Omit<WorkItem, 'leaseToken'>, input: ArtifactInput, signal?: AbortSignal) {
+export async function createNativeArtifact(homesRoot: string, work: Omit<WorkItem, 'leaseToken'>, input: ArtifactInput, signal?: AbortSignal, objects?: RuntimeObjectStore) {
   if (input.bytes.byteLength > 16 * 1024 * 1024) throw new Error('artifact exceeds the 16 MiB limit')
   const release = artifactBytes.acquire(work.tenantId, Math.max(64 * 1024, input.bytes.byteLength * 2))
   let hash: string
@@ -23,13 +25,17 @@ export async function createNativeArtifact(homesRoot: string, work: Omit<WorkIte
   } finally { release() }
   const artifact = snapshotArtifacts([{ path: input.path, mime: input.mime, size: input.bytes.byteLength,
     sha256: hash, ...(input.source ? { source: input.source } : {}) }])[0]!
-  await stageArtifact(homesRoot, work, artifact, input.bytes, signal)
+  await stageArtifact(homesRoot, work, artifact, input.bytes, signal, objects)
   return artifact
 }
 
-function artifactDirectory(root: string, identity: MessageIdentity): string {
+export function artifactDirectory(root: string, identity: MessageIdentity): string {
   const hash = createHash('sha256').update(JSON.stringify([identity.tenantId, identity.agentId, identity.runId])).digest('hex')
   return resolve(root, '.committed-artifacts', hash)
+}
+
+export function artifactObjectKey(identity: Pick<MessageIdentity, 'tenantId' | 'agentId' | 'runId'>, artifact: KernelArtifact): string {
+  return `artifacts/${objectScope([identity.tenantId, identity.agentId, identity.runId])}/${artifact.sha256.toLowerCase()}`
 }
 
 const inside = (parent: string, child: string) => {
@@ -37,7 +43,7 @@ const inside = (parent: string, child: string) => {
   return path !== '..' && !path.startsWith('../') && !path.startsWith('..\\') && !isAbsolute(path)
 }
 
-async function checkedFile(root: string, directory: string, filename: string, artifact: KernelArtifact, signal?: AbortSignal, readBytes = true) {
+export async function checkedFile(root: string, directory: string, filename: string, artifact: KernelArtifact, signal?: AbortSignal, readBytes = true) {
   if (artifact.size > 16 * 1024 * 1024) throw new Error('artifact exceeds the 16 MiB limit')
   const home = await realpath(directory)
   const file = await realpath(resolve(home, filename))
@@ -97,12 +103,24 @@ async function storeArtifactBytes(root: string, directory: string, artifact: Ker
 }
 
 export async function stageArtifact(homesRoot: string, work: Omit<WorkItem, 'leaseToken'>,
-  artifact: KernelArtifact, bytes: Uint8Array | AsyncIterable<Uint8Array>, signal?: AbortSignal) {
+  artifact: KernelArtifact, bytes: Uint8Array | AsyncIterable<Uint8Array>, signal?: AbortSignal, objects?: RuntimeObjectStore) {
   artifact = snapshotArtifacts([artifact])[0]!
   if (artifact.size > 16 * 1024 * 1024) throw new Error('artifact exceeds the 16 MiB limit')
   const release = artifactBytes.acquire(work.tenantId, Math.max(64 * 1024, artifact.size))
   try {
     signal?.throwIfAborted()
+    if (objects) {
+      const bounded = objectSignal(signal), content = Buffer.alloc(artifact.size)
+      let offset = 0
+      for await (const chunk of bytes instanceof Uint8Array ? [bytes] : bytes) {
+        bounded.throwIfAborted()
+        if (offset + chunk.byteLength > content.length) throw new Error('artifact content exceeds its commitment')
+        content.set(chunk, offset); offset += chunk.byteLength
+      }
+      if (offset !== artifact.size || createHash('sha256').update(content).digest('hex') !== artifact.sha256.toLowerCase()) throw new Error('artifact content does not match its commitment')
+      await abortable(objects.put(artifactObjectKey({ ...work, runId: work.id }, artifact), content, bounded), bounded)
+      return
+    }
     await mkdir(homesRoot, { recursive: true, mode: 0o700 })
     const root = await realpath(homesRoot)
     const stream = bytes instanceof Uint8Array ? (async function* () { yield bytes })() : bytes
@@ -110,9 +128,18 @@ export async function stageArtifact(homesRoot: string, work: Omit<WorkItem, 'lea
   } finally { release() }
 }
 
-export async function persistArtifacts(homesRoot: string, work: Omit<WorkItem, 'leaseToken'>, message: AssistantMessage) {
+export async function persistArtifacts(homesRoot: string, work: Omit<WorkItem, 'leaseToken'>, message: AssistantMessage, objects?: RuntimeObjectStore) {
   const artifacts = snapshotArtifacts(message.envelope.artifacts)
   if (!artifacts.length) return
+  if (objects) {
+    const signal = objectSignal()
+    for (const artifact of artifacts) {
+      const release = artifactBytes.acquire(work.tenantId, Math.max(64 * 1024, artifact.size))
+      try { await readCheckedObject(objects, artifactObjectKey({ ...work, runId: work.id }, artifact), artifact.size, artifact.sha256.toLowerCase(), signal) }
+      finally { release() }
+    }
+    return
+  }
   const root = await realpath(homesRoot)
   const directory = artifactDirectory(root, { ...work, runId: work.id })
   for (const artifact of artifacts) {
@@ -127,7 +154,7 @@ export async function persistArtifacts(homesRoot: string, work: Omit<WorkItem, '
 }
 
 export async function readArtifact(database: SqlPool, homesRoot: string,
-  identity: MessageIdentity & Pick<RequestInput, 'principalId' | 'threadId'>, path: string) {
+  identity: MessageIdentity & Pick<RequestInput, 'principalId' | 'threadId'>, path: string, objects?: RuntimeObjectStore) {
   await authorizeRunRead(database, identity)
   if (!identity.principalId?.trim()) throw new Error('authenticated principalId is required')
   const { rows } = await database.query(`SELECT result.message FROM lingxios.agent_work_items work
@@ -139,6 +166,11 @@ export async function readArtifact(database: SqlPool, homesRoot: string,
   const message = rows[0]['message'] as AssistantMessage
   const artifact = snapshotArtifacts(message.envelope.artifacts).find(item => item.path === path)
   if (!artifact) return null
+  if (objects) {
+    const release = artifactBytes.acquire(identity.tenantId, Math.max(64 * 1024, artifact.size))
+    try { return { artifact, bytes: Buffer.from(await readCheckedObject(objects, artifactObjectKey(identity, artifact), artifact.size, artifact.sha256.toLowerCase(), objectSignal())) } }
+    finally { release() }
+  }
   try {
     const root = await realpath(homesRoot)
     const directory = artifactDirectory(root, identity)
@@ -153,7 +185,7 @@ export async function readArtifact(database: SqlPool, homesRoot: string,
 }
 
 /** Read the same committed bytes later served by the download endpoint. Never accept model-supplied file contents. */
-export async function inspectArtifacts(homesRoot: string, work: Omit<WorkItem, 'leaseToken'>, artifacts: KernelArtifact[], external?: AbortSignal): Promise<VerificationRecord[]> {
+export async function inspectArtifacts(homesRoot: string, work: Omit<WorkItem, 'leaseToken'>, artifacts: KernelArtifact[], external?: AbortSignal, objects?: RuntimeObjectStore): Promise<VerificationRecord[]> {
   const signal = AbortSignal.any([AbortSignal.timeout(20_000), ...external ? [external] : []])
   const records: VerificationRecord[] = [], started = Date.now()
   for (const artifact of snapshotArtifacts(artifacts)) {
@@ -164,8 +196,9 @@ export async function inspectArtifacts(homesRoot: string, work: Omit<WorkItem, '
       if (Date.now() - started > 20_000) {
         records.push({ checker, status: 'inconclusive', evidence: { artifact, reason: 'File inspection time budget exhausted' } }); continue
       }
-      const root = await realpath(homesRoot), directory = artifactDirectory(root, { ...work, runId: work.id })
-      const { bytes } = await checkedFile(root, directory, artifact.sha256.toLowerCase(), artifact, signal)
+      const bytes = objects
+        ? await readCheckedObject(objects, artifactObjectKey({ ...work, runId: work.id }, artifact), artifact.size, artifact.sha256.toLowerCase(), signal)
+        : (await checkedFile(await realpath(homesRoot), artifactDirectory(await realpath(homesRoot), { ...work, runId: work.id }), artifact.sha256.toLowerCase(), artifact, signal)).bytes
       let text: string | undefined
       const mime = artifact.mime.split(';')[0]!.toLowerCase()
       if (mime === 'application/pdf') text = await extractDocumentText(bytes, 'pdf', signal)

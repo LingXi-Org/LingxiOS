@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readRunState, readRunRecord, runStateFromRow, type RunIdentity, type RunState } from './jobs.js'
 import { workItemFromRow, type SqlPool } from '../control-plane/pg-store.js'
 import { Wakeup } from '../control-plane/wakeup.js'
@@ -20,17 +20,32 @@ export interface RealtimeOptions {
   /** Trusted host policy: explicitly allow pre-acceptance body drafts for this request. Default is false. */
   allowDraft?: (work: Omit<WorkItem, 'leaseToken'>, requestVersion: number) => boolean | Promise<boolean>
   maxSubscribers?: number
+  store?: RealtimeStore
+}
+
+/** Optional ephemeral storage. Implementations must fence updates/clears atomically and expire snapshots. */
+export interface RealtimeStore {
+  update(identity: RunIdentity, owner: string, fence: number, frame: PreviewFrame,
+    seed: PreviewSnapshot | undefined, signal: AbortSignal): Promise<'applied' | 'missing' | 'stale'>
+  read(identity: RunIdentity, signal: AbortSignal): Promise<PreviewSnapshot | null>
+  clear(identity: RunIdentity, owner: string, fence: number, signal: AbortSignal): Promise<void>
+  /** Resolve only after subscription is active; notify again after transport reconnect. */
+  subscribe(identity: RunIdentity, notify: () => void, signal: AbortSignal): Promise<() => void>
 }
 
 interface Entry { wake: Wakeup; snapshot: PreviewSnapshot | null; updatedAt: number; readers: number }
 
-/** Local ephemeral snapshots. A different process/restart explicitly resets; durable replay always works. */
+/** Durable replay is authoritative. A failed ephemeral store can only hide drafts, never fail a run. */
 export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: AbortSignal, options: RealtimeOptions = {}) {
   const entries = new Map<string, Entry>()
   const maxSubscribers = options.maxSubscribers ?? 256
   if (!Number.isSafeInteger(maxSubscribers) || maxSubscribers < 1 || maxSubscribers > 4096) throw new Error('invalid realtime subscriber limit')
   let subscribers = 0, uploads = 0
-  const owners = new Map<string, { fence: number; token: symbol }>()
+  const owners = new Map<string, { fence: number; token: string }>()
+  const ephemeral = async <T>(run: (signal: AbortSignal) => Promise<T>, fallback: T, parent: AbortSignal = shutdown): Promise<T> => {
+    const signal = AbortSignal.any([parent, shutdown, AbortSignal.timeout(250)])
+    try { return await abortable(run(signal), signal) } catch { return fallback }
+  }
   const entryFor = (id: string): Entry => {
     let entry = entries.get(id)
     if (!entry) {
@@ -57,8 +72,13 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
     if (!options.allowDraft) throw new Error('preview is not enabled by the host')
     if (uploads >= 64) throw new Error('too many preview uploads')
     uploads++
-    const token = Symbol()
-    const resetOwned = () => { if (owners.get(proof.id)?.token === token) reset(proof.id) }
+    const token = randomUUID()
+    let identity: RunIdentity | undefined
+    const resetOwned = async () => {
+      if (owners.get(proof.id)?.token !== token) return
+      reset(proof.id)
+      if (options.store && identity) await ephemeral(signal => options.store!.clear(identity!, token, proof.fence, signal), undefined)
+    }
     const leaseHash = createHash('sha256').update(proof.leaseToken).digest('hex')
     try {
       for await (const frame of frames) {
@@ -72,8 +92,10 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
         if (owner && owner.fence >= proof.fence && owner.token !== token) throw new Error('preview attempt already has an upload')
         owners.set(proof.id, { fence: proof.fence, token })
         const work = workItemFromRow(rows[0], '', 1)
+        identity = { runId: work.id, tenantId: work.tenantId, agentId: work.agentId, sessionId: work.sessionId,
+          principalId: work.principalId ?? '', ...(work.threadId ? { threadId: work.threadId } : {}) }
         if (Number(rows[0]['request_version']) !== frame.requestVersion || !await allowed(work, frame.requestVersion)) {
-          resetOwned()
+          await resetOwned()
           continue
         }
         const entry = entryFor(proof.id), prior = entry.snapshot
@@ -84,12 +106,17 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
         else if (prior?.fence === proof.fence && prior.requestVersion === frame.requestVersion
           && prior.attemptId === frame.attemptId && frame.seq === prior.seq + 1 && prior.draft.length + frame.text.length <= 100_000) {
           entry.snapshot = { ...prior, seq: frame.seq, draft: prior.draft + frame.text }
-        } else { resetOwned(); continue }
+        } else { await resetOwned(); continue }
         entry.updatedAt = Date.now()
         entry.wake.notify()
+        if (options.store) {
+          const result = await ephemeral(signal => options.store!.update(identity!, token, proof.fence, frame, undefined, signal), 'missing', signal)
+          // A cache restart/TTL expiry loses the reset frame. Seed only from the locally validated, contiguous upload.
+          if (result === 'missing') await ephemeral(signal => options.store!.update(identity!, token, proof.fence, frame, entry.snapshot!, signal), 'missing', signal)
+        }
       }
     } finally {
-      uploads--; resetOwned()
+      uploads--; await resetOwned()
       if (owners.get(proof.id)?.token === token) owners.delete(proof.id)
     }
   }
@@ -115,7 +142,13 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
     if (signal.aborted) cleanup()
     async function* events(): AsyncGenerator<RunStreamEvent | null> {
       let lastState = '', lastPreview: PreviewSnapshot | null | undefined
+      let unsubscribe: (() => void) | undefined
       try {
+        if (options.store) unsubscribe = await ephemeral(async bounded => {
+          const dispose = await options.store!.subscribe(identity, () => entry.wake.notify(), signal)
+          if (bounded.aborted || signal.aborted) { dispose(); return undefined }
+          return dispose
+        }, undefined, signal)
         while (!signal.aborted) {
           const durableVersion = changed.version, previewVersion = entry.wake.version
           // Reauthorize every read, including resumes and ephemeral updates. No cached grants.
@@ -137,9 +170,10 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
             after = event.seq
             yield { type: 'event', event }
           }
-          const current = entry.snapshot
+          const current = options.store ? await ephemeral(bounded => options.store!.read(identity, bounded), null, signal) : entry.snapshot
           const preview = state.run.status === 'leased' && current?.fence === state.run.fence
-            && current.requestVersion === state.run.requestVersion && Date.now() - entry.updatedAt < 60_000
+            && current.runId === identity.runId && current.requestVersion === state.run.requestVersion
+            && (options.store || Date.now() - entry.updatedAt < 60_000)
             && await allowed(workItemFromRow(record, '', 1), state.run.requestVersion) ? current : null
           if (!preview && lastPreview !== null) {
             yield { type: 'reset', runId: identity.runId, reason: lastPreview ? 'superseded' : 'unavailable' }
@@ -161,14 +195,14 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
           } finally { waiting.abort() }
           yield null // SSE keepalive; never counted as body TTFT.
         }
-      } finally { cleanup(); stopped.abort() }
+      } finally { unsubscribe?.(); cleanup() }
     }
     const iterator = events()
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {
         try {
           const next = await abortable(iterator.next(), signal)
-          if (next.done) { cleanup(); controller.close(); return }
+          if (next.done) { cleanup(); controller.close(); stopped.abort(); return }
           const item = next.value
           const text = item ? `${item.type === 'event' ? `id: ${item.event.seq}\n` : ''}event: ${item.type}\ndata: ${JSON.stringify(item)}\n\n` : ': keepalive\n\n'
           controller.enqueue(new TextEncoder().encode(text))

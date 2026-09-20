@@ -6,6 +6,7 @@
 import { AGENT_OS_PROTOCOL_VERSION } from '../protocol/constants.js'
 import { ByteBudget } from '../resource-quota.js'
 const uploadBytes = new ByteBudget()
+const workspaceBytes = new ByteBudget(128 * 1024 * 1024, 128 * 1024 * 1024)
 const jsonBytes = new ByteBudget(64 * 1024 * 1024, 64 * 1024 * 1024)
 
 import { timingSafeEqual } from 'node:crypto'
@@ -17,6 +18,7 @@ import type { AssistantMessage, RunEvent, SessionRecord, WorkCompletion } from '
 import type { EnqueueWorkInput } from './stores.js'
 import { ControlPlaneError, ControlPlaneService, type LeaseProof } from './service.js'
 import { readPreviewFrames } from '../host/preview-stream.js'
+import { workspacePath } from '../protocol/workspace.js'
 
 export interface ControlPlaneServerOptions {
   service: ControlPlaneService
@@ -140,6 +142,37 @@ export class ControlPlaneServer {
       return
     }
 
+    const workspaceUpload = /^\/v5\/work\/([^/]+)\/workspace-bytes$/.exec(path)
+    if (method === 'POST' && workspaceUpload) {
+      const proof = leaseProofOf(decodeURIComponent(workspaceUpload[1]!), {
+        fence: Number(req.headers['x-lingxios-fence']), leaseToken: req.headers['x-lingxios-lease'],
+      })
+      const config = await service.loadWorkspace(proof)
+      if (!config) throw new ControlPlaneError(501, 'workspace checkpoints are unavailable')
+      const encodedPath = req.headers['x-lingxios-path']
+      if (typeof encodedPath !== 'string' || encodedPath.length > 8192) throw new ControlPlaneError(400, 'workspace path required')
+      const filePath = workspacePath(Buffer.from(encodedPath, 'base64url').toString('utf8'))
+      const length = Number(req.headers['content-length'])
+      if (!Number.isSafeInteger(length) || length < 0 || length > config.limits.maxFileBytes) throw new ControlPlaneError(413, 'invalid workspace size')
+      const work = await service.requireLease(proof, { rejectCancelled: true })
+      const release = workspaceBytes.acquire(work.tenantId, Math.max(64 * 1024, length * 2))
+      const signal = AbortSignal.any([disconnected.signal, AbortSignal.timeout(config.limits.timeoutMs)])
+      const cancel = () => req.destroy(new Error('workspace upload cancelled'))
+      signal.addEventListener('abort', cancel, { once: true })
+      try {
+        const bytes = Buffer.alloc(length)
+        let position = 0
+        for await (const chunk of req) {
+          signal.throwIfAborted()
+          if (position + chunk.length > length) throw new ControlPlaneError(413, 'workspace upload exceeds declared size')
+          bytes.set(chunk, position); position += chunk.length
+        }
+        if (position !== length) throw new ControlPlaneError(400, 'incomplete workspace upload')
+        json(res, 200, await service.stageWorkspaceFile(proof, filePath, bytes, signal))
+      } finally { signal.removeEventListener('abort', cancel); release() }
+      return
+    }
+
     const binary = /^\/v5\/work\/([^/]+)\/artifact-bytes$/.exec(path)
     if (method === 'POST' && binary) {
       const proof = leaseProofOf(decodeURIComponent(binary[1]!), {
@@ -182,7 +215,7 @@ export class ControlPlaneServer {
       return
     }
     if (method === 'POST' && path === '/v5/work/claim') {
-      if (body['protocol'] !== AGENT_OS_PROTOCOL_VERSION) throw new ControlPlaneError(409, 'upgrade worker: claims require the committed citation-evidence protocol', 'protocol_mismatch')
+      if (body['protocol'] !== AGENT_OS_PROTOCOL_VERSION) throw new ControlPlaneError(409, 'upgrade worker: claims require the fenced workspace checkpoint protocol', 'protocol_mismatch')
       if (body['requestId'] !== undefined && typeof body['requestId'] !== 'string') {
         throw new ControlPlaneError(400, 'requestId must be a string')
       }
@@ -209,6 +242,20 @@ export class ControlPlaneServer {
       if (method === 'POST') {
         const proof = leaseProofOf(id, body)
         switch (operation) {
+          case 'workspace':
+            json(res, 200, await service.loadWorkspace(proof)); return
+          case 'workspace-file': {
+            const work = await service.requireLease(proof, { rejectCancelled: true })
+            const size = (body['entry'] as { size?: number })?.size
+            if (!Number.isSafeInteger(size) || size! < 0 || size! > 64 * 1024 * 1024) throw new ControlPlaneError(413, 'invalid workspace size')
+            const release = workspaceBytes.acquire(work.tenantId, Math.max(64 * 1024, size! * 2))
+            try {
+              const bytes = await service.readWorkspaceFile(proof, body['entry'] as never, disconnected.signal)
+              res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': bytes.byteLength })
+              await new Promise<void>(resolve => { res.once('close', resolve); res.end(bytes, resolve) })
+            } finally { release() }
+            return
+          }
           case 'recover':
             json(res, 200, await this.options.recoverWork?.(proof, disconnected.signal) ?? false); return
           case 'heartbeat':
@@ -236,7 +283,7 @@ export class ControlPlaneServer {
             await service.recordMemoryReview(proof,body['action'] as never,stringField(body,'hash'),body['review'] as never)
             json(res,200,{ok:true}); return
           case 'checkpoint':
-            await service.saveStep(proof, body['step'] as never); json(res, 200, { ok: true }); return
+            await service.saveStep(proof, body['step'] as never, disconnected.signal); json(res, 200, { ok: true }); return
           case 'artifacts':
             await service.stageArtifact(proof, body['artifact'] as never, stringField(body, 'contentBase64'), disconnected.signal)
             json(res, 200, { ok: true }); return

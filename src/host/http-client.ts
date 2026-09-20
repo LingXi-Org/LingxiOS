@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto'
 import { abortable } from '../deadline.js'
 import { previewRequestBody } from './preview-stream.js'
 import type { PreviewFrame } from '../protocol/preview.js'
+import type { WorkspaceEntry, WorkspaceState } from '../protocol/workspace.js'
 import { AgentOSError, LeaseLostError, errorMessage } from '../errors.js'
 import type {
   AssistantMessage, HeartbeatResult, HostAction, HostActionResult,
@@ -40,6 +41,27 @@ export class HostRequestError extends AgentOSError {
 }
 
 export class HttpHostClient implements HostPort {
+  async loadWorkspace(work: WorkItem, signal?: AbortSignal): Promise<WorkspaceState | null> {
+    return this.request('POST', `/v5/work/${encodeURIComponent(work.id)}/workspace`, this.proof(work), signal)
+  }
+  async stageWorkspaceFile(work: WorkItem, path: string, bytes: Uint8Array, signal?: AbortSignal): Promise<Extract<WorkspaceEntry, { kind: 'file' }>> {
+    return this.request('POST', `/v5/work/${encodeURIComponent(work.id)}/workspace-bytes`, undefined, signal, {
+      bytes, headers: { 'content-type': 'application/octet-stream', 'content-length': String(bytes.byteLength),
+        'x-lingxios-fence': String(work.fence), 'x-lingxios-lease': work.leaseToken, 'x-lingxios-path': Buffer.from(path).toString('base64url') },
+    })
+  }
+  async readWorkspaceFile(work: WorkItem, entry: Extract<WorkspaceEntry, { kind: 'file' }>, external?: AbortSignal): Promise<Uint8Array> {
+    if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > 128 * 1024 * 1024) throw new Error('invalid workspace file size')
+    const signal = AbortSignal.any([AbortSignal.timeout(300_000), ...external ? [external] : []])
+    const response = await abortable(this.fetchImpl(`${this.baseUrl}/v5/work/${encodeURIComponent(work.id)}/workspace-file`, {
+      method: 'POST', headers: { authorization: `Bearer ${this.options.serviceToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...this.proof(work), entry }), signal,
+    }), signal)
+    if (!response.ok) { await response.body?.cancel(); throw new HostRequestError(response.status, 'workspace read unavailable') }
+    const bytes = await readBytes(response, entry.size, signal)
+    this.lastContactAt = Date.now()
+    return bytes
+  }
   async prepareMemoryReview(work: WorkItem,action: HostAction,signal?: AbortSignal) {
     return this.request<import('../memory/types.js').MemoryReviewRequest|null>('POST',`/v5/work/${encodeURIComponent(work.id)}/memory-review`,{...this.proof(work),action},signal)
   }
@@ -74,7 +96,8 @@ export class HttpHostClient implements HostPort {
   private async request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal,
     binary?: { bytes: Uint8Array; headers: Record<string, string> }): Promise<T> {
     const encoded = binary ? Buffer.from(binary.bytes) : body === undefined ? undefined : JSON.stringify(body)
-    signal = AbortSignal.any([AbortSignal.timeout(this.timeoutMs),...signal ? [signal] : []])
+    const workspaceCall = /\/(workspace(?:-bytes)?|checkpoint)$/.test(path)
+    signal = AbortSignal.any([AbortSignal.timeout(workspaceCall ? 300_000 : this.timeoutMs),...signal ? [signal] : []])
     let lastError: unknown
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
       signal?.throwIfAborted()
@@ -253,9 +276,16 @@ export class HttpHostClient implements HostPort {
 }
 
 async function readBody(response: Response, maxBytes: number, signal: AbortSignal): Promise<string> {
+  return new TextDecoder().decode(await readBytes(response, maxBytes, signal))
+}
+
+async function readBytes(response: Response, maxBytes: number, signal: AbortSignal): Promise<Uint8Array> {
   const declared = Number(response.headers.get('content-length'))
-  if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`control plane response exceeds ${maxBytes} bytes`)
-  if (!response.body) return ''
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel()
+    throw new Error(`control plane response exceeds ${maxBytes} bytes`)
+  }
+  if (!response.body) return new Uint8Array()
   const reader = response.body.getReader()
   const cancel = () => { void reader.cancel(signal.reason).catch(() => {}) }
   signal.addEventListener('abort',cancel,{ once: true })
@@ -274,5 +304,5 @@ async function readBody(response: Response, maxBytes: number, signal: AbortSigna
   const bytes = new Uint8Array(size)
   let offset = 0
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
-  return new TextDecoder().decode(bytes)
+  return bytes
 }

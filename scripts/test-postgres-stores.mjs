@@ -37,6 +37,8 @@ try {
   await pool.query(await readFile(new URL('../db/migrations/010-im-collaboration.sql', import.meta.url), 'utf8'))
   await pool.query(await readFile(new URL('../db/migrations/011-performance-notifications.sql', import.meta.url), 'utf8'))
   await pool.query(await readFile(new URL('../db/migrations/012-async-admission.sql', import.meta.url), 'utf8'))
+  await pool.query(await readFile(new URL('../db/migrations/013-distributed-workspaces.sql', import.meta.url), 'utf8'))
+  await pool.query(await readFile(new URL('../db/migrations/013-distributed-workspaces.sql', import.meta.url), 'utf8'))
   await checkStorage(pool)
   const stopListener = new AbortController()
   let listenerPid, workNotifications = 0
@@ -221,5 +223,5 @@ try {
   const independent = await Promise.all([workStore.claim('thread-worker-a'), workStore.claim('thread-worker-b')])
   assert.deepEqual(independent.map(item => item.id).sort(), ['thread-a', 'thread-b'])
   assert.deepEqual((await pool.query('SELECT * FROM public.agent_work_items')).rows, [{ company_id: 'untouched' }])
-  console.log('Real PostgreSQL stores passed: schema 7→8→9→10 + 011/012, cross-process LISTEN/NOTIFY and reconnect, document CAS/restore races, reflection deduplication, atomic memory forgetting, competing claims, session exclusion, concurrent intent reservation/CAS, separate-process recovery, stale fencing, cancellation and product-table isolation.')
+  console.log('Real PostgreSQL stores passed: schema 7→8→9→10→11 + repeatable 013, cross-process LISTEN/NOTIFY and reconnect, document CAS/restore races, reflection deduplication, atomic memory forgetting, competing claims, session exclusion, concurrent intent reservation/CAS, separate-process recovery, stale fencing, cancellation and product-table isolation.')
 } finally { await pool?.end() }

@@ -70,6 +70,7 @@ try {
   for (const [database, script, variable] of [
     ['gate_stores', 'test-postgres-stores.mjs', 'LINGXIOS_TEST_DATABASE_URL'],
     ['gate_recovery', 'test-worker-recovery.mjs', 'LINGXIOS_WORKER_TEST_DATABASE_URL'],
+    ['gate_workspace', 'test-distributed-workspace.mjs', 'LINGXIOS_WORKSPACE_TEST_DATABASE_URL'],
     ['gate_capacity', 'test-capacity.mjs', 'LINGXIOS_CAPACITY_TEST_DATABASE_URL'],
   ]) {
     await admin.query(`CREATE DATABASE ${database}`)

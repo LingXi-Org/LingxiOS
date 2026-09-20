@@ -20,6 +20,8 @@ import { once } from 'node:events'
 import { createServer } from 'node:http'
 import { setTimeout as delay } from 'node:timers/promises'
 import { KernelManager } from './dist/src/kernel/manager.js'
+import { DEFAULT_WORKSPACE_LIMITS } from './dist/src/protocol/workspace.js'
+import { createHash, randomUUID } from 'node:crypto'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { packageResources } from './dist/src/app/resources.js'
 import { sandboxCommand } from './dist/src/kernel/isolation.js'
@@ -64,6 +66,24 @@ try {
   await kernels.check()
   const work = { id: 'w', fence: 1, homeEpoch: 1, tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', leaseToken: 'token' }
   assert.equal((await kernels.execute(work, 'w', 'cell', 'print(6 * 7)')).stdout, '42\\n')
+  await kernels.execute(work, 'w', 'files', 'import os; os.mkdir("nested"); open("nested/keep.txt","w").write("committed"); open("delete.txt","w").write("old")')
+  const bytes = new Map(), signal = AbortSignal.timeout(15000)
+  const upload = async (path, content) => {
+    assert.equal(kernels.sweepIdle(Date.now() + 86400000), 0, 'a frozen checkpoint cannot be idle-evicted')
+    const sha256 = createHash('sha256').update(content).digest('hex')
+    const objectKey = 'workspaces/' + 'a'.repeat(64) + '/' + 'b'.repeat(64) + '-1/' + randomUUID() + '/' + sha256
+    bytes.set(objectKey, content)
+    return { kind: 'file', path, size: content.length, sha256, objectKey }
+  }
+  const snapshot = { generation: 1, entries: await kernels.captureWorkspace(work, { generation: 0, entries: [] }, DEFAULT_WORKSPACE_LIMITS, upload, signal) }
+  await kernels.execute(work, 'w', 'overwrite', 'os.unlink("delete.txt"); open("nested/keep.txt","w").write("updated")')
+  const latest = { generation: 2, entries: await kernels.captureWorkspace(work, snapshot, DEFAULT_WORKSPACE_LIMITS, upload, signal) }
+  assert.equal(bytes.size, 3, 'only changed files should be uploaded')
+  const taken = { ...work, homeEpoch: 2, fence: 2 }
+  await kernels.restoreWorkspace(taken, latest, DEFAULT_WORKSPACE_LIMITS, async entry => bytes.get(entry.objectKey), signal)
+  const result = await kernels.execute(taken, 'w', 'recovered', 'import os; assert not os.path.exists("delete.txt"); print(open("nested/keep.txt").read())')
+  assert.equal(result.stdout, 'updated\\n')
+  console.log('Bubblewrap: frozen checkpoint, idle protection, changed-only uploads and another-worker directory restore passed')
 } finally { kernels.close() }
 
 let claims = 0

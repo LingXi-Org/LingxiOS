@@ -8,10 +8,14 @@ it('publishes empty wake hints after commit only, with no idle-claim notificatio
   const db = new PGlite()
   try {
     await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
+    // Exercise the performance migrations against their supported schema, before the workspace upgrade.
+    await db.exec('UPDATE lingxios.schema_version SET version=10')
     const migration = await readFile(new URL('../../db/migrations/011-performance-notifications.sql', import.meta.url), 'utf8')
     await db.exec(migration); await db.exec(migration)
     const admission = await readFile(new URL('../../db/migrations/012-async-admission.sql', import.meta.url), 'utf8')
     await db.exec(admission); await db.exec(admission)
+    const workspace = await readFile(new URL('../../db/migrations/013-distributed-workspaces.sql', import.meta.url), 'utf8')
+    await db.exec(workspace); await db.exec(workspace)
     const payloads: string[] = []
     const unlisten = await db.listen('lingxios_work', payload => { payloads.push(payload) })
     const insert = `INSERT INTO lingxios.agent_work_items(id,tenant_id,agent_id,session_id,kind,lane,trigger_ref)
