@@ -1,5 +1,9 @@
 # LingxiOS
 
+灵犀通用 Agent 执行运行时，为应用提供持久任务、故障恢复、工具事务、审批与可验证结果。
+
+Part of [LingXi · 灵犀](https://github.com/LingXi-Org). Source lives in [LingXi-Org/LingxiOS](https://github.com/LingXi-Org/LingxiOS); [LingxiLoop](https://github.com/LingXi-Org/LingxiLoop) is a consuming learning-collaboration application, and [LingxiLit](https://github.com/LingXi-Org/LingxiLit) is the organization's OpenLIT-based observability project. The published package remains `@lyyzka/lingxios` on GitHub Packages.
+
 LingxiOS is a product-neutral agent execution runtime for Node.js and PostgreSQL. It provides durable requests, fenced workers, native tool transactions, recovery, approval and input waits, model budgets, verified outcomes, committed artifacts, delivery outboxes, and versioned memory.
 
 The package has four public entries: `@lyyzka/lingxios`, `@lyyzka/lingxios/worker`, `@lyyzka/lingxios/ui`, and `@lyyzka/lingxios/eval`. Product rules and services stay in the consuming application.
