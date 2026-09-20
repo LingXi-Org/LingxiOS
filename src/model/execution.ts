@@ -87,7 +87,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       if (remaining <= 0) throw new ModelBudgetExceededError('root work execution time exhausted')
       calls++; tokens += input + output; cost += reservedCost
       const signal = AbortSignal.any([...(request.signal ? [request.signal] : []), AbortSignal.timeout(Math.min(2_147_483_647, remaining))])
-      const began = Date.now()
+      const began = performance.now()
       await emit?.({
         kind: 'model.request.started', stage: 'started', visibility: 'internal',
         data: { callId, logicalCallId, purpose, model: callModel.modelId ?? 'unknown',
@@ -107,7 +107,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
         ...(work.threadId !== undefined ? { threadId: work.threadId } : {}), ...(work.principalId ? { principalId: work.principalId } : {}),
         model: result?.model ?? callModel.modelId ?? 'unknown', usage: usage?.available ? usage : { available: false, inputTokens, outputTokens },
         cost: { amountMicros: costMicros, usage: usage?.available ? 'measured' : 'estimated', pricing: modelPricing(limits) },
-        latencyMs: Date.now() - began, status: result ? 'succeeded' : 'failed',
+        latencyMs: performance.now() - began, status: result ? 'succeeded' : 'failed',
         ...(failure ? { error: errorMessage(failure) } : {}),
       }
       // A completed provider request must be settled even after cancellation or lease loss.
