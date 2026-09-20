@@ -7,11 +7,55 @@ import { it } from 'node:test'
 import type { HostPort } from '../src/host/port.js'
 import type { ModelDriver } from '../src/model/driver.js'
 import type { KernelExecutor } from '../src/kernel/manager.js'
-import type { ModelItem, SessionRecord, TurnContext, WorkCompletion } from '../src/protocol/types.js'
+import type { ModelItem, RunEvent, SessionRecord, TurnContext, WorkCompletion } from '../src/protocol/types.js'
 import { AgentRuntime } from '../src/runtime/runtime.js'
 import { ApprovalPendingError, ModelDriverError } from '../src/errors.js'
 import type { ModelCallObservation } from '../src/runtime/runtime.js'
 import { modelPricing, DEFAULT_MODEL_BUDGET } from '../src/model/execution.js'
+
+for (const failure of [false, true]) it(`restores an oversized session with atomic compaction (failure=${failure})`, async () => {
+  const work: TurnContext['work'] = { id: 'recover', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn',
+    lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }
+  let saved: SessionRecord = { key: '["t","a","s",null]', tenantId: 't', agentId: 'a', sessionId: 's', revision: 1,
+    compactionEpoch: 0, appliedWorkIds: [], history: [{ role: 'user', content: 'private-marker'.repeat(20_000) },
+      ...Array.from({ length: 20 }, () => ({ role: 'user' as const, content: 'Recent observation' }))] }
+  const observations: ModelCallObservation[] = [], failed: RunEvent[] = []
+  let body = '', completed: WorkCompletion | undefined, chunks = 0
+  const host: HostPort = { ...durableProtocol(value => observations.push(value)),
+    claimWork: async () => null, heartbeat: async () => ({ ok: true }),
+    loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: [],
+      messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Continue the explanation.', createdAt: 'now' }] }),
+    executeAction: async () => ({ ok: true, value: { requestVersion: 1, pending: [], truncated: false } }),
+    loadSession: async () => structuredClone(saved), saveSession: async (_work, value) => { saved = structuredClone(value) },
+    emitEvent: async (_work, event) => { if (event.kind === 'run.failed') failed.push(event) },
+    commitResult: async (_work, message) => { body = message.body },
+    completeWork: async (_work, value) => { completed = value }, yieldWork: async () => {} }
+  const usage = { available: true, inputTokens: 100, outputTokens: 20 }
+  const model: ModelDriver = { contextWindowTokens: 128_000, maxOutputTokens: 8192,
+    compact: async () => { chunks++; return { model: 'test', usage, value: failure && chunks === 2 ? 'private-marker invalid JSON'
+      : JSON.stringify({ observedResults: 'Earlier context', decisions: '', remainingWork: 'Continue the explanation.', uncertainties: '' }) } },
+    structured: async () => ({ model: 'test', usage, value: { missing: [] } }),
+    run: async request => {
+      assert.doesNotMatch(JSON.stringify(request.items), /private-marker/)
+      return { text: 'Explanation continued.', output: [{ role: 'assistant', content: 'Explanation continued.' }], usage }
+    } }
+  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected Python') } },
+    { performance: { asyncCompaction: true } }).runWork(work)
+  assert.ok(chunks >= 2)
+  assert.equal(observations.filter(call => call.purpose === 'compaction').length, chunks)
+  if (failure) {
+    assert.equal(completed?.status, 'failed')
+    assert.equal(body, '')
+    assert.equal(saved.compactionEpoch, 0)
+    assert.match(JSON.stringify(saved.history[0]), /private-marker/)
+    assert.equal((failed[0]?.data['compactionDiagnostics'] as { reason: string }).reason, 'invalid_summary')
+    assert.doesNotMatch(JSON.stringify(failed), /private-marker/)
+  } else {
+    assert.equal(body, 'Explanation continued.')
+    assert.equal(saved.compactionEpoch, 1)
+    assert.equal(failed.length, 0)
+  }
+})
 
 it('reports every processor model call to the product ledger with durable work scope', async () => {
   const work: TurnContext['work'] = { id: 'ledger-work', tenantId: 'tenant', agentId: 'agent', sessionId: 'room',

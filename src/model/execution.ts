@@ -1,7 +1,7 @@
 import { COMPACTION_PROMPT, textSha256, type PromptManifest } from '../context/compiler.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createHash } from 'node:crypto'
-import { ModelBudgetExceededError, ModelDriverError, errorMessage } from '../errors.js'
+import { ModelBudgetExceededError, ModelContextBudgetError, ModelDriverError, errorMessage } from '../errors.js'
 import type { HostPort } from '../host/port.js'
 import { executionClassOf, type RunEvent, type WorkItem } from '../protocol/types.js'
 import type { ModelDriver, ModelUsage } from './driver.js'
@@ -133,7 +133,7 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
   const admission = executionClassOf(work) === 'operation' ? 'background' as const : 'foreground' as const
   const { invoke, nextCallId } = modelExecution(host, model, work, limits, emit)
   const check = ({ prompt: _prompt, signal: _signal, ...input }: { prompt?: PromptManifest; signal?: AbortSignal | undefined }) => {
-    if (!fitsModel(model, input)) throw new Error('model call exceeds its context budget; original input was not truncated')
+    if (!fitsModel(model, input)) throw new ModelContextBudgetError()
   }
   return {
     ...(model.previewFormat ? { previewFormat: model.previewFormat } : {}),

@@ -16,6 +16,10 @@ export class ModelBudgetExceededError extends AgentOSError {
   constructor(message: string) { super('model_budget_exhausted', message) }
 }
 
+export class ModelContextBudgetError extends AgentOSError {
+  constructor() { super('model_context_budget', 'model call exceeds its context budget; original input was not truncated') }
+}
+
 // Lease / work lifecycle ----------------------------------------------------
 
 /** The control plane no longer recognizes this (id, fence, token) lease. */

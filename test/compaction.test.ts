@@ -7,7 +7,9 @@ import type {
   CompactionRequest, CompactionResult, ModelDriver, ModelTurnRequest, ModelTurnResult,
   StructuredCallRequest, StructuredCallResult,
 } from '../src/model/driver.js'
-import type { ModelItem, SessionRecord } from '../src/protocol/types.js'
+import type { ModelItem, SessionRecord, WorkItem } from '../src/protocol/types.js'
+import { DEFAULT_MODEL_BUDGET, executionModel, type ModelCallObservation } from '../src/model/execution.js'
+import { fitsModel } from '../src/model/profile.js'
 
 function fakeDriver(overrides: Partial<ModelDriver> = {}): ModelDriver {
   return {
@@ -70,6 +72,105 @@ it('installs async compaction only on unchanged history and requirements, preser
     assert.equal(stale.install(current).compacted, false)
     assert.deepEqual(current, revised)
   }
+})
+
+describe('compaction through the execution budget', () => {
+  function metered(compact: ModelDriver['compact'], maxModelCalls = 128) {
+    const observations: ModelCallObservation[] = [], reservations: string[] = []
+    const source = fakeDriver({ contextWindowTokens: 128_000, maxOutputTokens: 8192, compact: async request => {
+      const { prompt: _prompt, signal: _signal, ...input } = request
+      assert.equal(fitsModel(source, input), true, 'every provider request must fit with output reserved')
+      return compact(request)
+    } })
+    const model = executionModel({ reserveModelCall: async (_work, id) => {
+      reservations.push(id)
+      return { allowed: true, remainingCalls: 128, remainingTokens: 1_000_000, remainingCostMicros: 10_000_000,
+        deadlineAt: new Date(Date.now() + 60_000).toISOString() }
+    }, recordModelUsage: async (_work, _id, _usage, observation) => { observations.push(observation!) } }, source,
+    { id: 'compact', fence: 1, tenantId: 't1', agentId: 'a1', sessionId: 's1', kind: 'turn', lane: 'interactive' } as WorkItem,
+    { ...DEFAULT_MODEL_BUDGET, maxModelCalls })
+    return { model, reservations, observations }
+  }
+
+  it('keeps a fitting summary to one metered call', async () => {
+    const current = session(longHistory(10))
+    const { model, reservations, observations } = metered(fakeDriver().compact)
+    const result = await compactIfNeeded(current, '', model, { ...DEFAULT_COMPACTION, contextWindowTokens: 1000, keepTailItems: 2 })
+    assert.equal(result.compacted, true)
+    assert.equal(reservations.length, 1)
+    assert.equal(observations.length, 1)
+    assert.deepEqual(result.usage, { model: 'fake-model', available: true, inputTokens: 10, outputTokens: 5 })
+  })
+
+  for (const prefix of [
+    [{ role: 'user' as const, content: 'x'.repeat(120_000) }],
+    Array.from({ length: 75 }, (_, i) => ({ role: 'user' as const, content: `${i}:中文😀\n\"\\`.repeat(500) })),
+  ]) it(`recovers an over-budget prefix of ${prefix.length} items without dropping or splitting Unicode`, async () => {
+    const tail: ModelItem[] = [{ type: 'function_call', callId: 'tail', name: 'ipython', arguments: '{}' },
+      { type: 'function_call_output', callId: 'tail', output: 'result' }, ...longHistory(19)]
+    const current = session([...prefix, ...tail]), before = structuredClone(current)
+    const fragments: string[] = []
+    let previousSummary = ''
+    const { model, reservations, observations } = metered(async request => {
+      assert.deepEqual(current, before, 'all chunks must finish before changing the session')
+      if (previousSummary) assert.deepEqual(request.items[0], summaryItem(previousSummary))
+      const fragment = request.items.at(-1)!
+      assert.ok('role' in fragment)
+      const text = fragment.content.slice(fragment.content.indexOf('\n') + 1)
+      assert.equal(Buffer.from(text).toString('utf8'), text)
+      fragments.push(text)
+      const result = await fakeDriver().compact(request)
+      previousSummary = boundSummary(result.value, DEFAULT_COMPACTION.maxSummaryChars)
+      return result
+    })
+    const result = await compactIfNeeded(current, '', model, DEFAULT_COMPACTION)
+    assert.equal(result.compacted, true)
+    assert.ok(fragments.length > 1)
+    assert.equal(fragments.join(''), JSON.stringify(prefix))
+    assert.deepEqual(current.history, [summaryItem(previousSummary), ...tail])
+    assert.equal(current.compactionEpoch, 1)
+    assert.equal(reservations.length, fragments.length)
+    assert.deepEqual(observations.map(call => [call.callId, call.purpose, call.status]),
+      reservations.map(id => [id, 'compaction', 'succeeded']))
+    assert.deepEqual(result.usage, { model: 'fake-model', available: true, inputTokens: 10 * fragments.length, outputTokens: 5 * fragments.length })
+  })
+
+  for (const failure of ['invalid_summary', 'model_budget', 'cancelled'] as const) {
+    it(`preserves history on ${failure} after an earlier chunk succeeded`, async () => {
+      const current = session([{ role: 'user', content: 'private-marker'.repeat(20_000) }, ...longHistory(20)])
+      const before = structuredClone(current), stop = new AbortController()
+      let calls = 0
+      const { model, observations } = metered(async request => {
+        calls++
+        const result = await fakeDriver().compact(request)
+        if (calls === 2 && failure === 'invalid_summary') result.value = 'private-marker invalid JSON'
+        if (calls === 2 && failure === 'cancelled') stop.abort(new Error('private-marker cancelled'))
+        return result
+      }, failure === 'model_budget' ? 1 : 128)
+      await assert.rejects(compactIfNeeded(current, '', model, DEFAULT_COMPACTION, stop.signal), (error: unknown) => {
+        assert.ok(error instanceof HardLimitExceededError)
+        assert.equal(error.diagnostics?.reason, failure)
+        assert.equal(error.diagnostics?.completedChunks, 1)
+        assert.equal(error.diagnostics?.reservedTokens, 8704)
+        assert.ok(error.diagnostics!.requestInputTokens > 0)
+        assert.doesNotMatch(JSON.stringify(error.diagnostics), /private-marker/)
+        return true
+      })
+      assert.deepEqual(current, before)
+      assert.equal(observations.length, calls)
+    })
+  }
+
+  it('rejects a completed chunked candidate after history changed', async () => {
+    const current = session([{ role: 'user', content: 'x'.repeat(240_000) }, ...longHistory(20)])
+    const { model } = metered(fakeDriver().compact)
+    const pending = prepareCompaction(current, model, DEFAULT_COMPACTION)
+    await pending.settled
+    current.history[0] = { role: 'user', content: 'replacement' }
+    const before = structuredClone(current)
+    assert.deepEqual(pending.install(current), { compacted: false })
+    assert.deepEqual(current, before)
+  })
 })
 
 it('keeps useful pending summaries when reads add evidence or derived checks', async () => {

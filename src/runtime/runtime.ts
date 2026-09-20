@@ -1302,11 +1302,15 @@ export class AgentRuntime {
       || error instanceof RunCancelledError
       || error instanceof KernelCancelledError
     const status = cancelled ? 'cancelled' : 'failed'
+    if (error instanceof HardLimitExceededError && error.diagnostics) {
+      log.warn('context compaction failed', error.diagnostics)
+    }
     await this.event(work, runId, {
       kind: cancelled ? 'run.cancelled' : 'run.failed', stage: status, visibility: 'user',
       data: {
         error: publicFailure(error),
         ...(error instanceof ModelDriverError ? { modelDiagnostics: error.diagnostics } : {}),
+        ...(error instanceof HardLimitExceededError && error.diagnostics ? { compactionDiagnostics: error.diagnostics } : {}),
       },
     }).catch((eventError: unknown) => {
       log.error('terminal event emission failed', { error: eventError })
