@@ -516,7 +516,12 @@ export class AgentRuntime {
         if (inputTokens(model, modelInputFor(session.history))+reservedTokens>hardLimit) renderMemory(undefined)
       }
       if (inputTokens(model, modelInputFor(session.history)) + reservedTokens > hardLimit) {
-        throw new HardLimitExceededError('input and reserved output exceed the context budget; original request was preserved')
+        const requestInputTokens = inputTokens(model, modelInputFor(session.history))
+        throw new HardLimitExceededError('input and reserved output exceed the context budget; original request was preserved', {
+          reason: 'context_budget', estimatedTokens: requestInputTokens + reservedTokens, hardLimitTokens: Math.floor(hardLimit),
+          contextWindowTokens: profile.contextWindowTokens, requestInputTokens, reservedTokens,
+          historyItems: session.history.length, overheadTokens,
+        })
       }
 
       const modelInput = modelInputFor(session.history), modelItems = modelInput.items

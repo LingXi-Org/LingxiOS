@@ -95,11 +95,33 @@ describe('compaction through the execution budget', () => {
   it('keeps a fitting summary to one metered call', async () => {
     const current = session(longHistory(10))
     const { model, reservations, observations } = metered(fakeDriver().compact)
-    const result = await compactIfNeeded(current, '', model, { ...DEFAULT_COMPACTION, contextWindowTokens: 1000, keepTailItems: 2 })
+    const result = await compactIfNeeded(current, '', model, { ...DEFAULT_COMPACTION, contextWindowTokens: 1000, hardRatio: 100, keepTailItems: 2 })
     assert.equal(result.compacted, true)
     assert.equal(reservations.length, 1)
     assert.equal(observations.length, 1)
     assert.deepEqual(result.usage, { model: 'fake-model', available: true, inputTokens: 10, outputTokens: 5 })
+  })
+
+  it('recovers a short history when fixed context consumes the budget without splitting interleaved tool pairs', async () => {
+    const history: ModelItem[] = [...longHistory(6),
+      { type: 'function_call', callId: 'a', name: 'ipython', arguments: '{}' },
+      { type: 'function_call', callId: 'b', name: 'ipython', arguments: '{}' },
+      { type: 'function_call_output', callId: 'b', output: 'observation'.repeat(900) },
+      { type: 'function_call_output', callId: 'a', output: 'observation'.repeat(900) },
+      ...Array.from({ length: 5 }, () => ({ role: 'user' as const, content: 'Recent request' }))]
+    const current = session(history), overheadTokens = 90_000
+    const { model, observations } = metered(fakeDriver().compact)
+    assert.equal(history.length, 15)
+    assert.ok(estimateTokens(history, model) + overheadTokens > 115_200)
+    assert.equal((await compactIfNeeded(current, '', model, DEFAULT_COMPACTION, undefined, overheadTokens)).compacted, true)
+    assert.ok(estimateTokens(current.history, model) + overheadTokens < 115_200)
+    assert.deepEqual(current.history.slice(1), history.slice(-3))
+    assert.equal(observations.length, 1)
+
+    const pending = session([{ type: 'function_call', callId: 'pending', name: 'ipython', arguments: '{}' }, ...history])
+    const before = structuredClone(pending)
+    assert.equal((await compactIfNeeded(pending, '', model, DEFAULT_COMPACTION, undefined, overheadTokens)).compacted, false)
+    assert.deepEqual(pending, before, 'unresolved tool calls must never be folded')
   })
 
   for (const prefix of [
@@ -228,7 +250,7 @@ describe('compactIfNeeded', () => {
       assert.equal(request.items.filter((item) => 'role' in item && item.content.includes('old facts')).length, 1)
       return { value: JSON.stringify({ observedResults: 'new summary', decisions: '', remainingWork: '', uncertainties: '' }), model: 'test', usage: { available: true, inputTokens: 1, outputTokens: 1 } }
     } })
-    await compactIfNeeded(s, '', driver, { ...DEFAULT_COMPACTION, contextWindowTokens: 100, keepTailItems: 2 })
+    await compactIfNeeded(s, '', driver, { ...DEFAULT_COMPACTION, contextWindowTokens: 100, hardRatio: 1000, keepTailItems: 2 })
     assert.deepEqual(s.history, [summaryItem(s.summary!), ...history.slice(-3)])
   })
 
@@ -242,7 +264,7 @@ describe('compactIfNeeded', () => {
     ]
     const s = session(history)
     const outcome = await compactIfNeeded(s, '', fakeDriver(), {
-      ...DEFAULT_COMPACTION, contextWindowTokens: 100, keepTailItems: 20,
+      ...DEFAULT_COMPACTION, contextWindowTokens: 100, hardRatio: 1000, keepTailItems: 20,
     })
     assert.equal(outcome.compacted, false)
     assert.deepEqual(s.history, history)
@@ -250,6 +272,7 @@ describe('compactIfNeeded', () => {
   const smallOptions = {
     ...DEFAULT_COMPACTION,
     contextWindowTokens: 1_000,
+    hardRatio: 100,
     keepTailItems: 2,
   }
 

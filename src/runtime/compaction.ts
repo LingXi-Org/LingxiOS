@@ -29,7 +29,7 @@ export interface CompactionOptions {
   softRatio: number
   /** If compaction itself fails, tolerate up to `hard * window` before failing the run. */
   hardRatio: number
-  /** How many trailing items survive compaction verbatim. */
+  /** Preferred verbatim tail; a hard-limit recovery may fold completed tail items too. */
   keepTailItems: number
   /** Rolling-summary character bound before the summary is re-summarized. */
   maxSummaryChars: number
@@ -62,7 +62,9 @@ export class HardLimitExceededError extends Error {
     contextWindowTokens: number
     requestInputTokens: number
     reservedTokens: number
-    completedChunks: number
+    completedChunks?: number
+    historyItems?: number
+    overheadTokens?: number
   }) {
     super('context compaction failed at the hard context limit', { cause })
     this.name = 'HardLimitExceededError'
@@ -93,32 +95,38 @@ export async function compactIfNeeded(
 ): Promise<CompactionOutcome> {
   const estimated = estimateTokens(session.history, model) + overheadTokens
   const softLimit = Math.floor(options.contextWindowTokens * options.softRatio)
+  const hardLimit = Math.floor(options.contextWindowTokens * options.hardRatio)
   if (estimated < softLimit) return { compacted: false }
-  // Nothing to fold: the tail alone exceeds the limit. Let the model turn
-  // fail naturally rather than summarizing an empty prefix.
-  if (session.history.length <= options.keepTailItems) return { compacted: false }
-
-  let boundary = session.history.length - options.keepTailItems
+  let keepTailItems = Math.min(session.history.length, options.keepTailItems)
+  let boundary: number
   const completedCalls = new Set(session.history.flatMap(item =>
     'type' in item && item.type === 'function_call_output' ? [item.callId] : []))
-  // A candidate may be built while tools run; their future outputs must retain the original calls.
-  for (let index = 0; index < boundary; index++) {
-    const item = session.history[index]!
-    if ('type' in item && item.type === 'function_call' && !completedCalls.has(item.callId)) boundary = index
-  }
-  // Close the kept suffix over tool pairs. Moving the boundary can expose
-  // another output, so scan again until the boundary stops moving.
-  for (let index = boundary; index < session.history.length; index++) {
-    const item = session.history[index]!
-    if ('type' in item && item.type === 'function_call_output') {
-      const callIndex = session.history.findIndex((candidate) =>
-        'type' in candidate && candidate.type === 'function_call' && candidate.callId === item.callId)
-      if (callIndex >= 0 && callIndex < boundary) {
-        boundary = callIndex
-        index = boundary - 1
+  do {
+    boundary = session.history.length - keepTailItems
+    // A candidate may be built while tools run; their future outputs must retain the original calls.
+    for (let index = 0; index < boundary; index++) {
+      const item = session.history[index]!
+      if ('type' in item && item.type === 'function_call' && !completedCalls.has(item.callId)) boundary = index
+    }
+    // Close the kept suffix over tool pairs. Moving the boundary can expose
+    // another output, so scan again until the boundary stops moving.
+    for (let index = boundary; index < session.history.length; index++) {
+      const item = session.history[index]!
+      if ('type' in item && item.type === 'function_call_output') {
+        const callIndex = session.history.findIndex((candidate) =>
+          'type' in candidate && candidate.type === 'function_call' && candidate.callId === item.callId)
+        if (callIndex >= 0 && callIndex < boundary) {
+          boundary = callIndex
+          index = boundary - 1
+        }
       }
     }
-  }
+    // Item count is only a preference: short histories can already exhaust the budget.
+    // Halve the tail until a paired suffix leaves room for the bounded summary.
+    if (background || estimated < hardLimit || keepTailItems === 0
+      || estimateTokens(session.history.slice(boundary), model) + overheadTokens + options.maxSummaryChars <= hardLimit) break
+    keepTailItems = Math.floor(keepTailItems / 2)
+  } while (true)
   if (boundary === 0) return { compacted: false }
   const keep = session.history.slice(boundary)
   const summarize = session.history.slice(0, boundary)
@@ -189,7 +197,6 @@ export async function compactIfNeeded(
     session.compactionEpoch += 1
     return { compacted: true, ...(usage ? { usage } : {}) }
   } catch (error) {
-    const hardLimit = Math.floor(options.contextWindowTokens * options.hardRatio)
     if (estimated < hardLimit) return { compacted: false }
     throw new HardLimitExceededError(error, {
       reason: signal?.aborted ? 'cancelled' : error instanceof ModelContextBudgetError ? 'context_budget'

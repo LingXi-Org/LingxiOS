@@ -13,12 +13,12 @@ import { ApprovalPendingError, ModelDriverError } from '../src/errors.js'
 import type { ModelCallObservation } from '../src/runtime/runtime.js'
 import { modelPricing, DEFAULT_MODEL_BUDGET } from '../src/model/execution.js'
 
-for (const failure of [false, true]) it(`restores an oversized session with atomic compaction (failure=${failure})`, async () => {
+for (const tail of [1, 20]) for (const failure of [false, true]) it(`restores an oversized session with atomic compaction (tail=${tail}, failure=${failure})`, async () => {
   const work: TurnContext['work'] = { id: 'recover', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn',
     lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }
   let saved: SessionRecord = { key: '["t","a","s",null]', tenantId: 't', agentId: 'a', sessionId: 's', revision: 1,
     compactionEpoch: 0, appliedWorkIds: [], history: [{ role: 'user', content: 'private-marker'.repeat(20_000) },
-      ...Array.from({ length: 20 }, () => ({ role: 'user' as const, content: 'Recent observation' }))] }
+      ...Array.from({ length: tail }, () => ({ role: 'user' as const, content: 'Recent observation' }))] }
   const observations: ModelCallObservation[] = [], failed: RunEvent[] = []
   let body = '', completed: WorkCompletion | undefined, chunks = 0
   const host: HostPort = { ...durableProtocol(value => observations.push(value)),
