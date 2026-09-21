@@ -162,7 +162,7 @@ export async function* sseDataEvents(body: ReadableStream<Uint8Array>): AsyncGen
 }
 
 export class OpenAIChatDriver implements ModelDriver {
-  readonly previewFormat = 'candidate-json' as const
+  readonly previewFormat = 'user-text' as const
   readonly profile: ModelProfile
   countTokens(text: string): number { return this.options.countTokens?.(text) ?? Buffer.byteLength(text) }
   readonly maxThinkingTokens: number
@@ -202,6 +202,7 @@ export class OpenAIChatDriver implements ModelDriver {
       reasoningEffort: options.reasoningEffort ?? null, maxOutputTokens: this.maxOutputTokens,
       contextWindowTokens: this.contextWindowTokens, maxThinkingTokens: this.maxThinkingTokens, compactionThinking: false, tool: 'ipython-v1',
       capabilities: this.profile,
+      previewFormat: this.previewFormat,
     })).digest('hex')
   }
 

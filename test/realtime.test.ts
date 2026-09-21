@@ -15,8 +15,14 @@ import type { PreviewSnapshot } from '../src/protocol/preview.js'
 import { consumeRunStreamEvent, createRunView } from '../src/ui/index.js'
 import { abortable } from '../src/deadline.js'
 import { nullLogger } from '../src/logging.js'
+import type { ToolDefinition } from '../src/tools/definition.js'
 
-for (const shared of [false, true]) it(`streams safe body over worker HTTP and ${shared ? 'another control plane' : 'local'} SSE before usage/verification, then replays the committed result`, async t => {
+for (const scenario of [
+  { request: '你好', chunks: ['你好', '！很高兴见到你。'] },
+  { request: '你知道我学习了什么吗', chunks: ['根据学习记录，', '你已经学习了分数。'] },
+  { request: '原样输出 JSON', chunks: ['{"body":"正文",', '"status":"示例数据"}'] },
+  { request: '读取学习记录后回答', chunks: ['根据刚读取的记录，', '你已经学习了分数。'], tool: true },
+]) for (const shared of [false, true]) it(`${scenario.request}: streams body over worker HTTP and ${shared ? 'another control plane' : 'local'} SSE before completion, then replays the committed result`, async t => {
   const db = new PGlite()
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
   // PGlite has one connection. Hold it across BEGIN/COMMIT so concurrent SSE cannot see uncommitted rows.
@@ -53,29 +59,44 @@ for (const shared of [false, true]) it(`streams safe body over worker HTTP and $
     async clear() { snapshot = null; for (const notify of listeners) notify() },
     async subscribe(_identity, notify) { listeners.add(notify); return () => { listeners.delete(notify) } },
   }
-  const app = await createLingxiOS({ database: pool, logger, realtime: { allowDraft: () => true, ...(shared ? { store } : {}) } })
+  const tools: ToolDefinition[] = scenario.tool ? [{ action: 'learning.read', name: 'learning__read', description: 'Read learning records',
+    effect: 'read' as const, approval: false, parameters: { type: 'object' as const, properties: {}, additionalProperties: false },
+    parse: () => ({}), authorize: async () => {}, execute: async () => ({ ok: true, value: { learned: '分数' } }) }] : []
+  const app = await createLingxiOS({ database: pool, logger, tools, realtime: { allowDraft: () => true, ...(shared ? { store } : {}) } })
   const readerApp = shared ? await createLingxiOS({ database: pool, logger, realtime: { allowDraft: () => true, store } }) : app
   const identity = { runId: 'stream', tenantId: 'tenant', agentId: 'agent', sessionId: 'session', principalId: 'human' }
-  await app.enqueue({ id: identity.runId, ...identity, text: 'Say hello', mode: 'chat' })
+  await app.enqueue({ id: identity.runId, ...identity, text: scenario.request, mode: scenario.tool ? 'execute' : 'chat',
+    codeExecution: 'disabled', deliveryMode: 'auto' })
   const controlPort = await app.listenControlPlane({ serviceToken: 'test-service', port: 0 })
   const host = new HttpHostClient({ baseUrl: `http://127.0.0.1:${controlPort}`, serviceToken: 'test-service', workerId: 'stream-worker' })
   const work = (await host.claimWork())!
   assert.equal((await host.loadContext(work)).previewAllowed, true)
   let releaseModel!: () => void
   const providerGate = new Promise<void>(resolve => { releaseModel = resolve })
-  const candidate = JSON.stringify({ body: 'Hello world', status: 'satisfied', checks: [{ requirement: 'Say hello', status: 'met', basis: 'Greeting supplied.' }], gaps: [] })
+  let releaseSecond!: () => void, secondBody!: () => void, calls = 0
+  const secondGate = new Promise<void>(resolve => { releaseSecond = resolve })
+  const secondSeen = new Promise<void>(resolve => { secondBody = resolve })
+  const body = scenario.chunks.join('')
   let providerAt = 0, browserAt = 0, firstBody!: () => void, latestId = 0
   const bodySeen = new Promise<void>(resolve => { firstBody = resolve })
   const model = new OpenAIChatDriver('sse-stub', { apiKey: 'test', fetchImpl: async (_url, init) => {
     const request = JSON.parse(String(init?.body))
     if (!request.stream) return Response.json({ model: 'stub', choices: [{ finish_reason: 'stop', message: { content: '{"missing":[]}' } }],
       usage: { prompt_tokens: 10, completion_tokens: 10 } })
+    if (scenario.tool && calls++ === 0) {
+      assert.ok(request.tools.some((tool: { function: { name: string } }) => tool.function.name === 'learning__read'))
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'read',
+        function: { name: 'learning__read', arguments: '{}' } }] }, finish_reason: 'tool_calls' }],
+        usage: { prompt_tokens: 10, completion_tokens: 10 } })}\n\ndata: [DONE]\n\n`)
+    }
     return new Response(new ReadableStream<Uint8Array>({ async start(controller) {
       const encode = (value: unknown) => new TextEncoder().encode(`data: ${JSON.stringify(value)}\n\n`)
       providerAt = performance.now()
-      controller.enqueue(encode({ choices: [{ delta: { content: '{"body":"Hello', reasoning_content: 'PRIVATE REASONING' } }] }))
+      controller.enqueue(encode({ choices: [{ delta: { content: scenario.chunks[0], reasoning_content: 'PRIVATE REASONING' } }] }))
+      await secondGate
+      controller.enqueue(encode({ choices: [{ delta: { content: scenario.chunks[1] } }] }))
       await providerGate
-      controller.enqueue(encode({ model: 'stub', choices: [{ delta: { content: candidate.slice('{"body":"Hello'.length) }, finish_reason: 'stop' }],
+      controller.enqueue(encode({ model: 'stub', choices: [{ delta: {}, finish_reason: 'stop' }],
         usage: { prompt_tokens: 10, completion_tokens: 10 } }))
       controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'))
       controller.close()
@@ -113,6 +134,7 @@ for (const shared of [false, true]) it(`streams safe body over worker HTTP and $
           if (item.type === 'event') latestId = item.event.seq
           view = consumeRunStreamEvent(view, item)
           if (item.type === 'preview' && view.draft && !browserAt) { browserAt = performance.now(); firstBody() }
+          if (item.type === 'preview' && view.draft === body) secondBody()
         }
       }
     } finally { await reader.cancel().catch(() => {}) }
@@ -121,20 +143,24 @@ for (const shared of [false, true]) it(`streams safe body over worker HTTP and $
   const running = new AgentRuntime(host, model, { execute: async () => { throw new Error('Python must stay disabled') } }, { logger }).runWork(work)
   try {
     await abortable(bodySeen, AbortSignal.timeout(5000))
-    assert.equal(view.draft, 'Hello')
+    assert.equal(view.draft, scenario.chunks[0])
     assert.equal(view.message, null)
     assert.equal((await app.readRunState(identity))?.run.status, 'leased')
-    assert.equal((await pool.query('SELECT COUNT(*)::integer AS count FROM lingxios.agent_model_budget_calls WHERE observation IS NOT NULL')).rows[0]?.['count'], 0)
-    assert.ok(!wire.includes('PRIVATE REASONING') && !wire.includes('Greeting supplied'))
+    assert.equal((await pool.query('SELECT COUNT(*)::integer AS count FROM lingxios.agent_model_budget_calls WHERE observation IS NOT NULL')).rows[0]?.['count'], scenario.tool ? 1 : 0)
+    releaseSecond()
+    await abortable(secondSeen, AbortSignal.timeout(5000))
+    assert.equal(view.draft, body)
+    assert.equal(view.message, null)
+    assert.doesNotMatch(wire, /PRIVATE REASONING/)
     releaseModel()
     await running
     await abortable(consume, AbortSignal.timeout(5000))
-    assert.equal((view as ReturnType<typeof createRunView>).message?.body, 'Hello world')
+    assert.equal((view as ReturnType<typeof createRunView>).message?.body, body)
     assert.equal(view.lifecycle, 'succeeded')
     assert.equal(view.draft, '')
     const replay = await app.streamRun(identity, { lastEventId: String(latestId) })
     const replayed = await replay.text()
-    assert.match(replayed, /Hello world/)
+    assert.ok(replayed.includes(JSON.stringify(body).slice(1, -1)))
     assert.match(replayed, /candidateHash/)
     assert.doesNotMatch(replayed, /event: event/)
     await assert.rejects(app.streamRun({ ...identity, tenantId: 'other' }), /identity/)
@@ -148,7 +174,7 @@ for (const shared of [false, true]) it(`streams safe body over worker HTTP and $
     t.diagnostic('state: ' + JSON.stringify((await app.readRunState(identity))?.run))
     throw error
   } finally {
-    releaseModel(); stopBrowser.abort()
+    releaseSecond(); releaseModel(); stopBrowser.abort()
     await running.catch(() => {}); await consume.catch(() => {})
     await new Promise<void>(resolve => { browser.close(() => resolve()); browser.closeAllConnections() })
     await readerApp.stop(); await app.stop(); await db.close()
