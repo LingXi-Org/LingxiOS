@@ -20,14 +20,20 @@ const cases = [
   ['negated-preference', '我不喜欢冗长的回答。', '用户喜欢冗长的回答。', false],
   ['explicit-brevity', '请记住：我喜欢简短回答。', '用户偏好简短回答。', true],
 ]
-let inputTokens = 0, outputTokens = 0
+let inputTokens = 0, outputTokens = 0, reservedUsd = 0, chargedUpperUsd = 0
 const measured = { modelId: client.modelId, configurationFingerprint: client.configurationFingerprint,
   inputCostMicrosPerMillion: client.inputCostMicrosPerMillion, mode: client.mode.bind(client),
   async decide(request) {
-    if (inputTokens * 0.042 / 1e6 > 0.9) throw new Error('pilot spend limit reached')
-    const result = await client.decide(request)
-    inputTokens += result.usage.inputTokens; outputTokens += result.usage.outputTokens
-    return result
+    const reserve = Buffer.byteLength(JSON.stringify(request)) * .042 / 1e6
+    if (chargedUpperUsd + reservedUsd + reserve > .1) throw new Error('pilot spend limit reached')
+    reservedUsd += reserve
+    let charge = reserve
+    try {
+      const result = await client.decide(request)
+      inputTokens += result.usage.inputTokens; outputTokens += result.usage.outputTokens
+      charge = result.usage.inputTokens * .042 / 1e6
+      return result
+    } finally { reservedUsd -= reserve; chargedUpperUsd += charge }
   } }
 const results = []
 for (const [id, originalText, content, expected] of cases) {
@@ -36,11 +42,11 @@ for (const [id, originalText, content, expected] of cases) {
     const review = await reviewMemoryDecision(measured, { request: { originalText, revisions: [], delegated: false },
       action: 'memory.apply', args: { scopeType: 'learner', scopeId: 'synthetic-learner', changes: [{ action: 'create',
         content: { path: 'preferences/communication.md', title: 'Communication preference', description: 'Synthetic proposed memory', body: content, layer: 'core', locked: false } }] }, documents: [] })
-    results.push({ id, expected, approved: review.approved, confidence: review.confidence, passed: review.approved === expected, latencyMs: Date.now() - started })
+    results.push({ id, expected, approved: review?.approved ?? null, confidence: review?.confidence ?? null, fallbackRequired: !review, passed: !!review && review.approved === expected, latencyMs: Date.now() - started })
   } catch { results.push({ id, expected, passed: false, error: 'decision_failed', latencyMs: Date.now() - started }) }
 }
 const report = { model: client.modelId, date: new Date().toISOString(), kind: 'synthetic-Chinese-memory-smoke',
   limitation: 'Twelve authored examples, not independent calibration or a production acceptance dataset.',
-  inputTokens, outputTokens, estimatedUsd: inputTokens * 0.042 / 1e6, passed: results.filter(r => r.passed).length, total: results.length, results }
+  inputTokens, outputTokens, reservedLimitUsd: .1, chargedUpperUsd, estimatedUsd: inputTokens * 0.042 / 1e6, passed: results.filter(r => r.passed).length, total: results.length, results }
 await writeFile(process.argv[3], JSON.stringify(report, null, 2) + '\n')
 console.log(JSON.stringify({ passed: report.passed, total: report.total, estimatedUsd: report.estimatedUsd }))

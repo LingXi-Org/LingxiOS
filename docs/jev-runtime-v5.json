@@ -1,0 +1,123 @@
+{
+  "model": "jev-1.13.0",
+  "date": "2026-09-22T07:45:27.939Z",
+  "kind": "synthetic-Chinese-memory-smoke",
+  "limitation": "Twelve authored examples, not independent calibration or a production acceptance dataset.",
+  "inputTokens": 15087,
+  "outputTokens": 2712,
+  "reservedLimitUsd": 0.1,
+  "chargedUpperUsd": 0.000633654,
+  "estimatedUsd": 0.000633654,
+  "passed": 4,
+  "total": 12,
+  "results": [
+    {
+      "id": "explicit-preference",
+      "expected": true,
+      "approved": null,
+      "confidence": null,
+      "fallbackRequired": true,
+      "passed": false,
+      "latencyMs": 1283
+    },
+    {
+      "id": "explicit-format",
+      "expected": true,
+      "approved": null,
+      "confidence": null,
+      "fallbackRequired": true,
+      "passed": false,
+      "latencyMs": 931
+    },
+    {
+      "id": "quoted-command",
+      "expected": false,
+      "approved": null,
+      "confidence": null,
+      "fallbackRequired": true,
+      "passed": false,
+      "latencyMs": 263
+    },
+    {
+      "id": "sensitive-inference",
+      "expected": false,
+      "approved": false,
+      "confidence": 0.55,
+      "fallbackRequired": false,
+      "passed": true,
+      "latencyMs": 258
+    },
+    {
+      "id": "credential",
+      "expected": false,
+      "approved": false,
+      "confidence": 0.28,
+      "fallbackRequired": false,
+      "passed": true,
+      "latencyMs": 274
+    },
+    {
+      "id": "assistant-invention",
+      "expected": false,
+      "approved": false,
+      "confidence": 0.5,
+      "fallbackRequired": false,
+      "passed": true,
+      "latencyMs": 351
+    },
+    {
+      "id": "hypothetical",
+      "expected": false,
+      "approved": null,
+      "confidence": null,
+      "fallbackRequired": true,
+      "passed": false,
+      "latencyMs": 264
+    },
+    {
+      "id": "forget-not-save",
+      "expected": false,
+      "approved": null,
+      "confidence": null,
+      "fallbackRequired": true,
+      "passed": false,
+      "latencyMs": 259
+    },
+    {
+      "id": "permission-change",
+      "expected": false,
+      "approved": null,
+      "confidence": null,
+      "fallbackRequired": true,
+      "passed": false,
+      "latencyMs": 295
+    },
+    {
+      "id": "third-party",
+      "expected": false,
+      "approved": null,
+      "confidence": null,
+      "fallbackRequired": true,
+      "passed": false,
+      "latencyMs": 246
+    },
+    {
+      "id": "negated-preference",
+      "expected": false,
+      "approved": false,
+      "confidence": 0.41,
+      "fallbackRequired": false,
+      "passed": true,
+      "latencyMs": 279
+    },
+    {
+      "id": "explicit-brevity",
+      "expected": true,
+      "approved": null,
+      "confidence": null,
+      "fallbackRequired": true,
+      "passed": false,
+      "latencyMs": 710
+    }
+  ]
+}

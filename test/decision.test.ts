@@ -1,3 +1,6 @@
+import { decisionToolHost } from '../src/model/tool-decision.js'
+import type { HostPort } from '../src/host/port.js'
+import type { ModelDriver } from '../src/model/driver.js'
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { JevClient, accepted, decideOrFallback, executionDecision, parseDecisionResult, yesNo, type DecisionAnswer, type DecisionDriver, type DecisionRequest } from '../src/model/decision.js'
@@ -130,7 +133,7 @@ it('falls back on uncertainty and provider failure, but never on clear rejection
   const uncertain = driver(r => Object.fromEntries(Object.keys(r.questions).map(id => [id, { ...choice(), confidence: 0.7 }])))
   assert.equal(await decideOrFallback(uncertain, request), undefined)
   const rejecting = driver(() => ({ supported: choice('no'), ambiguous: choice('uncertain') }))
-  assert.ok(await decideOrFallback(rejecting, request))
+  assert.ok(await decideOrFallback(rejecting, { ...request, rejectChoices: { supported: ['no'] } }))
   const unavailable = { ...uncertain, decide: async () => { throw new Error('jev_http_429') } }
   assert.equal(await decideOrFallback(unavailable, request), undefined)
   for (const failure of [new ModelBudgetExceededError('spent'), new LeaseLostError(), new Error('database unavailable')]) {
@@ -150,4 +153,38 @@ it('covers every requirement across bounded batches without changing the origina
   assert.deepEqual(result?.missing, [])
   assert.equal(seen.length, 3)
   assert.equal(seen.reduce((n, r) => n + Object.keys(r.questions).filter(id => id.startsWith('requirement')).length, 0), 70)
+})
+
+it('does not confuse a negative annotation with a rejection and preserves early batch rejection', async () => {
+  const annotation = driver(() => ({ explicit: choice('no'), supported: choice('uncertain') }))
+  assert.equal(await reviewMemoryDecision(annotation, { request: { originalText: 'hello', revisions: [], delegated: false }, action: 'memory.apply', args: {}, documents: [] }), undefined)
+  let calls = 0
+  const rejecting = driver(r => { calls++; return Object.fromEntries(Object.keys(r.questions).map(id => [id, choice(id === 'requirement_0' ? 'missing' : 'uncertain')])) })
+  const result = await decisionContentCheck(rejecting, { originalText: Array.from({length:70}, (_,i) => `要求${i}。`).join(''), revisions: [], body: 'done' }, new AbortController().signal)
+  assert.equal(calls, 1)
+  assert.equal(result?.missing[0]?.quote, '要求0。')
+})
+
+it('shared native/Python action review bills both calls once, replays without billing, and stops on budget failure', async () => {
+  const observations: ModelCallObservation[] = []
+  let recorded = false, legacy = 0, denied = false, executed = 0
+  const work = { id: 'tool-work', tenantId: 'tenant', principalId: 'human', agentId: 'agent', sessionId: 'session', fence: 1 } as WorkItem
+  const host = {
+    prepareToolDecision: async () => ({ hash: 'bound-source', requestVersion: 1, request: { ...request, fallback: 'generation' }, recorded }),
+    reserveModelCall: async () => { if (denied) throw new ModelBudgetExceededError('spent'); return { allowed: true, deadlineAt: new Date(Date.now()+60000).toISOString(), remainingCalls: 10, remainingTokens: 100000, remainingCostMicros: 1000000 } },
+    recordModelUsage: async (_work: unknown, _id: unknown, _usage: unknown, observation: ModelCallObservation) => { observations.push(observation) },
+    saveStep: async (_work: unknown, step: {kind:string}) => { if (step.kind === 'runtime.tool-decision') recorded = true },
+    executeAction: async () => { executed++; return { ok: true } },
+  } as unknown as HostPort
+  const model = { modelId: 'fixture', structured: async () => { legacy++; return { value: { answers: { supported: 'yes' } }, model: 'fixture', usage: {available:true,inputTokens:100,outputTokens:10} } } } as unknown as ModelDriver
+  const source = driver(() => ({ supported: { ...choice(), confidence: .1 } }))
+  const wrapped = decisionToolHost(host, model, source)
+  await wrapped.executeAction(work, {} as never)
+  assert.equal(legacy, 1); assert.equal(observations.length, 2)
+  assert.deepEqual(observations.map(row => row.purpose), ['decision', 'structured'])
+  await wrapped.executeAction(work, {} as never)
+  assert.equal(legacy, 1); assert.equal(observations.length, 2)
+  recorded = false; denied = true
+  await assert.rejects(wrapped.executeAction(work, {} as never), ModelBudgetExceededError)
+  assert.equal(legacy, 1); assert.equal(executed, 2)
 })

@@ -40,8 +40,15 @@ export async function decisionContentCheck(decisions: DecisionDriver, input: Rev
     let incomplete = false
     for (let offset = 0; offset < entries.length; offset += 32) {
       const batch = await decideOrFallback(decisions, { purpose, version: '2', state: { ...input, requirements, statements },
-        questions: Object.fromEntries(entries.slice(offset, offset + 32)), signal })
+        questions: Object.fromEntries(entries.slice(offset, offset + 32)), signal,
+        rejectChoices: Object.fromEntries(entries.slice(offset, offset + 32).map(([id]) => [id, ['missing', 'limitation', 'contradicted', 'unsupported']])) })
       if (!batch) { incomplete = true; if (mode !== 'shadow') break; continue }
+      const rejected = Object.entries(batch.answers).filter(([, a]) => a.type === 'choice' && a.confidence >= (decisions.threshold?.(purpose) ?? 0.95) && ['missing', 'limitation', 'contradicted', 'unsupported'].includes(a.choice))
+      if (rejected.length) {
+        const missing: Array<{ quote: string; reason: string; blockedBy?: string }> = rejected.filter(([id]) => id.startsWith('requirement_')).slice(0, 16).map(([id]) => { const index = Number(id.split('_')[1]); return { quote: requirements[index]!.text, reason: `requirement_unfulfilled:request_span_${index}` } })
+        const limitations = rejected.filter(([id]) => !id.startsWith('requirement_')).slice(0, 16).map(([id]) => { const index = Number(id.split('_')[1]); return { quote: id.startsWith('citation_') ? citations[index]!.claim : statements[index]!, reason: `delivery_unsupported:${id}` } })
+        return { missing, limitations, model: batch.model, usage: { available: true, inputTokens: result.usage.inputTokens + batch.usage.inputTokens, outputTokens: result.usage.outputTokens + batch.usage.outputTokens } }
+      }
       Object.assign(result.answers, batch.answers)
       result.usage.inputTokens += batch.usage.inputTokens; result.usage.outputTokens += batch.usage.outputTokens
     }

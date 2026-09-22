@@ -571,7 +571,7 @@ export class AgentRuntime {
         protocolCorrection = null
         turn = (hop === 0 && !context.executionSteps?.some(step => !step.kind.startsWith('runtime.')) && decisions
           ? await selectReadAction(decisions, modelTools, { original: session.request?.originalText, revisions: session.request?.revisions,
-            evidence: liveContext.evidence, observations: liveContext.dynamic }, signals.generationSignal()) : undefined) ?? await model.run({
+            evidence: liveContext.evidence, observations: liveContext.dynamic }, signals.generationSignal(), liveContext.harness?.skills) : undefined) ?? await model.run({
           instructions,
           ...(session.promptContext.manifest ? { prompt: session.promptContext.manifest } : {}),
           items: modelItems,

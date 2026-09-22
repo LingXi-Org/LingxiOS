@@ -12,7 +12,7 @@ export type DecisionQuestion = { type: 'choice'; instructions: string; criteria:
 export type DecisionAnswer = { type: 'choice'; choice: string; confidence: number; probabilities: Record<string, number> }
   | { type: 'score'; score: number; confidence: number; probabilities: Record<string, number>; legend: Record<string, string> }
   | { type: 'noul'; noul: number }
-export interface DecisionRequest { purpose: string; version: string; state: unknown; questions: Record<string, DecisionQuestion>; signal?: AbortSignal | undefined }
+export interface DecisionRequest { purpose: string; version: string; state: unknown; questions: Record<string, DecisionQuestion>; rejectChoices?: Record<string, string[]>; signal?: AbortSignal | undefined }
 export interface DecisionResult { model: string; answers: Record<string, DecisionAnswer>; usage: ModelUsage; callId?: string }
 export interface DecisionSummary {
   version: '2'; purpose: string; questionVersion: string; inputHash: string; model: string;
@@ -72,7 +72,7 @@ export async function decideOrFallback(driver: DecisionDriver, request: Decision
     request.signal?.throwIfAborted()
     if (result.callId) summary.callId = result.callId
     const threshold = driver.threshold?.(request.purpose) ?? 0.95
-    const rejected = Object.values(result.answers).some(a => a.type === 'choice' && a.confidence >= threshold && ['no', 'missing', 'contradicted', 'unsupported', 'does_not_meet'].includes(a.choice))
+    const rejected = Object.entries(result.answers).some(([id, a]) => a.type === 'choice' && a.confidence >= threshold && request.rejectChoices?.[id]?.includes(a.choice))
     const uncertain = !rejected && Object.values(result.answers).some(a => a.type === 'noul' || a.confidence < threshold
       || a.type === 'choice' && ['uncertain', 'unknown'].includes(a.choice))
     summary.answers = Object.fromEntries(Object.entries(result.answers).map(([id, a]) => [id, a.type === 'choice' ? a.choice : a.type === 'score' ? a.score : a.noul]))
@@ -179,6 +179,10 @@ export class JevClient implements DecisionDriver {
         let value: unknown
         try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new Error('jev_invalid_json') }
         return parseDecisionResult(value, request.questions, this.modelId)
+      } catch (error) {
+        request.signal?.throwIfAborted()
+        if (error instanceof Error && /^(jev_|invalid decision )/.test(error.message)) throw error
+        throw new Error('jev_response_failed')
       } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
     }, signal)
   }
