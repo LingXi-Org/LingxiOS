@@ -4,6 +4,8 @@ import type { ModelDriver } from '../model/driver.js'
 import type { KernelArtifact } from '../protocol/types.js'
 import { compileAuxiliaryPrompt } from '../context/compiler.js'
 import { candidateHash } from './verification.js'
+import { decisionContentCheck } from './decision-check.js'
+import type { DecisionDriver } from '../model/decision.js'
 
 const prompt = compileAuxiliaryPrompt('content-review', `Evaluate fulfillment of the original deliverables, not merely whether the answer follows the requested fallback wording.
 Check a candidate delivery against the exact original request and ordered revisions.
@@ -28,7 +30,7 @@ This is a fallible content review, not verification of goal completion or extern
 
 /** Runtime execution records, not model preference, decide which candidates need this call. */
 export async function checkCandidateContent(model: ModelDriver, request: RequestSnapshot, body: string,
-  artifacts: readonly KernelArtifact[], contextWindowTokens: number, signal: AbortSignal, resourceRefreshGaps: readonly string[] = [], fileObservations: readonly import('./verification.js').VerificationRecord[] = [], observations: unknown = []) {
+  artifacts: readonly KernelArtifact[], contextWindowTokens: number, signal: AbortSignal, resourceRefreshGaps: readonly string[] = [], fileObservations: readonly import('./verification.js').VerificationRecord[] = [], observations: unknown = [], decisions?: DecisionDriver) {
   const revisions = [...(request.inheritedRevisions ?? []), ...request.revisions]
   const input = { workId: request.workId, sourceRef: request.sourceRef, requestVersion: request.revisions.length + 1,
     originalText: request.originalText, revisions: revisions.map(revision => ({ ...revision,
@@ -44,6 +46,8 @@ export async function checkCandidateContent(model: ModelDriver, request: Request
     return { ...identity, missing: [], limitations: [], error: 'Content check input exceeds the model context budget' }
   }
   try {
+    const decision = decisions ? await decisionContentCheck(decisions, input, signal) : undefined
+    if (decision) return { ...identity, ...decision }
     const result = await model.structured({ purpose: 'content-review', instructions: prompt.instructions, prompt: prompt.manifest, input, signal })
     const value = result.value as { missing?: unknown; limitations?: unknown } | null
     const texts = [request.originalText, ...revisions.map(item => item.text)]

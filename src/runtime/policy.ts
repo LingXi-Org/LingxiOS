@@ -13,6 +13,8 @@ import type {
 import type { GoalAssessment } from '../outcome/assessment.js'
 
 export interface RuntimePolicy {
+  /** Worker-only, budgeted semantic enrichment of already-authorized context; never grants authority. */
+  prepareDecisionContext?(context: TurnContext, decisions: import('../model/decision.js').DecisionDriver, signal: AbortSignal, request?: import('../context/request.js').RequestSnapshot): Promise<void>
   /**
    * Compute the kernel capability grant for this turn. The same computation
    * must be mirrored by the control plane's capability resolver — the kernel

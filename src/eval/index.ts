@@ -1,5 +1,5 @@
 export { summarizeCalibration } from './calibration.js'
-export { reviewAnswer } from './review.js'
+export { reviewAnswer, reviewAnswerWithDecisions } from './review.js'
 import type { createLingxiOS, RequestInput } from '../app/index.js'
 import type { RunIdentity } from '../app/jobs.js'
 import { isDeepStrictEqual } from 'node:util'

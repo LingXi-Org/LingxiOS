@@ -11,7 +11,7 @@ The package has four public entries: `@lyyzka/lingxios`, `@lyyzka/lingxios/worke
 ## Install
 
 ```sh
-npm install @lyyzka/lingxios@3.3.4
+npm install @lyyzka/lingxios@4.0.0
 ```
 
 Configure the GitHub Packages registry for the `@lyyzka` scope before installing:
@@ -78,4 +78,14 @@ Production Python execution requires OS isolation. The packaged Worker defaults 
 
 See [runtime and deployment details](docs/packaged-runtime.md), [Harness semantics](docs/harness-v3.md), and [production recovery](deploy/README.md).
 
-Optional `control.memory` provides scoped Markdown documents, always-loaded core memory, Chinese/English PostgreSQL search, committed history, versioned edits, background reflection, diagnostics and rollback. Version 3.3.0 requires schema 11 and protocol 11, including distributed workspace checkpoints. Schema-9 installations apply `packageResources().migration010`, then `migration011` and `migration012` and `migration013` (schema-10 installations need migrations 011-013); existing memory and business records remain intact. IM conversation policy, multi-Agent reply slots, durable DAGs and field-versioned shared state are available through the [IM collaboration API](docs/im-collaboration.md). See the [memory configuration and cutover procedure](docs/packaged-runtime.md#cognitive-memory).
+Optional `control.memory` provides scoped Markdown documents, always-loaded core memory, Chinese/English PostgreSQL search, committed history, versioned edits, background reflection, diagnostics and rollback. Version 4.0.0 requires schema 11 and protocol 12, including distributed workspace checkpoints. Schema-9 installations apply `packageResources().migration010`, then `migration011` and `migration012` and `migration013` (schema-10 installations need migrations 011-013); existing memory and business records remain intact. IM conversation policy, multi-Agent reply slots, durable DAGs and field-versioned shared state are available through the [IM collaboration API](docs/im-collaboration.md). See the [memory configuration and cutover procedure](docs/packaged-runtime.md#cognitive-memory).
+
+## Jev semantic decisions
+
+Pass `decisions: { apiKey: process.env.TYPESAFE_API_KEY, model: 'jev-1.13.0', mode: 'shadow' }` to `createWorker`. The standalone worker reads `TYPESAFE_API_KEY`, `JEV_MODEL` and `JEV_MODE` (default `shadow`). No key leaves existing generative reviewers unchanged. `active` replaces memory-write and memory-synthesis verification, adds grounded delivery/citation checks and reranks authorized recalled memory. Memory proposals and user-facing generation still use the generative model.
+
+`modes` overrides individual purposes: `memory-write-review`, `memory-synthesis-verification`, `content-review`, `memory-relevance`, and product-defined purposes. `off` skips a purpose; `shadow` pays for Jev but retains existing results; `active` uses Jev. Approval requires both confidence and chosen probability >= 0.95; this conservative threshold is not a claim of calibration. Active safety-review failures fail closed; advisory ranking failures preserve original context. Question/state limits reject oversized inputs without truncation. No automatic retries.
+
+All worker decisions use existing fenced root reservations and durable model accounting, at $0.042 per million input tokens and zero output cost by default. The optional trusted `RuntimePolicy.prepareDecisionContext` hook receives the budgeted driver, live authorized context and frozen request; it must never grant permissions or change product state. `reviewAnswerWithDecisions` in the eval export is an explicit standalone review API; callers own its separate budget.
+
+Protocol 12 adds `decision` model observations. Drain existing work before upgrading the control plane and workers together; schema stays at 11. Old workers/control planes cannot mix with protocol 12. Downgrade requires restoring a matching installation version and draining again, never rewriting active run bindings. Validate Chinese/domain quality before switching sensitive purposes from shadow. Run the opt-in synthetic smoke with `node scripts/eval-jev.mjs ENV_FILE REPORT_FILE`; only aggregate results and case IDs are recorded.

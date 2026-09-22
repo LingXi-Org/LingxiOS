@@ -1,3 +1,4 @@
+import { AGENT_OS_PROTOCOL_VERSION } from '../src/protocol/constants.js'
 import { MemoryStepStore } from '../src/control-plane/steps.js'
 import { MemoryModelBudgetStore } from '../src/control-plane/memory-store.js'
 import { snapshotEvidence } from '../src/context/evidence.js'
@@ -61,7 +62,7 @@ it('preserves goal outcomes and enforces session leases over real HTTP', async (
       assert.equal(response.status, 400)
       assert.deepEqual(await response.json(), { error: 'request body must be a JSON object' })
     }
-    for (const protocol of [undefined, 10, '11', 12]) {
+    for (const protocol of [undefined, AGENT_OS_PROTOCOL_VERSION - 1, String(AGENT_OS_PROTOCOL_VERSION), AGENT_OS_PROTOCOL_VERSION + 1]) {
       const response = await fetch(`http://127.0.0.1:${port}/v5/work/claim`, { method: 'POST',
         headers: { authorization: 'Bearer test-secret', 'content-type': 'application/json' },
         body: JSON.stringify({ protocol, workerId: 'old-worker', workKinds: ['turn'] }) })
@@ -70,7 +71,7 @@ it('preserves goal outcomes and enforces session leases over real HTTP', async (
     }
     for (const workerId of [123, true, ['worker'], null]) {
       const response = await fetch(`http://127.0.0.1:${port}/v5/work/claim`, { method: 'POST',
-        headers: { authorization: 'Bearer test-secret', 'content-type': 'application/json' }, body: JSON.stringify({ protocol: 11, workerId, workKinds: ['turn'] }) })
+        headers: { authorization: 'Bearer test-secret', 'content-type': 'application/json' }, body: JSON.stringify({ protocol: AGENT_OS_PROTOCOL_VERSION, workerId, workKinds: ['turn'] }) })
       assert.equal(response.status, 400)
       assert.deepEqual(await response.json(), { error: 'workerId must be a string' })
     }

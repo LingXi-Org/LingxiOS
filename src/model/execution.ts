@@ -25,7 +25,7 @@ export interface ModelCallObservation {
   instructionsSha256?: string
   callId: string
   logicalCallId?: string
-  purpose: 'agent-turn' | 'structured' | 'compaction' | 'embedding'
+  purpose: 'agent-turn' | 'structured' | 'compaction' | 'embedding' | 'decision'
   workId: string
   tenantId: string
   agentId: string

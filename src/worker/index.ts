@@ -18,6 +18,7 @@ export async function startWorker(env: NodeJS.ProcessEnv = process.env,
   const worker = createWorker({ ...options,
     controlPlane: { url: config.controlPlaneUrl, serviceToken: config.serviceToken },
     model: config.model, modelBudget: loadModelBudget(env),
+    ...(env['TYPESAFE_API_KEY'] ? { decisions: { apiKey: env['TYPESAFE_API_KEY'], model: env['JEV_MODEL'] ?? 'jev-1.13.0', mode: (env['JEV_MODE'] ?? 'shadow') as import('../model/decision.js').DecisionMode } } : {}),
     recordModelPayloads: boolEnv('AGENT_OS_RECORD_MODEL_PAYLOADS', false, env),
     kernelFactory: options.kernelFactory ?? (bridge => new KernelManager(bridge, {
       maxKernels: config.maxConcurrentRuns,

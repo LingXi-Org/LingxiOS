@@ -66,8 +66,11 @@ import { CandidateBodyParser } from '../model/preview.js'
 import { PreviewBuffer } from './preview.js'
 import { checkedWorkspaceEntries, workspaceLimits, type WorkspaceState } from '../protocol/workspace.js'
 import type { ExecutionStep } from '../control-plane/steps.js'
+import { executionDecision, type DecisionDriver } from '../model/decision.js'
+import { rerankMemoryContext } from '../memory/decision.js'
 
 export interface WorkProcessorContext {
+  decisions?: DecisionDriver
   host: HostPort
   model: ModelDriver
   signal: AbortSignal
@@ -80,6 +83,7 @@ export interface WorkProcessor {
 }
 
 export interface AgentRuntimeOptions {
+  decisions?: DecisionDriver
   performance?: { checkpointDedup?: boolean; promptCache?: boolean; asyncCompaction?: boolean; onDemandAttachments?: boolean }
   metrics?: MetricsRegistry
   policy?: RuntimePolicy
@@ -116,6 +120,7 @@ interface AttemptSignals {
 }
 
 export class AgentRuntime {
+  private readonly decisions: DecisionDriver | undefined
   private readonly checkpointDedup: boolean
   private readonly promptCache: boolean
   private readonly asyncCompaction: boolean
@@ -174,6 +179,7 @@ export class AgentRuntime {
     private readonly kernels: KernelExecutor,
     options: AgentRuntimeOptions = {},
   ) {
+    this.decisions = options.decisions
     this.metrics = options.metrics
     this.checkpointDedup = options.performance?.checkpointDedup ?? true
     this.promptCache = options.performance?.promptCache ?? true
@@ -284,6 +290,7 @@ export class AgentRuntime {
     let activeSession: SessionRecord | null = null
     const log = this.logger.child({ runId, workId: work.id, agentId: work.agentId, fence: work.fence })
     const model = executionModel(this.hostFor(work), this.model, work, this.rootModelBudget, event => this.event(work, runId, event))
+    const decisions = this.decisions ? executionDecision(this.hostFor(work), this.decisions, work, this.rootModelBudget) : undefined
 
     try {
       const recoveryStarted = performance.now()
@@ -304,6 +311,7 @@ export class AgentRuntime {
         await processor.process(work, {
           host: this.hostFor(work),
           model,
+          ...(decisions ? { decisions } : {}),
           signal: signals.lifecycle.signal,
           emit: async (event) => { await this.event(work, runId, event) },
         })
@@ -314,7 +322,7 @@ export class AgentRuntime {
 
       const sessionRef: { session: SessionRecord | null; compaction?: ReturnType<typeof prepareCompaction> } = { session: null }
       try {
-        await this.runTurn(work, runId, signals, log, sessionRef, model)
+        await this.runTurn(work, runId, signals, log, sessionRef, model, decisions)
       } finally {
         sessionRef.compaction?.cancel()
         activeSession = sessionRef.session
@@ -356,6 +364,7 @@ export class AgentRuntime {
     work: WorkItem, runId: string, signals: AttemptSignals, log: Logger,
     sessionRef: { session: SessionRecord | null; compaction?: ReturnType<typeof prepareCompaction> },
     model: ModelDriver,
+    decisions?: DecisionDriver,
   ): Promise<void> {
     const host = this.hostFor(work)
     const context = await (host.loadInitialContext?.(work) ?? host.loadContext(work))
@@ -368,7 +377,8 @@ export class AgentRuntime {
     const session = await this.restoreSession(work, { ...context, tools: initialExecution.tools }, initialExecution)
     if (context.harness) {
       const binding = { runtime: releaseVersions.runtime, harness: context.harness.hash, prompt: this.promptContractVersion,
-        model: model.modelId ?? null, provider: model.configurationFingerprint ?? null }
+        model: model.modelId ?? null, provider: model.configurationFingerprint ?? null,
+        ...(decisions ? { decisions: decisions.configurationFingerprint } : {}) }
       const prior = context.executionSteps?.find(step => step.kind === 'runtime.binding')
       if (prior && canonicalJson(prior.input) !== canonicalJson(binding)) throw new Error('run behavior version changed; restore the pinned worker configuration')
       if (!prior) await this.hostFor(work).saveStep(work, { id: 'runtime:binding', kind: 'runtime.binding',
@@ -454,6 +464,11 @@ export class AgentRuntime {
       const liveContext = hop === 0 ? context : await this.hostFor(work).loadContext(work)
       liveContext.evidence = evidence().items
       if (liveContext.memory) liveContext.memory=fitMemorySnapshot(liveContext.memory,this.compaction.contextWindowTokens)
+      if (decisions) {
+        const query = [session.request?.originalText, ...session.request?.revisions.map(item => item.text) ?? []].filter(Boolean).join('\n')
+        if (hop === 0 && liveContext.memory) liveContext.memory = await rerankMemoryContext(decisions, liveContext.memory, query, signals.generationSignal())
+        await this.policy.prepareDecisionContext?.(liveContext, decisions, signals.generationSignal(), session.request)
+      }
       const execution = hop === 0 ? initialExecution : executionSnapshot(liveContext, this.policy)
       const { codeExecution } = execution
       liveContext.tools = execution.tools
@@ -463,7 +478,7 @@ export class AgentRuntime {
       const dynamicItems = [...preferenceItems, ...this.policy.dynamicContextItems(liveContext)]
       const instructions = session.promptContext.systemInstructions
       if (budget.rediagnose && protocolCorrection && 'role' in protocolCorrection) protocolCorrection = { role: 'user', content: 'Repeated failure without new observations: diagnose the cause and change the approach before another attempt. ' + protocolCorrection.content }
-      const supplementalItems = [...dynamicItems, ...evidenceItems(evidence()), ...(session.request ? requestItems(session.request,
+      const supplementalItems = [...dynamicItems, ...evidenceItems({ ...evidence(), items: liveContext.evidence ?? evidence().items }), ...(session.request ? requestItems(session.request,
         this.onDemandAttachments && modelTools.some(tool => tool.action === 'task.read_attachment')) : []), ...(protocolCorrection ? [protocolCorrection] : [])]
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
@@ -671,7 +686,7 @@ export class AgentRuntime {
         let resourceGaps: string[] = []
         if (liveContext.pendingApproval?.approved === false) resourceGaps.push('The human rejected the required action; the original requested change was not completed')
         let fileObservations: import('../outcome/verification.js').VerificationRecord[] = []
-        let needsContentCheck = Boolean(resourceGaps.length || session.request && requiresReview(session.request, executedSteps, liveContext.tools ?? [], artifacts) || liveContext.dependencies?.length || artifacts.length || session.request?.contract || session.request?.resourceChecks?.some(record =>
+        let needsContentCheck = Boolean(decisions?.mode('content-review') === 'active' && turn.text.includes('#cite-') || resourceGaps.length || session.request && requiresReview(session.request, executedSteps, liveContext.tools ?? [], artifacts) || liveContext.dependencies?.length || artifacts.length || session.request?.contract || session.request?.resourceChecks?.some(record =>
           (record.result.value as Record<string, unknown> | undefined)?.['requestVersion'] === session.request!.revisions.length + 1))
         if (!violation) {
           const checked = await this.hostFor(work).verifyCandidate(work, { body: turn.text.trim(), artifacts,
@@ -719,7 +734,7 @@ export class AgentRuntime {
           const check = await checkCandidateContent(model, session.request, turn.text.trim(), artifacts,
             this.compaction.contextWindowTokens, signals.generationSignal(), resourceGaps, fileObservations,
             { steps: (liveContext.executionSteps ?? []).filter(step => !step.kind.startsWith('runtime.')).map(step => ({ id: step.id, requestVersion: step.requestVersion, kind: step.kind, output: step.output })),
-              dependencies: liveContext.dependencies ?? [] })
+              dependencies: liveContext.dependencies ?? [] }, decisions)
           await signals.refresh()
           if (signals.leaseLost()) throw signals.leaseLost()!
           if (signals.lifecycle.signal.aborted) throw new RunCancelledError('lifecycle')

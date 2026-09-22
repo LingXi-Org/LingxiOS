@@ -6,6 +6,8 @@ import { fitsModel } from '../model/profile.js'
 import { compileAuxiliaryPrompt } from '../context/compiler.js'
 import { MEMORY_REVIEW_ACTIONS } from './contracts.js'
 import { parseMemoryReview } from './review.js'
+import { executionDecision, type DecisionDriver } from '../model/decision.js'
+import { reviewMemoryDecision } from './decision.js'
 
 const prompt = compileAuxiliaryPrompt('memory-write-review',
   'Independently review a proposed durable memory operation against the current original human request and human revisions. '
@@ -20,7 +22,7 @@ const prompt = compileAuxiliaryPrompt('memory-write-review',
   + 'For expire or merge, apply the same protection to every affected document. If uncertain, reject.')
 
 /** Wrap the shared worker port so both direct tools and Python host calls cross the same reviewer. */
-export function reviewedMemoryHost(host: HostPort,source: ModelDriver,budget: RootModelBudgetOptions={}): HostPort {
+export function reviewedMemoryHost(host: HostPort,source: ModelDriver,budget: RootModelBudgetOptions={}, decisions?: DecisionDriver): HostPort {
   return new Proxy(host,{
     get(target,property) {
       if (property==='executeAction') return async (...args: Parameters<HostPort['executeAction']>) => {
@@ -35,6 +37,12 @@ export function reviewedMemoryHost(host: HostPort,source: ModelDriver,budget: Ro
             return target.executeAction(...args)
           }
           if (prepared) {
+            const decision = decisions ? await reviewMemoryDecision(executionDecision(target, decisions, work, budget), prepared.input, signal) : undefined
+            if (decision) {
+              signal?.throwIfAborted()
+              await target.recordMemoryReview(work,action,prepared.hash,decision,signal)
+              return target.executeAction(...args)
+            }
             const model=source.singleAttempt?.() ?? source
             const request={purpose:'memory-synthesis' as const,instructions:prompt.instructions,prompt:prompt.manifest,input:prepared.input,
               signal:AbortSignal.any([AbortSignal.timeout(90_000),...signal?[signal]:[]])}

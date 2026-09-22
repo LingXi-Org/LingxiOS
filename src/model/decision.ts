@@ -1,0 +1,157 @@
+import { createHash, randomUUID } from 'node:crypto'
+import type { ModelUsage } from './driver.js'
+import { modelExecution, DEFAULT_MODEL_BUDGET, type RootModelBudgetOptions } from './execution.js'
+import type { HostPort } from '../host/port.js'
+import type { WorkItem } from '../protocol/types.js'
+import { ResourceQuota } from '../resource-quota.js'
+
+export type DecisionQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> }
+  | { type: 'score'; instructions: string; criteria: string[] }
+  | { type: 'noul'; instructions: string; criteria?: { true: string; false: string } }
+export type DecisionAnswer = { type: 'choice'; choice: string; confidence: number; probabilities: Record<string, number> }
+  | { type: 'score'; score: number; confidence: number; probabilities: Record<string, number>; legend: Record<string, string> }
+  | { type: 'noul'; noul: number }
+export interface DecisionRequest { purpose: string; version: string; state: unknown; questions: Record<string, DecisionQuestion>; signal?: AbortSignal | undefined }
+export interface DecisionResult { model: string; answers: Record<string, DecisionAnswer>; usage: ModelUsage }
+export type DecisionMode = 'off' | 'shadow' | 'active'
+export interface DecisionDriver {
+  readonly modelId: string
+  readonly configurationFingerprint: string
+  readonly inputCostMicrosPerMillion: number
+  mode(purpose: string): DecisionMode
+  decide(request: DecisionRequest): Promise<DecisionResult>
+}
+export interface JevOptions {
+  apiKey: string
+  model?: string
+  mode?: DecisionMode
+  modes?: Record<string, DecisionMode>
+  timeoutMs?: number
+  concurrency?: number
+  inputCostMicrosPerMillion?: number
+  /** Local HTTP fixtures only; production uses the official HTTPS origin. */
+  baseUrl?: string
+  fetchImpl?: typeof fetch
+}
+const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+const probability = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1
+const keysEqual = (value: Record<string, unknown>, keys: string[]) => Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key))
+const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
+export const yesNo = (instructions: string): DecisionQuestion => ({ type: 'choice', instructions,
+  criteria: { yes: 'The stated condition is supported by the supplied evidence.', no: 'The stated condition is false.', uncertain: 'Insufficient or contradictory evidence.' } })
+export function accepted(answer: DecisionAnswer | undefined, choice = 'yes', threshold = 0.95): boolean {
+  return answer?.type === 'choice' && answer['choice'] === choice && answer['confidence'] >= threshold && (answer['probabilities'][choice] ?? 0) >= threshold
+}
+
+export function validateDecisionRequest(request: DecisionRequest): void {
+  if (!/^[a-z][a-z0-9.-]{0,99}$/.test(request.purpose) || !/^[a-zA-Z0-9._-]{1,100}$/.test(request.version)
+    || !record(request.questions) || !Object.keys(request.questions).length || Object.keys(request.questions).length > 128
+    || request.state === undefined) throw new Error('invalid decision request')
+  const stateBytes = Buffer.byteLength(JSON.stringify(request.state))
+  for (const [id, question] of Object.entries(request.questions)) {
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id) || !record(question) || typeof question.instructions !== 'string' || !question.instructions.trim()) throw new Error('invalid decision question')
+    if (question.type === 'choice') {
+      if (!record(question.criteria) || Object.keys(question.criteria).length < 2 || Object.keys(question.criteria).length > 255
+        || Object.entries(question.criteria).some(([key, value]) => !key || typeof value !== 'string')) throw new Error('invalid decision choices')
+    } else if (question.type === 'score') {
+      if (!Array.isArray(question.criteria) || question.criteria.length < 2 || question.criteria.length > 10
+        || question.criteria.some(value => typeof value !== 'string' || !value.trim())) throw new Error('invalid decision rubric')
+    } else if (question.type !== 'noul') throw new Error('invalid decision question type')
+    else if (question.criteria !== undefined && (!record(question.criteria) || !keysEqual(question.criteria, ['true', 'false'])
+      || Object.values(question.criteria).some(value => typeof value !== 'string' || !value.trim()))) throw new Error('invalid decision boolean criteria')
+    // Conservative UTF-8 upper bound; never truncate requirements or authoritative evidence.
+    if (stateBytes + Buffer.byteLength(JSON.stringify(question)) > 30_000) throw new Error('decision context limit exceeded')
+  }
+  if (Buffer.byteLength(JSON.stringify({ state: request.state, questions: request.questions })) > 60_000) throw new Error('decision request limit exceeded')
+}
+
+export function parseDecisionResult(value: unknown, questions: Record<string, DecisionQuestion>, model: string): DecisionResult {
+  if (!record(value) || value['model'] !== model || !record(value['answers']) || !keysEqual(value['answers'], Object.keys(questions))
+    || !record(value['usage']) || !Number.isSafeInteger(value['usage']['input_tokens']) || Number(value['usage']['input_tokens']) < 0
+    || !Number.isSafeInteger(value['usage']['output_tokens']) || Number(value['usage']['output_tokens']) < 0) throw new Error('invalid decision response or usage')
+  for (const [id, question] of Object.entries(questions)) {
+    const answer = value['answers'][id]
+    if (!record(answer) || answer['type'] !== question.type) throw new Error('invalid decision answer type')
+    if (question.type === 'noul') {
+      if (!probability(answer['noul'])) throw new Error('invalid decision probability')
+      continue
+    }
+    const keys = question.type === 'choice' ? Object.keys(question.criteria) : question.criteria.map((_, index) => String(index))
+    if (!probability(answer['confidence']) || !record(answer['probabilities']) || !keysEqual(answer['probabilities'], keys)
+      || !Object.values(answer['probabilities']).every(probability)
+      || Math.abs(Object.values(answer['probabilities']).reduce<number>((sum, p) => sum + Number(p), 0) - 1) > 0.02) throw new Error('invalid decision distribution')
+    if (question.type === 'choice') {
+      if (typeof answer['choice'] !== 'string' || !keys.includes(answer['choice'])
+        || Number(answer['probabilities'][answer['choice']]) + 0.001 < Math.max(...Object.values(answer['probabilities']).map(Number))) throw new Error('invalid decision choice')
+    } else if (typeof answer['score'] !== 'number' || !Number.isFinite(answer['score']) || answer['score'] < 0 || answer['score'] > keys.length - 1
+      || !record(answer['legend']) || !keysEqual(answer['legend'], keys)
+      || keys.some(key => answer['legend'] && (answer['legend'] as Record<string, unknown>)[key] !== question.criteria[Number(key)])) throw new Error('invalid decision score')
+  }
+  return { model, answers: value['answers'] as Record<string, DecisionAnswer>,
+    usage: { available: true, inputTokens: Number(value['usage']['input_tokens']), outputTokens: Number(value['usage']['output_tokens']) } }
+}
+
+export class JevClient implements DecisionDriver {
+  readonly modelId: string
+  readonly configurationFingerprint: string
+  readonly inputCostMicrosPerMillion: number
+  private readonly quota: ResourceQuota
+  private readonly url: string
+  constructor(private readonly options: JevOptions) {
+    this.modelId = options.model ?? 'jev-1.13.0'
+    this.inputCostMicrosPerMillion = options.inputCostMicrosPerMillion ?? 42_000
+    const base = new URL(options.baseUrl ?? 'https://api.typesafe.ai/v1')
+    if (!options.apiKey?.trim() || !/^jev-\d+\.\d+\.\d+$/.test(this.modelId)
+      || !Number.isSafeInteger(this.inputCostMicrosPerMillion) || this.inputCostMicrosPerMillion < 0
+      || !Number.isSafeInteger(options.timeoutMs ?? 5000) || (options.timeoutMs ?? 5000) < 1 || (options.timeoutMs ?? 5000) > 120_000
+      || [options.mode ?? 'active', ...Object.values(options.modes ?? {})].some(mode => !['off', 'shadow', 'active'].includes(mode))
+      || base.username || base.password || base.search || base.hash
+      || base.origin !== 'https://api.typesafe.ai' && !['127.0.0.1', '[::1]', 'localhost'].includes(base.hostname)) throw new Error('invalid Jev configuration')
+    this.url = base.href.replace(/\/$/, '') + '/systemone'
+    this.quota = new ResourceQuota(options.concurrency ?? 2, 32)
+    this.configurationFingerprint = hash({ model: this.modelId, url: this.url, price: this.inputCostMicrosPerMillion,
+      mode: options.mode ?? 'active', modes: options.modes ?? {}, timeoutMs: options.timeoutMs ?? 5000, contract: 'jev-decisions/1' })
+  }
+  mode(purpose: string): DecisionMode { return this.options.modes?.[purpose] ?? this.options.mode ?? 'active' }
+  async decide(request: DecisionRequest): Promise<DecisionResult> {
+    validateDecisionRequest(request)
+    if (this.mode(request.purpose) === 'off') throw new Error('decision purpose is disabled')
+    const signal = AbortSignal.any([AbortSignal.timeout(this.options.timeoutMs ?? 5000), ...request.signal ? [request.signal] : []])
+    return this.quota.run(async () => {
+      let response: Response
+      try { response = await (this.options.fetchImpl ?? fetch)(this.url, { method: 'POST', redirect: 'error', signal,
+        headers: { Authorization: `Bearer ${this.options.apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: this.modelId, state: request.state, questions: request.questions }) }) }
+      catch { throw new Error(signal.aborted ? 'jev_request_aborted' : 'jev_connection_failed') }
+      if (!response.ok) { await response.body?.cancel(); throw new Error(`jev_http_${response.status}`) }
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('jev_empty_response')
+      const chunks: Uint8Array[] = []; let bytes = 0
+      try {
+        for (;;) { const next = await reader.read(); if (next.done) break
+          bytes += next.value.byteLength
+          if (bytes > 256_000) throw new Error('jev_response_limit_exceeded')
+          chunks.push(next.value)
+        }
+        let value: unknown
+        try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new Error('jev_invalid_json') }
+        return parseDecisionResult(value, request.questions, this.modelId)
+      } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
+    }, signal)
+  }
+}
+
+/** Uses the same durable root budget and outbox observer as generative calls, at Jev prices. */
+export function executionDecision(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>, source: DecisionDriver,
+  work: WorkItem, budget: RootModelBudgetOptions = {}): DecisionDriver {
+  const { invoke } = modelExecution(host, { modelId: source.modelId, maxOutputTokens: 8192, maxThinkingTokens: 0, toolDefinitionTokens: 0 }, work,
+    { ...DEFAULT_MODEL_BUDGET, ...budget, inputCostMicrosPerMillion: source.inputCostMicrosPerMillion, outputCostMicrosPerMillion: 0 },
+    undefined, `decision:${randomUUID()}`)
+  return { modelId: source.modelId, configurationFingerprint: source.configurationFingerprint,
+    inputCostMicrosPerMillion: source.inputCostMicrosPerMillion, mode: source.mode.bind(source),
+    async decide(request) {
+      validateDecisionRequest(request)
+      const instructions = JSON.stringify({ purpose: request.purpose, version: request.version, questions: request.questions })
+      return invoke('decision', { input: request.state, instructions, signal: request.signal }, signal => source.decide({ ...request, signal }))
+    } }
+}

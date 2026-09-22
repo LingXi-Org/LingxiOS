@@ -222,7 +222,7 @@ export class ControlPlaneService {
       .some(value => !Number.isSafeInteger(value) || value < 0)) throw new ControlPlaneError(400, 'invalid model usage')
     if (observation && (observation.callId !== callId || observation.workId !== work.id || observation.tenantId !== work.tenantId
       || observation.agentId !== work.agentId || observation.sessionId !== work.sessionId || observation.principalId !== work.principalId
-      || observation.threadId !== work.threadId || !['agent-turn','structured','compaction','embedding'].includes(observation.purpose)
+      || observation.threadId !== work.threadId || !['agent-turn','structured','compaction','embedding','decision'].includes(observation.purpose)
       || !['succeeded','failed'].includes(observation.status) || !Number.isFinite(observation.latencyMs)
       || observation.latencyMs < 0 || typeof observation.model !== 'string')) throw new ControlPlaneError(400, 'invalid model observation identity')
     const policy = this.deps.modelBudget
