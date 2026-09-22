@@ -3,7 +3,7 @@ import { compileAuxiliaryPrompt } from '../context/compiler.js'
 import { parseMemoryChanges, parseMemoryConflicts, type MemoryBatch } from './synthesis.js'
 import { evolutionCaseKey, parseEvolutionCandidates, type EvolutionPlan, type EvolutionReport, type EvolutionCase, type EvolutionCandidate } from './evolution.js'
 import { abortable } from '../deadline.js'
-import { verifyMemoryDecision } from './decision.js'
+import { hasDurableValue, verifyMemoryDecision } from './decision.js'
 
 export const memoryIndexProcessor: WorkProcessor = {
   async process(work, context) {
@@ -27,6 +27,10 @@ export const memorySynthesisProcessor: WorkProcessor = {
     const batch = await action('load', {}, 0) as MemoryBatch | null
     if (!batch) return
     const signal = AbortSignal.any([context.signal, AbortSignal.timeout(90_000)])
+    if (context.decisions && !await hasDurableValue(context.decisions, batch, signal)) {
+      await action('apply', { changes: [], conflicts: [], approved: true, confidence: 1 }, 1)
+      return
+    }
     const call = async (purpose: string, instructions: string, input: unknown) => {
       const prompt = compileAuxiliaryPrompt(purpose, instructions)
       instructions = prompt.instructions
@@ -77,6 +81,7 @@ export const memorySynthesisProcessor: WorkProcessor = {
       { ...batch, changes, conflicts, candidates }) as { approved?: unknown; confidence?: unknown }
     if (typeof verification?.approved !== 'boolean' || typeof verification.confidence !== 'number'
       || !Number.isFinite(verification.confidence) || verification.confidence < 0 || verification.confidence > 1) throw new Error('invalid memory synthesis verification')
+    if (!decision) await context.decisions?.recordFallback?.('memory-synthesis-verification', { approved: verification.approved, confidence: verification.confidence })
     signal.throwIfAborted()
     const applied = await action('apply', { changes, conflicts, ...batch.evolutionEnabled ? { candidates } : {}, approved: verification.approved, confidence: verification.confidence }, 1)
     await context.emit({ kind: 'memory.synthesis.completed', stage: 'completed', visibility: 'internal',

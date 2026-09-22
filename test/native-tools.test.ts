@@ -12,6 +12,46 @@ import { actionKeyOf, sessionKeyOf, type HostAction } from '../src/protocol/type
 import { NoEffectError, type ToolDefinition } from '../src/tools/definition.js'
 import { toolExecutor } from '../src/tools/executor.js'
 import { decideApproval, resumeDecidedApprovals, executeDecidedApprovals } from '../src/control-plane/approvals.js'
+import { yesNo } from '../src/model/decision.js'
+
+it('tool decisions bind to authorized source content and request/fence, survive replay, and reject stale or absent reviews', async () => {
+  const db = new PGlite()
+  const pool: SqlPool = { query: async (sql, args) => { const result = await db.query<Record<string, unknown>>(sql, args); return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length } },
+    connect: async () => ({ query: pool.query, release() {} }) }
+  await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
+  let content = 'v1', denied = false, executions = 0
+  const tool: ToolDefinition = { name: 'documents__review', action: 'documents.review', description: 'Reviewed write', semanticVersion: '2', effect: 'transaction', approval: false,
+    parameters: { type: 'object', properties: {}, additionalProperties: false }, parse: () => ({}),
+    authorize: async () => { if (denied) throw new NoEffectError('revoked') },
+    prepareDecision: async () => ({ purpose: 'document-review', version: '1', state: content, questions: { supported: yesNo('Supported?') }, fallback: 'generation' }),
+    execute: async context => { executions++; return { ok: true, value: context.decision?.answers } } }
+  const service = new ControlPlaneService({ steps: new PgStepStore(pool), modelBudgets: new PgModelBudgetStore(pool), tools: [tool],
+    work: new PgWorkStore(pool), actions: new PgActionLedger(pool), events: new PgEventStore(pool), sessions: new PgSessionStore(pool),
+    actionExecutor: toolExecutor(pool, [tool]), capabilityResolver: { resolve: async () => [{ name: 'documents' }] },
+    contextProvider: { loadContext: async () => ({ persona: { name: '', role: '', instructions: '' }, capabilities: [], messages: [] }) },
+    delivery: { onEvent: async () => {}, deliverMessage: async () => {} } })
+  try {
+    await service.enqueue({ id: 'decision-work', tenantId: 't', agentId: 'a', principalId: 'u', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm' })
+    const work = (await service.claim('worker'))!
+    const action = (id: string): HostAction => ({ runId: work.id, cellId: id, callIndex: 0, idempotencyKey: actionKeyOf({ runId: work.id, cellId: id, callIndex: 0 }), action: tool.action, args: {} })
+    const first = action('first'), prepared = (await service.prepareToolDecision(work, first))!
+    await service.saveStep(work, { id: `tool-decision:${prepared.hash}`, requestVersion: 1, kind: 'runtime.tool-decision', input: { hash: prepared.hash },
+      output: JSON.stringify({ source: 'jev', answers: { supported: 'yes' } }), artifacts: [] })
+    assert.equal((await service.prepareToolDecision(work, first))?.recorded, true)
+    assert.deepEqual((await service.executeAction(work, first)).value, { supported: 'yes' })
+    assert.equal(await service.prepareToolDecision(work, first), null)
+    await service.executeAction(work, first); assert.equal(executions, 1)
+    const second = action('second'), old = (await service.prepareToolDecision(work, second))!
+    await service.saveStep(work, { id: `tool-decision:${old.hash}`, requestVersion: 1, kind: 'runtime.tool-decision', input: { hash: old.hash },
+      output: JSON.stringify({ source: 'jev', answers: { supported: 'yes' } }), artifacts: [] })
+    content = 'v2'
+    assert.notEqual((await service.prepareToolDecision(work, second))?.hash, old.hash)
+    assert.equal((await service.executeAction(work, second)).ok, false)
+    assert.equal(executions, 1)
+    denied = true
+    await assert.rejects(service.prepareToolDecision(work, action('denied')), /revoked/)
+  } finally { await db.close() }
+})
 
 it('validates before intent, rolls back effects with receipts, and recovers a lost commit acknowledgement', async () => {
   const db = new PGlite()

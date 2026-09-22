@@ -58,5 +58,6 @@ export type { EvolutionBenchmark, EvolutionCase, EvolutionCandidate, EvolutionRe
 export { buildPromptContext, PROMPT_CONTRACT_VERSION } from './prompts/provider.js'
 export { promptProgram } from './prompts/program.js'
 export { compileContext, compileAuxiliaryPrompt, type ContextBlock, type CompiledContext, type PromptManifest } from './context/compiler.js'
-export { JevClient, accepted, yesNo, validateDecisionRequest, parseDecisionResult } from './model/decision.js'
-export type { DecisionQuestion, DecisionAnswer, DecisionRequest, DecisionResult, DecisionDriver, DecisionMode, JevOptions } from './model/decision.js'
+export { JevClient, accepted, yesNo, decideOrFallback, decisionFallback, executionDecision, validateDecisionRequest, parseDecisionResult } from './model/decision.js'
+export type { DecisionQuestion, DecisionAnswer, DecisionRequest, DecisionResult, DecisionDriver, DecisionMode, DecisionSummary, JevOptions } from './model/decision.js'
+export type { ToolDecision, ToolDecisionAnswers } from './model/tool-decision.js'

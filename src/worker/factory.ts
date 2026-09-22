@@ -15,6 +15,7 @@ import { reviewedMemoryHost } from '../memory/worker-review.js'
 import { limitModel } from '../model/quota.js'
 import { ResourceQuota } from '../resource-quota.js'
 import { JevClient, type JevOptions } from '../model/decision.js'
+import { decisionToolHost } from '../model/tool-decision.js'
 
 export interface WorkerConnection {
   connectWorker(input: { workerId: string; workKinds: readonly string[] }): HostPort
@@ -51,7 +52,7 @@ export function createWorker(options: WorkerOptions): AgentWorker {
   const model = limitModel('run' in options.model ? options.model : new OpenAIChatDriver(options.model.id ?? DEFAULT_MODEL.id, options.model),
     new ResourceQuota(modelCapacity, 1024, modelCapacity > 1 ? 1 : 0, metrics, 'model'))
   const decisions = options.decisions ? ('decide' in options.decisions ? options.decisions : new JevClient(options.decisions)) : undefined
-  const host = reviewedMemoryHost(connectionHost,model,options.modelBudget,decisions)
+  const host = decisionToolHost(reviewedMemoryHost(connectionHost,model,options.modelBudget,decisions), model, decisions, options.modelBudget)
   const bridge: KernelHostBridge = { execute: (work, action, signal) => host.executeAction(work, action, signal) }
   const kernels = options.kernelFactory?.(bridge) ?? new KernelManager(bridge, { ...options.kernel, logger, maxKernels: options.resources?.python ?? concurrency,
     isolation: kernelIsolation(options.kernel?.isolation ?? process.env['AGENT_OS_KERNEL_ISOLATION'], process.env['NODE_ENV'] === 'production', options.trustProcessKernel) })

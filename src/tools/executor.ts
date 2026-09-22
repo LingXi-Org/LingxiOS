@@ -19,6 +19,7 @@ import { assertObservation, assertToolContract, observeResult } from './contract
 import { enqueueGraph, readGraph, waitForChildren } from '../collaboration/graphs.js'
 import { createSharedState, readSharedState, updateSharedState } from '../collaboration/state.js'
 import { authorizeConversationWork } from '../collaboration/access.js'
+import { toolDecisionHash, validateToolAnswers } from '../model/tool-decision.js'
 
 export function toolExecutor(database: SqlPool, definitions: readonly ToolDefinition[],
   createArtifact?: (work: Omit<WorkItem, 'leaseToken'>, input: ArtifactInput, signal?: AbortSignal) => Promise<KernelArtifact>, memory?: MemoryOptions): ActionExecutor {
@@ -84,7 +85,35 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
       return createArtifact(work, input, options.signal)
     } }
   }
+  async function prepareDecision(work: Omit<WorkItem, 'leaseToken'>, action: HostAction, options: ActionExecutionOptions, db: SqlQueryable = database) {
+    const tool = tools.get(action.action)
+    if (!tool?.prepareDecision) return null
+    const ctx = context(work, action, options, db), input = tool.parse(action.args)
+    await tool.authorize(ctx, input)
+    const request = await tool.prepareDecision(ctx, input)
+    if (!request) return null
+    const hash = toolDecisionHash([work.id, work.fence, work.tenantId, work.principalId, options.requestVersion, action, tool.semanticVersion, request])
+    return { hash, requestVersion: options.requestVersion!, request }
+  }
+  async function attachDecision(ctx: ActionContext, action: HostAction, options: ActionExecutionOptions) {
+    if (!tools.get(action.action)?.prepareDecision) return
+    const prepared = await prepareDecision(ctx.work, action, options, ctx.database)
+    if (!prepared) return
+    const row = (await ctx.database.query(`SELECT output FROM lingxios.agent_steps WHERE work_id=$1 AND step_id=$2 AND request_version=$3 AND kind='runtime.tool-decision'`,
+      [ctx.work.id, `tool-decision:${prepared.hash}`, options.requestVersion])).rows[0]
+    if (!row) throw new NoEffectError('Tool decision is absent or its source version changed; prepare again', 'decision_stale')
+    const result = JSON.parse(String(row['output'])) as { answers: import('../model/tool-decision.js').ToolDecisionAnswers | null }
+    if (result.answers) { validateToolAnswers(prepared.request, result.answers); ctx.decision = { state: prepared.request.state, answers: result.answers } }
+  }
   return {
+    async prepareDecision(work, action, options) {
+      await authorizeConversationWork(database, work)
+      const prepared = await prepareDecision(work, action, options)
+      if (!prepared) return null
+      const recorded = (await database.query(`SELECT 1 FROM lingxios.agent_steps WHERE work_id=$1 AND step_id=$2 AND request_version=$3 AND kind='runtime.tool-decision' AND output IS NOT NULL`,
+        [work.id, `tool-decision:${prepared.hash}`, options.requestVersion])).rows.length > 0
+      return { ...prepared, recorded }
+    },
     async reconcile(work, action, options) {
       await authorizeConversationWork(database, work)
       const tool = definition(action)
@@ -112,6 +141,7 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
         await assertToolContract(tool, ctx)
         await tool.authorize(ctx, input)
         await assertObservation(tool, ctx, input, tools)
+        await attachDecision(ctx, action, options)
         options.signal.throwIfAborted()
         const pending = await approvalGate(tool, ctx, input)
         return pending ?? tool.execute(ctx, input)
@@ -122,6 +152,7 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
         await assertToolContract(tool, ctx)
         await abortable(tool.authorize(ctx, input), options.signal)
         await abortable(assertObservation(tool, ctx, input, tools), options.signal)
+        await attachDecision(ctx, action, options)
         if (tool.approval) {
           const pending = await withTransaction(deadlinePool(database,options.signal), async db => {
             await lockAction(db, work, action)

@@ -37,7 +37,8 @@ export function reviewedMemoryHost(host: HostPort,source: ModelDriver,budget: Ro
             return target.executeAction(...args)
           }
           if (prepared) {
-            const decision = decisions ? await reviewMemoryDecision(executionDecision(target, decisions, work, budget), prepared.input, signal) : undefined
+            const decisionDriver = decisions ? executionDecision(target, decisions, work, budget) : undefined
+            const decision = decisionDriver ? await reviewMemoryDecision(decisionDriver, prepared.input, signal) : undefined
             if (decision) {
               signal?.throwIfAborted()
               await target.recordMemoryReview(work,action,prepared.hash,decision,signal)
@@ -50,6 +51,7 @@ export function reviewedMemoryHost(host: HostPort,source: ModelDriver,budget: Ro
             const {invoke}=modelExecution(target,model,work,{...DEFAULT_MODEL_BUDGET,...budget},undefined,`memory-review:${randomUUID()}`)
             const result=await invoke('structured',request,bounded=>model.structured({...request,signal:bounded}))
             const review=parseMemoryReview(result.value)
+            await decisionDriver?.recordFallback?.('memory-write-review', { ...review })
             await target.recordMemoryReview(work,action,prepared.hash,review,signal)
           }
         }

@@ -107,6 +107,18 @@ export function actionFingerprint(work: Pick<WorkItem, 'tenantId' | 'principalId
 }
 
 export class ControlPlaneService {
+  async prepareToolDecision(proof: LeaseProof, action: HostAction, external?: AbortSignal) {
+    const work = await this.requireLease(proof, { rejectCancelled: true })
+    const tool = grantedTools(this.deps.tools ?? [], await this.deps.capabilityResolver.resolve(work)).find(item => item.action === action?.action)
+    if (!tool || !permitsTool(work, tool)) return null
+    const previous = await this.deps.actions.findIntent(action.idempotencyKey)
+    if (previous && previous.workId === work.id && isDeepStrictEqual(previous.action, action) && await this.deps.actions.find(action.idempotencyKey)) return null
+    const current = await this.heartbeat(proof)
+    if (!current.ok || current.cancelRequested) throw new ControlPlaneError(409, 'decision lease unavailable')
+    const requestVersion = (current.steer?.length ?? 0) + 1
+    const signal = AbortSignal.any([AbortSignal.timeout(30_000), ...external ? [external] : []])
+    return await this.deps.actionExecutor.prepareDecision?.(work, action, { requestVersion, signal, deadlineAt: new Date(Date.now() + 30_000).toISOString() }) ?? null
+  }
   private async memoryReviewWork(proof: LeaseProof,action: HostAction) {
     const work=await this.requireLease(proof,{rejectCancelled:true})
     const grants=await this.deps.capabilityResolver.resolve(work)
@@ -223,6 +235,8 @@ export class ControlPlaneService {
   }
 
   async recordModelUsage(proof: LeaseProof, callId: string, usage: { inputTokens: number; outputTokens: number; costMicros: number }, observation?: import('../model/execution.js').ModelCallObservation): Promise<void> {
+    if (observation?.decision && (!/^[a-z][a-z0-9.-]{0,99}$/.test(observation.decision.purpose)
+      || !/^[a-zA-Z0-9._-]{1,100}$/.test(observation.decision.version) || !/^[a-f0-9]{64}$/.test(observation.decision.inputHash))) throw new ControlPlaneError(400, 'invalid decision observation')
     const work = await this.deps.work.getAttempt(proof.id, proof.fence, hashToken(proof.leaseToken)) ?? await this.requireLease(proof)
     const rootWorkId = typeof work.meta?.['rootWorkId'] === 'string' ? work.meta['rootWorkId'] : work.id
     if (!await this.deps.work.ownsBudgetRoot(work, rootWorkId)) throw new ControlPlaneError(409, 'model budget root is outside this work lineage')

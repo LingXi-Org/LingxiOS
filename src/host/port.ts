@@ -10,6 +10,7 @@ import type {
 import type { ModelBudgetLimits, ModelBudgetReservation } from '../control-plane/stores.js'
 
 export interface HostPort {
+  prepareToolDecision?(work: WorkItem, action: HostAction, signal?: AbortSignal): Promise<import('../model/tool-decision.js').PreparedToolDecision | null>
   loadWorkspace?(work: WorkItem, signal?: AbortSignal): Promise<import('../protocol/workspace.js').WorkspaceState | null>
   stageWorkspaceFile?(work: WorkItem, path: string, bytes: Uint8Array, signal?: AbortSignal): Promise<Extract<import('../protocol/workspace.js').WorkspaceEntry, { kind: 'file' }>>
   readWorkspaceFile?(work: WorkItem, entry: Extract<import('../protocol/workspace.js').WorkspaceEntry, { kind: 'file' }>, signal?: AbortSignal): Promise<Uint8Array>

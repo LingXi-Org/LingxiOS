@@ -4,6 +4,7 @@ import { modelExecution, DEFAULT_MODEL_BUDGET, type RootModelBudgetOptions } fro
 import type { HostPort } from '../host/port.js'
 import type { WorkItem } from '../protocol/types.js'
 import { ResourceQuota } from '../resource-quota.js'
+import { AgentOSError } from '../errors.js'
 
 export type DecisionQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> }
   | { type: 'score'; instructions: string; criteria: string[] }
@@ -12,7 +13,12 @@ export type DecisionAnswer = { type: 'choice'; choice: string; confidence: numbe
   | { type: 'score'; score: number; confidence: number; probabilities: Record<string, number>; legend: Record<string, string> }
   | { type: 'noul'; noul: number }
 export interface DecisionRequest { purpose: string; version: string; state: unknown; questions: Record<string, DecisionQuestion>; signal?: AbortSignal | undefined }
-export interface DecisionResult { model: string; answers: Record<string, DecisionAnswer>; usage: ModelUsage }
+export interface DecisionResult { model: string; answers: Record<string, DecisionAnswer>; usage: ModelUsage; callId?: string }
+export interface DecisionSummary {
+  version: '2'; purpose: string; questionVersion: string; inputHash: string; model: string;
+  mode: DecisionMode; outcome: 'adopted' | 'uncertain' | 'failed' | 'shadow';
+  callId?: string; answers: Record<string, string | number>; fallback?: 'generation' | 'original';
+}
 export type DecisionMode = 'off' | 'shadow' | 'active'
 export interface DecisionDriver {
   readonly modelId: string
@@ -20,12 +26,16 @@ export interface DecisionDriver {
   readonly inputCostMicrosPerMillion: number
   mode(purpose: string): DecisionMode
   decide(request: DecisionRequest): Promise<DecisionResult>
+  threshold?(purpose: string): number
+  recordDecision?(summary: DecisionSummary): Promise<void>
+  recordFallback?(purpose: string, value: Record<string, string | number | boolean>): Promise<void>
 }
 export interface JevOptions {
   apiKey: string
   model?: string
   mode?: DecisionMode
   modes?: Record<string, DecisionMode>
+  thresholds?: Record<string, number>
   timeoutMs?: number
   concurrency?: number
   inputCostMicrosPerMillion?: number
@@ -40,7 +50,38 @@ const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(valu
 export const yesNo = (instructions: string): DecisionQuestion => ({ type: 'choice', instructions,
   criteria: { yes: 'The stated condition is supported by the supplied evidence.', no: 'The stated condition is false.', uncertain: 'Insufficient or contradictory evidence.' } })
 export function accepted(answer: DecisionAnswer | undefined, choice = 'yes', threshold = 0.95): boolean {
-  return answer?.type === 'choice' && answer['choice'] === choice && answer['confidence'] >= threshold && (answer['probabilities'][choice] ?? 0) >= threshold
+  return answer?.type === 'choice' && answer.choice === choice && answer.confidence >= threshold
+}
+
+/** Lifecycle/storage errors must never become an extra paid fallback. */
+export function decisionFallback(error: unknown, signal?: AbortSignal): void {
+  signal?.throwIfAborted()
+  if (error instanceof AgentOSError) { if (error.code === 'model_context_budget') return; throw error }
+  if (!(error instanceof Error) || !/^(jev_|invalid decision |decision (context|request|span|coverage|findings) limit)/.test(error.message)) throw error
+}
+
+export async function decideOrFallback(driver: DecisionDriver, request: DecisionRequest,
+  fallback: 'generation' | 'original' = 'generation'): Promise<DecisionResult | undefined> {
+  const mode = driver.mode(request.purpose)
+  if (mode === 'off') return undefined
+  const summary: DecisionSummary = { version: '2', purpose: request.purpose, questionVersion: request.version,
+    inputHash: hash([request.state, request.questions]), model: driver.modelId, mode, outcome: 'failed', answers: {} }
+  let result: DecisionResult | undefined
+  try {
+    result = await driver.decide(request)
+    request.signal?.throwIfAborted()
+    if (result.callId) summary.callId = result.callId
+    const threshold = driver.threshold?.(request.purpose) ?? 0.95
+    const rejected = Object.values(result.answers).some(a => a.type === 'choice' && a.confidence >= threshold && ['no', 'missing', 'contradicted', 'unsupported', 'does_not_meet'].includes(a.choice))
+    const uncertain = !rejected && Object.values(result.answers).some(a => a.type === 'noul' || a.confidence < threshold
+      || a.type === 'choice' && ['uncertain', 'unknown'].includes(a.choice))
+    summary.answers = Object.fromEntries(Object.entries(result.answers).map(([id, a]) => [id, a.type === 'choice' ? a.choice : a.type === 'score' ? a.score : a.noul]))
+    summary.outcome = mode === 'shadow' ? 'shadow' : uncertain ? 'uncertain' : 'adopted'
+  } catch (error) { decisionFallback(error, request.signal) }
+  if (summary.outcome !== 'adopted') summary.fallback = fallback
+  // Audit persistence is outside the provider catch: a lost lease or storage error is fatal.
+  await driver.recordDecision?.(summary)
+  return summary.outcome === 'adopted' ? result : undefined
 }
 
 export function validateDecisionRequest(request: DecisionRequest): void {
@@ -105,14 +146,16 @@ export class JevClient implements DecisionDriver {
       || !Number.isSafeInteger(this.inputCostMicrosPerMillion) || this.inputCostMicrosPerMillion < 0
       || !Number.isSafeInteger(options.timeoutMs ?? 5000) || (options.timeoutMs ?? 5000) < 1 || (options.timeoutMs ?? 5000) > 120_000
       || [options.mode ?? 'active', ...Object.values(options.modes ?? {})].some(mode => !['off', 'shadow', 'active'].includes(mode))
+      || Object.values(options.thresholds ?? {}).some(value => !probability(value))
       || base.username || base.password || base.search || base.hash
       || base.origin !== 'https://api.typesafe.ai' && !['127.0.0.1', '[::1]', 'localhost'].includes(base.hostname)) throw new Error('invalid Jev configuration')
     this.url = base.href.replace(/\/$/, '') + '/systemone'
     this.quota = new ResourceQuota(options.concurrency ?? 2, 32)
     this.configurationFingerprint = hash({ model: this.modelId, url: this.url, price: this.inputCostMicrosPerMillion,
-      mode: options.mode ?? 'active', modes: options.modes ?? {}, timeoutMs: options.timeoutMs ?? 5000, contract: 'jev-decisions/1' })
+      mode: options.mode ?? 'active', modes: options.modes ?? {}, thresholds: options.thresholds ?? {}, timeoutMs: options.timeoutMs ?? 5000, contract: 'jev-decisions/2' })
   }
   mode(purpose: string): DecisionMode { return this.options.modes?.[purpose] ?? this.options.mode ?? 'active' }
+  threshold(purpose: string): number { return this.options.thresholds?.[purpose] ?? (['memory-relevance', 'knowledge-relevance', 'product-context', 'route-selection'].includes(purpose) ? 0.8 : 0.95) }
   async decide(request: DecisionRequest): Promise<DecisionResult> {
     validateDecisionRequest(request)
     if (this.mode(request.purpose) === 'off') throw new Error('decision purpose is disabled')
@@ -142,16 +185,32 @@ export class JevClient implements DecisionDriver {
 }
 
 /** Uses the same durable root budget and outbox observer as generative calls, at Jev prices. */
-export function executionDecision(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>, source: DecisionDriver,
+export function executionDecision(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'> & Partial<Pick<HostPort, 'saveStep' | 'heartbeat'>>, source: DecisionDriver,
   work: WorkItem, budget: RootModelBudgetOptions = {}): DecisionDriver {
   const { invoke } = modelExecution(host, { modelId: source.modelId, maxOutputTokens: 8192, maxThinkingTokens: 0, toolDefinitionTokens: 0 }, work,
     { ...DEFAULT_MODEL_BUDGET, ...budget, inputCostMicrosPerMillion: source.inputCostMicrosPerMillion, outputCostMicrosPerMillion: 0 },
     undefined, `decision:${randomUUID()}`)
+  let requestVersion = 1
+  let lastSummary: DecisionSummary | undefined
   return { modelId: source.modelId, configurationFingerprint: source.configurationFingerprint,
     inputCostMicrosPerMillion: source.inputCostMicrosPerMillion, mode: source.mode.bind(source),
+    threshold: purpose => source.threshold?.(purpose) ?? 0.95,
+    async recordDecision(summary) {
+      lastSummary = summary
+      await host.saveStep?.(work, { id: `decision:${randomUUID()}`, kind: 'runtime.decision', requestVersion,
+        input: { purpose: summary.purpose, inputHash: summary.inputHash }, output: JSON.stringify(summary), artifacts: [] })
+      await source.recordDecision?.(summary)
+    },
+    async recordFallback(purpose, value) {
+      if (lastSummary?.purpose !== purpose) return
+      await host.saveStep?.(work, { id: `decision-comparison:${randomUUID()}`, kind: 'runtime.decision-comparison', requestVersion,
+        input: { inputHash: lastSummary.inputHash, purpose }, output: JSON.stringify({ decision: lastSummary, fallback: value }), artifacts: [] })
+    },
     async decide(request) {
       validateDecisionRequest(request)
+      if (host.heartbeat) requestVersion = ((await host.heartbeat(work, request.signal)).steer?.length ?? 0) + 1
       const instructions = JSON.stringify({ purpose: request.purpose, version: request.version, questions: request.questions })
-      return invoke('decision', { input: request.state, instructions, signal: request.signal }, signal => source.decide({ ...request, signal }))
+      return invoke('decision', { input: request.state, instructions, signal: request.signal,
+        decision: { purpose: request.purpose, version: request.version, inputHash: hash([request.state, request.questions]) } }, signal => source.decide({ ...request, signal }))
     } }
 }

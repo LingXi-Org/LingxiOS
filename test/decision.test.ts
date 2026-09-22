@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
-import { JevClient, accepted, executionDecision, parseDecisionResult, yesNo, type DecisionAnswer, type DecisionDriver, type DecisionRequest } from '../src/model/decision.js'
+import { JevClient, accepted, decideOrFallback, executionDecision, parseDecisionResult, yesNo, type DecisionAnswer, type DecisionDriver, type DecisionRequest } from '../src/model/decision.js'
+import { ModelBudgetExceededError, LeaseLostError } from '../src/errors.js'
 import { reviewMemoryDecision, verifyMemoryDecision, rerankMemoryContext } from '../src/memory/decision.js'
 import { decisionContentCheck } from '../src/outcome/decision-check.js'
 import { snapshotMemories } from '../src/memory/context.js'
@@ -116,11 +117,37 @@ it('reranks only recall while preserving core and stored identities', async () =
 it('content checks preserve original requirements and turn unsupported citations into grounded findings', async () => {
   const seen: DecisionRequest[] = []
   const model = driver(r => { seen.push(r); return Object.fromEntries(Object.keys(r.questions).map(key => [key,
-    { type: 'choice', choice: key.startsWith('requirement') ? 'satisfied' : key.startsWith('citation') ? 'unknown' : 'none', confidence: 1,
+    { type: 'choice', choice: key.startsWith('requirement') ? 'satisfied' : key.startsWith('citation') ? 'unsupported' : 'none', confidence: 1,
       probabilities: { satisfied: 1, unknown: 1, none: 1 } } as DecisionAnswer])) })
   const input = { originalText: 'Explain the evidence.', revisions: [], body: '[Unsupported claim](#cite-S1)', evidence: { items: [{ marker: 'S1', excerpt: 'Unrelated text' }] } }
   const result = await decisionContentCheck(model, input, new AbortController().signal)
   assert.equal(result!.limitations[0]!.quote, 'Unsupported claim')
   assert.ok(Object.hasOwn(seen[0]!.questions, 'citation_0'))
-  await assert.rejects(decisionContentCheck(model, { ...input, originalText: 'x'.repeat(2001) }, new AbortController().signal), /span limit/)
+  assert.ok(await decisionContentCheck(model, { ...input, originalText: 'x'.repeat(2001) }, new AbortController().signal))
+})
+
+it('falls back on uncertainty and provider failure, but never on clear rejection, budget, lease or persistence failures', async () => {
+  const uncertain = driver(r => Object.fromEntries(Object.keys(r.questions).map(id => [id, { ...choice(), confidence: 0.7 }])))
+  assert.equal(await decideOrFallback(uncertain, request), undefined)
+  const rejecting = driver(() => ({ supported: choice('no'), ambiguous: choice('uncertain') }))
+  assert.ok(await decideOrFallback(rejecting, request))
+  const unavailable = { ...uncertain, decide: async () => { throw new Error('jev_http_429') } }
+  assert.equal(await decideOrFallback(unavailable, request), undefined)
+  for (const failure of [new ModelBudgetExceededError('spent'), new LeaseLostError(), new Error('database unavailable')]) {
+    await assert.rejects(decideOrFallback({ ...uncertain, decide: async () => { throw failure } }, request), error => error === failure)
+  }
+  const summaries: unknown[] = []
+  await decideOrFallback({ ...uncertain, recordDecision: async summary => { summaries.push(summary) } }, request)
+  assert.equal(summaries.length, 1)
+  assert.ok(!JSON.stringify(summaries).includes('请记住'))
+})
+
+it('covers every requirement across bounded batches without changing the original text', async () => {
+  const seen: DecisionRequest[] = []
+  const d = driver(r => { seen.push(r); return Object.fromEntries(Object.keys(r.questions).map(id => [id,
+    { type: 'choice', choice: id.startsWith('requirement') ? 'satisfied' : 'none', confidence: 1, probabilities: {} } as DecisionAnswer])) })
+  const result = await decisionContentCheck(d, { originalText: Array.from({ length: 70 }, (_, i) => `要求${i}。`).join(''), revisions: [], body: '交付。' }, new AbortController().signal)
+  assert.deepEqual(result?.missing, [])
+  assert.equal(seen.length, 3)
+  assert.equal(seen.reduce((n, r) => n + Object.keys(r.questions).filter(id => id.startsWith('requirement')).length, 0), 70)
 })

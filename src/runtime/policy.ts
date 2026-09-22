@@ -13,6 +13,8 @@ import type {
 import type { GoalAssessment } from '../outcome/assessment.js'
 
 export interface RuntimePolicy {
+  /** Worker-only preparation before the first request evidence snapshot is frozen. */
+  prepareInitialContext?(context: TurnContext, decisions: import('../model/decision.js').DecisionDriver, signal: AbortSignal): Promise<void>
   /** Worker-only, budgeted semantic enrichment of already-authorized context; never grants authority. */
   prepareDecisionContext?(context: TurnContext, decisions: import('../model/decision.js').DecisionDriver, signal: AbortSignal, request?: import('../context/request.js').RequestSnapshot): Promise<void>
   /**

@@ -67,6 +67,7 @@ import { PreviewBuffer } from './preview.js'
 import { checkedWorkspaceEntries, workspaceLimits, type WorkspaceState } from '../protocol/workspace.js'
 import type { ExecutionStep } from '../control-plane/steps.js'
 import { executionDecision, type DecisionDriver } from '../model/decision.js'
+import { selectReadAction } from '../model/route-decision.js'
 import { rerankMemoryContext } from '../memory/decision.js'
 
 export interface WorkProcessorContext {
@@ -368,6 +369,7 @@ export class AgentRuntime {
   ): Promise<void> {
     const host = this.hostFor(work)
     const context = await (host.loadInitialContext?.(work) ?? host.loadContext(work))
+    if (decisions) await this.policy.prepareInitialContext?.(context, decisions, signals.generationSignal())
     await this.event(work, runId, {
       kind: 'input.loaded', stage: 'completed', visibility: 'internal',
       data: { triggerRef: work.triggerRef },
@@ -399,6 +401,7 @@ export class AgentRuntime {
     const evidence = () => session.request?.evidence ?? snapshotEvidence(`${work.id}:evidence:1`, [])
     let protocolCorrection: ModelItem | null = null
     let pendingCompaction: ReturnType<typeof prepareCompaction> | undefined
+    let memoryDecision: { key: string; value: NonNullable<TurnContext['memory']> } | undefined
 
     const rememberCandidate = async (body: string, liveContext: TurnContext, gaps: string[] = []) => {
       const text = body.trim()
@@ -466,7 +469,11 @@ export class AgentRuntime {
       if (liveContext.memory) liveContext.memory=fitMemorySnapshot(liveContext.memory,this.compaction.contextWindowTokens)
       if (decisions) {
         const query = [session.request?.originalText, ...session.request?.revisions.map(item => item.text) ?? []].filter(Boolean).join('\n')
-        if (hop === 0 && liveContext.memory) liveContext.memory = await rerankMemoryContext(decisions, liveContext.memory, query, signals.generationSignal())
+        if (liveContext.memory) {
+          const key = createHash('sha256').update(JSON.stringify([query, liveContext.memory.id, decisions.configurationFingerprint])).digest('hex')
+          if (memoryDecision?.key !== key) memoryDecision = { key, value: await rerankMemoryContext(decisions, liveContext.memory, query, signals.generationSignal()) }
+          liveContext.memory = memoryDecision.value
+        }
         await this.policy.prepareDecisionContext?.(liveContext, decisions, signals.generationSignal(), session.request)
       }
       const execution = hop === 0 ? initialExecution : executionSnapshot(liveContext, this.policy)
@@ -555,14 +562,16 @@ export class AgentRuntime {
         prompt: session.promptContext.manifest, promptFingerprint: session.promptContext.fingerprint,
         promptContractVersion: this.promptContractVersion, toolProtocol: 'ipython-v1', decision: protocolCorrection ? 'correction' : hop === 0 ? 'initial' : 'continue',
       } })
-      let turn
+      let turn: import('../model/driver.js').ModelTurnResult
       let parser = new CandidateBodyParser()
       const preview = liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
       let providerBegan = performance.now()
       let firstBody = false
       try {
         protocolCorrection = null
-        turn = await model.run({
+        turn = (hop === 0 && !context.executionSteps?.some(step => !step.kind.startsWith('runtime.')) && decisions
+          ? await selectReadAction(decisions, modelTools, { original: session.request?.originalText, revisions: session.request?.revisions,
+            evidence: liveContext.evidence, observations: liveContext.dynamic }, signals.generationSignal()) : undefined) ?? await model.run({
           instructions,
           ...(session.promptContext.manifest ? { prompt: session.promptContext.manifest } : {}),
           items: modelItems,

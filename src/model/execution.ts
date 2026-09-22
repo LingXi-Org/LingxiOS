@@ -21,6 +21,7 @@ export function modelPricing(limits: Pick<Required<RootModelBudgetOptions>, 'inp
 }
 
 export interface ModelCallObservation {
+  decision?: { purpose: string; version: string; inputHash: string }
   cost?: { amountMicros: number; usage: 'measured' | 'estimated'; pricing: ModelPricing }
   prompt?: PromptManifest
   instructionsSha256?: string
@@ -62,7 +63,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
   let sequence = 0, calls = 0, tokens = 0, cost = 0
   const started = Date.now()
   const invoke = async <T extends { model?: string; usage: ModelUsage }>(purpose: ModelCallObservation['purpose'],
-    request: { signal?: AbortSignal | undefined; input?: unknown; instructions?: string; prompt?: PromptManifest }, operation: (signal: AbortSignal, callId: string, diagnostics: Record<string, unknown>) => Promise<T>, callModel = model): Promise<T> => {
+    request: { signal?: AbortSignal | undefined; input?: unknown; instructions?: string; prompt?: PromptManifest; decision?: ModelCallObservation['decision'] }, operation: (signal: AbortSignal, callId: string, diagnostics: Record<string, unknown>) => Promise<T>, callModel = model): Promise<T> => {
     const instructionsSha256 = request.instructions === undefined ? undefined : textSha256(request.instructions)
     if (request.prompt && request.prompt.instructionsSha256 !== instructionsSha256) throw new Error('prompt manifest does not match model instructions')
     const logicalCallId = `${work.id}:${work.fence}:${namespace}:${++sequence}`
@@ -102,6 +103,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       const costMicros = Math.ceil((inputTokens * limits.inputCostMicrosPerMillion + outputTokens * limits.outputCostMicrosPerMillion) / 1_000_000)
       tokens += inputTokens + outputTokens - input - output; cost += costMicros - reservedCost
       const observation: ModelCallObservation = {
+        ...(request.decision ? { decision: request.decision } : {}),
         ...(request.prompt ? { prompt: request.prompt } : {}), ...(instructionsSha256 ? { instructionsSha256 } : {}),
         callId, ...(attempt > 1 ? { logicalCallId } : {}), purpose,
         workId: work.id, tenantId: work.tenantId, agentId: work.agentId, sessionId: work.sessionId,

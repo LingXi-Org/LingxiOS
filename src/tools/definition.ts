@@ -13,6 +13,8 @@ export interface ArtifactInput {
 
 /** Trusted native context. The principal authorizes; the agent is the operator. */
 export interface ActionContext {
+  /** Worker-reviewed, bound to current authorized state and this exact action. Never an authorization. */
+  decision?: { state: unknown; answers: import('../model/tool-decision.js').ToolDecisionAnswers }
   /** Uses the configured memory content policy and this action's transaction. */
   writeMemory(scope: import('../memory/store.js').MemoryScope, mutation: import('../memory/store.js').MemoryMutation): Promise<import('../memory/types.js').MemoryDocument | { id: string; deleted: boolean }>
   forgetMemory(scope: import('../memory/store.js').MemoryScope): Promise<{ epoch: number }>
@@ -42,6 +44,8 @@ export type ActionResult = HostActionResult
 
 /** One native definition owns the schema, permissions and effect semantics. */
 export interface ToolDefinition<Input extends Record<string, unknown> = Record<string, unknown>> extends ToolSpecification {
+  /** Pure authorized read. Repeated in the action transaction to reject stale decisions. */
+  prepareDecision?(context: ActionContext, input: Input): Promise<import('../model/tool-decision.js').ToolDecision | null>
   /** Extract resource identity/version from the actual read result. Completeness comes from the declaration. */
   observe?(context: ActionContext, input: Input, value: unknown): Promise<Array<{ resourceId: string; version: string }>>
   /** Read the current authorized resource version here. External writes must also use conditional updates. */

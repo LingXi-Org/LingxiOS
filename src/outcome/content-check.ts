@@ -5,7 +5,7 @@ import type { KernelArtifact } from '../protocol/types.js'
 import { compileAuxiliaryPrompt } from '../context/compiler.js'
 import { candidateHash } from './verification.js'
 import { decisionContentCheck } from './decision-check.js'
-import type { DecisionDriver } from '../model/decision.js'
+import { decisionFallback, type DecisionDriver } from '../model/decision.js'
 
 const prompt = compileAuxiliaryPrompt('content-review', `Evaluate fulfillment of the original deliverables, not merely whether the answer follows the requested fallback wording.
 Check a candidate delivery against the exact original request and ordered revisions.
@@ -66,11 +66,13 @@ export async function checkCandidateContent(model: ModelDriver, request: Request
       && typeof item.reason === 'string' && item.reason.trim() && item.reason.length <= 2000)) {
       throw new Error('Content check returned invalid or ungrounded limitations')
     }
+    await decisions?.recordFallback?.('content-review', { missing: value.missing.length, limitations: limitations.length })
     return { ...identity, missing: value.missing as Array<{ quote: string; reason: string; blockedBy?: string }>,
       limitations: limitations as Array<{ quote: string; reason: string }>,
       model: result.model, usage: result.usage }
   } catch (error) {
     if (signal.aborted) throw error
+    if (error instanceof Error && ['ModelBudgetExceededError', 'LeaseLostError', 'RunCancelledError'].includes(error.name)) decisionFallback(error, signal)
     return { ...identity, missing: [], limitations: [], error: 'Content check was unavailable or returned invalid findings' }
   }
 }

@@ -17,7 +17,7 @@ export function createMemoryService(database: SqlPool,options: MemoryOptions,sem
   const settings = memorySettings(options)
   // Internal context assembler authorizes the complete scope snapshot before AND after calling this.
   const recall = (work: Omit<WorkItem, 'leaseToken'>, scope: MemoryScope, query: string, db: SqlQueryable, signal?: AbortSignal) =>
-    semantic ? semantic.recall(work, scope, query, 12, signal) : searchMemories(db, scope, query, 12)
+    semantic ? semantic.recall(work, scope, query, 16, signal) : searchMemories(db, scope, query, 16)
   const access = (identity: MemoryIdentity,scope: MemoryScope,db: SqlQueryable=database) => authorizeScope(options,identity,db,scope)
   const sources = (identity: MemoryIdentity,input: { sourceRef: string; idempotencyKey: string }): MemorySource[] => {
     if (typeof input.sourceRef!=='string' || !input.sourceRef.trim() || input.sourceRef.length>1000

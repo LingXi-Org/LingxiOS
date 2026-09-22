@@ -279,6 +279,8 @@ export class ControlPlaneServer {
             json(res, 200, await service.verifyCandidate(proof, body['candidate'] as never, disconnected.signal)); return
           case 'memory-review':
             json(res,200,await service.prepareMemoryReview(proof,body['action'] as never)); return
+          case 'tool-decision':
+            json(res,200,await service.prepareToolDecision(proof,body['action'] as never,disconnected.signal)); return
           case 'memory-review-result':
             await service.recordMemoryReview(proof,body['action'] as never,stringField(body,'hash'),body['review'] as never)
             json(res,200,{ok:true}); return

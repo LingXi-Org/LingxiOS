@@ -512,6 +512,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     waitForWork, recoverWork,
     streamPreview: (work, frames, signal) => realtime.receive(work, frames, signal ?? shutdown.signal),
     prepareMemoryReview: (work,action) => service.prepareMemoryReview(work,action),
+    prepareToolDecision: (work,action,signal) => service.prepareToolDecision(work,action,signal),
     recordMemoryReview: (work,action,hash,review) => service.recordMemoryReview(work,action,hash,review),
     verifyCandidate: (work, candidate, signal) => service.verifyCandidate(work, candidate, signal),
     saveStep: (work, step, signal) => service.saveStep(work, step, signal),

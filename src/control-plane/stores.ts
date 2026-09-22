@@ -252,6 +252,8 @@ export interface ActionExecutionOptions {
 }
 
 export interface ActionExecutor {
+  prepareDecision?(work: Omit<WorkItem, 'leaseToken'>, action: import('../protocol/types.js').HostAction,
+    options: ActionExecutionOptions): Promise<import('../model/tool-decision.js').PreparedToolDecision | null>
   reconcile?(work: Omit<WorkItem, 'leaseToken'>, action: import('../protocol/types.js').HostAction,
     options: ActionExecutionOptions): Promise<HostActionResult | null>
   prepare(work: Omit<WorkItem, 'leaseToken'>, action: import('../protocol/types.js').HostAction,
