@@ -233,8 +233,11 @@ export class ControlPlaneService {
       || observation.threadId !== work.threadId || !['agent-turn','structured','compaction','embedding','decision'].includes(observation.purpose)
       || !['succeeded','failed'].includes(observation.status) || !Number.isFinite(observation.latencyMs)
       || observation.latencyMs < 0 || typeof observation.model !== 'string')) throw new ControlPlaneError(400, 'invalid model observation identity')
-    // Stores settle against the immutable trusted price captured at reservation, including across configuration changes.
-    await this.deps.modelBudgets.record(rootWorkId, callId, usage.inputTokens, usage.outputTokens, usage.costMicros,
+    const policy = this.deps.modelBudget
+    const costMicros = policy ? Math.ceil((usage.inputTokens * policy.inputCostMicrosPerMillion
+      + usage.outputTokens * policy.outputCostMicrosPerMillion) / 1_000_000) : usage.costMicros
+    // Stores prefer the immutable reservation price; the policy total protects legacy reservations without pricing.
+    await this.deps.modelBudgets.record(rootWorkId, callId, usage.inputTokens, usage.outputTokens, costMicros,
       { workId: work.id, fence: proof.fence, leaseTokenHash: hashToken(proof.leaseToken) }, observation)
   }
 
