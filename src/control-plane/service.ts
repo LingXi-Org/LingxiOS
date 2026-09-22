@@ -60,6 +60,8 @@ export interface ControlPlaneDeps {
     prepareReview(work: Omit<WorkItem,'leaseToken'>,action: HostAction): Promise<import('../memory/types.js').MemoryReviewRequest|null>
     recordReview(work: Omit<WorkItem,'leaseToken'>,action: HostAction,hash: string,review: import('../memory/types.js').MemoryReview): Promise<void>
   }
+  /** Trusted overrides for additional providers; worker-submitted prices never override these. */
+  modelPrices?: Record<string, import('../model/execution.js').ModelRates>
   modelBudget?: Required<import('../model/execution.js').RootModelBudgetOptions>
   verifyCandidate?: (work: Omit<WorkItem, 'leaseToken'>, candidate: Candidate, signal?: AbortSignal) => Promise<CandidateVerification>
   tools?: readonly ToolDefinition[]
@@ -186,6 +188,9 @@ export class ControlPlaneService {
 
   constructor(private readonly deps: ControlPlaneDeps) {
     this.logger = deps.logger ?? nullLogger
+    for (const [model, rates] of Object.entries(deps.modelPrices ?? {})) {
+      if (!model.trim() || model.length > 200 || [rates.inputCostMicrosPerMillion, rates.outputCostMicrosPerMillion].some(value => !Number.isSafeInteger(value) || value < 0)) throw new Error('invalid control-plane model prices')
+    }
   }
 
   async reserveModelCall(proof: LeaseProof, callId: string, limits: ModelBudgetLimits) {
@@ -199,16 +204,19 @@ export class ControlPlaneService {
       || !Number.isFinite(Date.parse(limits.deadlineAt))) throw new ControlPlaneError(400, 'invalid model budget reservation')
     if ([limits.reservedTokens ?? 0, limits.reservedCostMicros ?? 0].some(value => !Number.isSafeInteger(value) || value < 0)) throw new ControlPlaneError(400, 'invalid reserved model resources')
     if (limits.maxExecutionMs !== undefined && (!Number.isSafeInteger(limits.maxExecutionMs) || limits.maxExecutionMs < 1)) throw new ControlPlaneError(400, 'invalid execution budget')
+    if (limits.model !== undefined && (typeof limits.model !== 'string' || !limits.model.trim() || limits.model.length > 200)) throw new ControlPlaneError(400, 'invalid reservation model')
     const policy = this.deps.modelBudget
+    const rates = limits.model && this.deps.modelPrices?.[limits.model] || (limits.model === 'jev-1.13.0'
+      ? { inputCostMicrosPerMillion: 42_000, outputCostMicrosPerMillion: 0 } : policy)
     if (policy) {
       const input = limits.reservedInputTokens, output = limits.reservedOutputTokens
       if (![input, output].every(value => Number.isSafeInteger(value) && Number(value) >= 0)
         || input! + output! !== limits.reservedTokens) throw new ControlPlaneError(400, 'reservation requires input and output token bounds')
       limits = { ...limits, maxModelCalls: Math.min(limits.maxModelCalls, policy.maxModelCalls),
-        pricing: modelPricing(policy),
+        pricing: modelPricing(rates!),
         maxTokens: Math.min(limits.maxTokens, policy.maxTokens), maxCostMicros: Math.min(limits.maxCostMicros, policy.maxCostMicros),
         maxExecutionMs: Math.min(limits.maxExecutionMs ?? policy.wallClockMs, policy.wallClockMs),
-        reservedCostMicros: Math.ceil((input! * policy.inputCostMicrosPerMillion + output! * policy.outputCostMicrosPerMillion) / 1_000_000) }
+        reservedCostMicros: Math.ceil((input! * rates!.inputCostMicrosPerMillion + output! * rates!.outputCostMicrosPerMillion) / 1_000_000) }
     }
     return this.deps.modelBudgets.reserve(rootWorkId, callId, limits,
       { workId: work.id, fence: proof.fence, leaseTokenHash: hashToken(proof.leaseToken) })
@@ -225,10 +233,8 @@ export class ControlPlaneService {
       || observation.threadId !== work.threadId || !['agent-turn','structured','compaction','embedding','decision'].includes(observation.purpose)
       || !['succeeded','failed'].includes(observation.status) || !Number.isFinite(observation.latencyMs)
       || observation.latencyMs < 0 || typeof observation.model !== 'string')) throw new ControlPlaneError(400, 'invalid model observation identity')
-    const policy = this.deps.modelBudget
-    const costMicros = policy ? Math.ceil((usage.inputTokens * policy.inputCostMicrosPerMillion
-      + usage.outputTokens * policy.outputCostMicrosPerMillion) / 1_000_000) : usage.costMicros
-    await this.deps.modelBudgets.record(rootWorkId, callId, usage.inputTokens, usage.outputTokens, costMicros,
+    // Stores settle against the immutable trusted price captured at reservation, including across configuration changes.
+    await this.deps.modelBudgets.record(rootWorkId, callId, usage.inputTokens, usage.outputTokens, usage.costMicros,
       { workId: work.id, fence: proof.fence, leaseTokenHash: hashToken(proof.leaseToken) }, observation)
   }
 

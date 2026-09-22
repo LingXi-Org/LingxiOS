@@ -91,6 +91,7 @@ export interface LingxiOSOptions {
   /** Native acceptance checks, using live business records rather than model assertions. */
   verifyRun?: (context: RunVerificationContext) => Promise<VerificationRecord[]>
   /** Root-work limits shared by retries and delegated children. */
+  modelPrices?: Record<string, import('../model/execution.js').ModelRates>
   modelBudget?: import('../runtime/runtime.js').RootModelBudgetOptions
   /** Required for products that own billing, quota and model-call observability. */
   onModelCall?: ModelCallObserver
@@ -383,7 +384,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     logger, metrics,
     work: new PgWorkStore(options.database), sessions,
     events: new PgEventStore(options.database, Boolean(integration?.delivery)), actions: new PgActionLedger(options.database),
-    modelBudgets: new PgModelBudgetStore(options.database), modelBudget,
+    modelBudgets: new PgModelBudgetStore(options.database), modelBudget, ...(options.modelPrices ? { modelPrices: options.modelPrices } : {}),
     artifactStager: {
       stage: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal, options.objects),
       stream: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal, options.objects),

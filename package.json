@@ -1,6 +1,6 @@
 {
   "name": "@lyyzka/lingxios",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "Durable agent execution for PostgreSQL with fenced workers, native tools, verified outcomes, and sandboxed Python.",
   "type": "module",
   "license": "MIT",

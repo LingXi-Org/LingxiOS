@@ -8,6 +8,7 @@ import type { ModelDriver, ModelUsage } from './driver.js'
 import { abortable } from '../deadline.js'
 import { fitsModel, inputTokens, modelProfile } from './profile.js'
 
+export type ModelRates = Pick<Required<RootModelBudgetOptions>, 'inputCostMicrosPerMillion' | 'outputCostMicrosPerMillion'>
 export interface ModelPricing {
   version: string
   currency: 'USD'
@@ -77,7 +78,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       }
       const callId = attempt === 1 ? logicalCallId : `${logicalCallId}:retry:${attempt}`
       const reservation = await host.reserveModelCall(work, callId, {
-        ...limits, maxExecutionMs: limits.wallClockMs,
+        ...limits, ...(callModel.modelId ? { model: callModel.modelId } : {}), maxExecutionMs: limits.wallClockMs,
         deadlineAt: new Date(Date.now() + limits.wallClockMs).toISOString(),
         reservedTokens: input + output, reservedInputTokens: input, reservedOutputTokens: output, reservedCostMicros: reservedCost,
         pricing: modelPricing(limits),

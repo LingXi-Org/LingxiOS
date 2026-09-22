@@ -114,6 +114,7 @@ export interface StoreLeaseProof {
 }
 
 export interface ModelBudgetLimits {
+  model?: string
   pricing?: import('../model/execution.js').ModelPricing
   maxExecutionMs?: number
   reservedTokens?: number

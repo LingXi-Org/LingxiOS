@@ -6,6 +6,10 @@ import { decisionContentCheck } from '../src/outcome/decision-check.js'
 import { snapshotMemories } from '../src/memory/context.js'
 import type { WorkItem } from '../src/protocol/types.js'
 import type { ModelCallObservation } from '../src/model/execution.js'
+import { DEFAULT_MODEL_BUDGET, modelPricing } from '../src/model/execution.js'
+import { ControlPlaneService } from '../src/control-plane/service.js'
+import { MemoryActionLedger, MemoryEventStore, MemoryModelBudgetStore, MemorySessionStore, MemoryWorkStore } from '../src/control-plane/memory-store.js'
+import { MemoryStepStore } from '../src/control-plane/steps.js'
 
 const request: DecisionRequest = { purpose: 'memory-write-review', version: '1', state: '请记住我喜欢中文解释。', questions: { supported: yesNo('Is the preference explicit?') } }
 const choice = (selected = 'yes'): DecisionAnswer => ({ type: 'choice', choice: selected, confidence: 1,
@@ -14,6 +18,24 @@ const response = () => ({ model: 'jev-1.13.0', answers: { supported: choice() },
 const driver = (answers: (request: DecisionRequest) => Record<string, DecisionAnswer>, mode: 'active' | 'shadow' = 'active'): DecisionDriver => ({
   modelId: 'jev-1.13.0', configurationFingerprint: 'fixture', inputCostMicrosPerMillion: 42_000, mode: () => mode,
   decide: async request => ({ model: 'jev-1.13.0', answers: answers(request), usage: { available: true, inputTokens: 1000, outputTokens: 20 } }),
+})
+
+it('control-plane Jev pricing overrides generic and worker prices and stays frozen across settlement', async () => {
+  const modelBudget = { ...DEFAULT_MODEL_BUDGET, inputCostMicrosPerMillion: 1_000_000, outputCostMicrosPerMillion: 2_000_000 }
+  const modelPrices = { 'jev-1.13.0': { inputCostMicrosPerMillion: 42_000, outputCostMicrosPerMillion: 0 } }
+  const service = new ControlPlaneService({ modelBudget, modelPrices, modelBudgets: new MemoryModelBudgetStore(), steps: new MemoryStepStore(),
+    work: new MemoryWorkStore(), sessions: new MemorySessionStore(), events: new MemoryEventStore(), actions: new MemoryActionLedger(),
+    contextProvider: { loadContext: async () => { throw new Error('unexpected') } }, capabilityResolver: { resolve: async () => [] },
+    actionExecutor: { prepare: async () => {}, execute: async () => ({ ok: false }) }, delivery: { onEvent: async () => {}, deliverMessage: async () => {} } })
+  await service.enqueue({ id: 'priced', tenantId: 't', agentId: 'a', principalId: 'u', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm' })
+  const work = (await service.claim('worker'))!
+  const limits = { ...modelBudget, model: 'jev-1.13.0', deadlineAt: new Date(Date.now() + 60_000).toISOString(), reservedTokens: 1000,
+    reservedInputTokens: 1000, reservedOutputTokens: 0, reservedCostMicros: 0, pricing: modelPricing(DEFAULT_MODEL_BUDGET) }
+  assert.equal((await service.reserveModelCall(work, 'jev', limits)).remainingCostMicros, modelBudget.maxCostMicros - 42)
+  modelPrices['jev-1.13.0'].inputCostMicrosPerMillion = 500_000
+  await service.recordModelUsage(work, 'jev', { inputTokens: 1000, outputTokens: 0, costMicros: 0 })
+  const remaining = await service.reserveModelCall(work, 'inspect', { ...limits, reservedTokens: 0, reservedInputTokens: 0 })
+  assert.equal(remaining.remainingCostMicros, modelBudget.maxCostMicros - 42)
 })
 
 it('validates protocol, rejects missing answers, aliases, unknown usage and malformed distributions', () => {

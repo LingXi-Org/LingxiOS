@@ -555,7 +555,7 @@ export class MemoryActionLedger implements ActionLedgerStore {
 }
 
 export class MemoryModelBudgetStore implements ModelBudgetStore {
-  private readonly budgets = new Map<string, ModelBudgetLimits & { calls: Map<string, [number, number]>; recorded: Set<string>; tokens: number; costMicros: number }>()
+  private readonly budgets = new Map<string, ModelBudgetLimits & { calls: Map<string, [number, number, import('../model/execution.js').ModelPricing | undefined]>; recorded: Set<string>; tokens: number; costMicros: number }>()
 
   async reserve(rootWorkId: string, callId: string, limits: ModelBudgetLimits): Promise<ModelBudgetReservation> {
     let budget = this.budgets.get(rootWorkId)
@@ -567,7 +567,7 @@ export class MemoryModelBudgetStore implements ModelBudgetStore {
     const allowed = existing || (Date.now() < Date.parse(budget.deadlineAt)
       && budget.calls.size < budget.maxModelCalls && budget.tokens + (limits.reservedTokens ?? 0) <= budget.maxTokens && budget.costMicros + (limits.reservedCostMicros ?? 0) <= budget.maxCostMicros)
     if (allowed && !existing) {
-      budget.calls.set(callId, [limits.reservedTokens ?? 0, limits.reservedCostMicros ?? 0])
+      budget.calls.set(callId, [limits.reservedTokens ?? 0, limits.reservedCostMicros ?? 0, limits.pricing ? structuredClone(limits.pricing) : undefined])
       budget.tokens += limits.reservedTokens ?? 0
       budget.costMicros += limits.reservedCostMicros ?? 0
     }
@@ -580,6 +580,8 @@ export class MemoryModelBudgetStore implements ModelBudgetStore {
     const budget = this.budgets.get(rootWorkId)
     if (!budget || !budget.calls.has(callId)) throw new Error('model call budget reservation is missing')
     if (budget.recorded.has(callId)) return
+    const pricing = budget.calls.get(callId)![2]
+    if (pricing) costMicros = Math.ceil((inputTokens * pricing.inputMicrosPerMillion + outputTokens * pricing.outputMicrosPerMillion) / 1_000_000)
     budget.recorded.add(callId)
     budget.tokens += inputTokens + outputTokens - budget.calls.get(callId)![0]
     budget.costMicros += costMicros - budget.calls.get(callId)![1]
