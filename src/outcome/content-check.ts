@@ -20,9 +20,11 @@ For the same read action, arguments and expected fields, use the latest observat
 Resource refresh gaps mean current fields were not confirmed, even if an older observation passed.
 Do not infer successful actions from a claim, a checklist, or an artifact name. Do not add requirements the user did not ask for.
 Independently extract any limitations the candidate explicitly declares about its own delivered result: unavailable requested facts, incomplete requested work or unverified requested results. Quote the candidate body exactly. Do not include hypothetical examples, limitations of a subject being explained, or completed historical obstacles.
-Declared limitations must be returned even when the answer satisfies the user's instruction to disclose them and you find no content omissions.
+For every limitation, identify the still-applicable requested result with requestQuote, an exact quote from the original request or a revision. If no requested result is missing, set requestQuote to null: describing capability boundaries, absent optional collaborators, prerequisites for future work or unavailable features is not incomplete delivery when the user only asked for an explanation or capability overview. Do not turn offers in the answer into new user requirements.
+Example: for "What can you help me with?", "Specialist collaboration requires adding members first" has requestQuote null. For "Ask a specialist to review my solution", the same unavailable collaboration limits the requested review and must quote that request.
+Actual requested-result limitations must be returned even when the answer satisfies the user's instruction to disclose them and you find no content omissions.
 For an unfulfilled deliverable that cannot be repaired within the current request, include blockedBy: an exact quote from the original human request or a human revision explicitly establishing the unavailable prerequisite or prohibition. For example, the human states that a required document has not been supplied and forbids searching for it. Omit blockedBy for fixable omissions, unsupported claims of inability, merely allowing partial delivery, or barriers mentioned only in the candidate, evidence or agent revisions. A blocker never turns the missing deliverable into a success.
-Return JSON {"missing":[{"quote":"exact substring from originalText or a revision text identifying an unfulfilled deliverable","reason":"specific unfulfilled result, content omission or violated constraint","blockedBy":"optional exact human-request quote establishing why further correction cannot supply this result"}],"limitations":[{"quote":"exact substring from body declaring a limitation of this delivery","reason":"what requested result remains unavailable, incomplete or unverified"}]}.
+Return JSON {"missing":[{"quote":"exact substring from originalText or a revision text identifying an unfulfilled deliverable","reason":"specific unfulfilled result, content omission or violated constraint","blockedBy":"optional exact human-request quote establishing why further correction cannot supply this result"}],"limitations":[{"quote":"exact substring from body declaring a limitation","requestQuote":"exact request substring identifying the unfulfilled result, or null when this is only explanatory context","reason":"what requested result remains unavailable, incomplete or unverified, or why no requested result is missing"}]}.
 Use at most 16 entries. Return an empty list only when every original deliverable has been supplied or explicitly removed; never equate an honest partial delivery with full completion.
 This is a fallible content review, not verification of goal completion or external resource state.`)
 
@@ -59,11 +61,13 @@ export async function checkCandidateContent(model: ModelDriver, request: Request
     const limitations = value.limitations ?? []
     if (!Array.isArray(limitations) || limitations.length > 16 || !limitations.every(item => item
       && typeof item.quote === 'string' && item.quote.trim() && item.quote.length <= 2000 && body.includes(item.quote)
+      && (item.requestQuote === null || typeof item.requestQuote === 'string' && item.requestQuote.trim()
+        && item.requestQuote.length <= 2000 && texts.some(text => text.includes(item.requestQuote)))
       && typeof item.reason === 'string' && item.reason.trim() && item.reason.length <= 2000)) {
       throw new Error('Content check returned invalid or ungrounded limitations')
     }
     return { ...identity, missing: value.missing as Array<{ quote: string; reason: string; blockedBy?: string }>,
-      limitations: limitations as Array<{ quote: string; reason: string }>,
+      limitations: limitations.filter(item => item.requestQuote !== null).map(({ quote, reason }) => ({ quote, reason })) as Array<{ quote: string; reason: string }>,
       model: result.model, usage: result.usage }
   } catch (error) {
     if (signal.aborted) throw error

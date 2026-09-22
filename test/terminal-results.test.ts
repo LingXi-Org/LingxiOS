@@ -13,7 +13,7 @@ import { durableProtocol } from './protocol-fixture.js'
 const usage = { available: true, inputTokens: 10, outputTokens: 10 }
 const unexpected = async (): Promise<never> => { throw new Error('unexpected call') }
 
-for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume', 'revised', 'review', 'declared_partial', 'request_blocked'] as const) {
+for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume', 'revised', 'review', 'declared_partial', 'request_blocked', 'capability_overview'] as const) {
   it(`terminates ${mode} with only a validated current-version answer`, async () => {
     const work: TurnContext['work'] = { id: 'w', tenantId: 't', agentId: 'a', principalId: 'u', sessionId: 's',
       kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'secret' }
@@ -26,7 +26,7 @@ for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume'
       loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: [],
         messages: [{ ref: 'm', authorId: 'u', authorName: 'User', authorKind: 'human', body: mode === 'request_blocked'
           ? 'Answer first and second parts. The second result has not been supplied; do not search for it.'
-          : ['review','declared_partial'].includes(mode) ? 'Answer first and second parts.' : 'Answer both parts.', createdAt: 'now' }],
+          : mode === 'capability_overview' ? '你能帮我做什么？' : ['review','declared_partial'].includes(mode) ? 'Answer first and second parts.' : 'Answer both parts.', createdAt: 'now' }],
         ...(['resume','revised'].includes(mode) ? { executionSteps: [{ id: 'saved', kind: 'runtime.candidate', requestVersion: 1,
           input: {}, output: JSON.stringify(envelope), artifacts: [] }] } : {}) }),
       executeAction: async () => ({ ok: true, value: { requestVersion: 1, pending: [], truncated: false } }),
@@ -37,9 +37,11 @@ for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume'
     const model: ModelDriver = { compact: unexpected, structured: async () => ({ value: { missing: ['review','request_blocked'].includes(mode)
       ? [{ quote: 'second parts.', reason: 'The requested result remains unavailable despite the disclosed limitation.',
         ...(mode === 'request_blocked' ? { blockedBy: 'The second result has not been supplied; do not search for it.' } : {}) }] : [],
-      limitations: mode === 'declared_partial' ? [{ quote: 'The second part is unavailable.', reason: 'The second result remains unavailable.' }] : [] }, model: 'test', usage }),
+      limitations: mode === 'declared_partial' ? [{ quote: 'The second part is unavailable.', requestQuote: 'second parts.', reason: 'The second result remains unavailable.' }]
+        : mode === 'capability_overview' ? [{ quote: '专业助手需要先加入项目。', requestQuote: null, reason: '只是介绍未来协作的前提，没有缺少用户要求的结果。' }] : [] }, model: 'test', usage }),
       run: async () => {
         turns++
+        if (mode === 'capability_overview') return { text: '我可以帮助你学习。专业助手需要先加入项目。', output: [{ role: 'assistant', content: '我可以帮助你学习。专业助手需要先加入项目。' }], usage }
         if (['review','declared_partial','request_blocked'].includes(mode)) return { text: 'Verified portion. The second part is unavailable.', output: [{ role: 'assistant', content: 'Verified portion. The second part is unavailable.' }], usage }
         if (mode === 'resume' || mode === 'revised' || mode === 'budget' && turns > 1) throw new ModelBudgetExceededError('root work model budget exhausted')
         if (mode === 'provider' && turns > 1) throw new ModelDriverError('provider echoed a private credential', { kind: 'provider', status: 400, finishReasons: [] })
@@ -48,7 +50,13 @@ for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume'
           status: 'partial', gaps: ['Second part remains unavailable'], checks: [{ requirement: 'Answer both parts.', status: 'unknown', basis: 'Only the first part was answered.' }] }), usage }
       } }
     await new AgentRuntime(host, model, { execute: unexpected }).runWork(work)
-    if (['format','invalid_citation','revised'].includes(mode)) {
+    if (mode === 'capability_overview') {
+      assert.equal(messages.length, 1)
+      assert.equal(messages[0]!.body, '我可以帮助你学习。专业助手需要先加入项目。')
+      assert.equal(messages[0]!.envelope.goalOutcome.status, 'satisfied')
+      assert.deepEqual(messages[0]!.envelope.goalOutcome.gaps ?? [], [])
+      assert.equal(turns, 1)
+    } else if (['format','invalid_citation','revised'].includes(mode)) {
       assert.equal(messages.length, 0)
       assert.equal(completion?.status, 'failed')
       assert.equal(events.filter(event => event.kind === 'run.failed').length, 1)
@@ -104,5 +112,17 @@ it('does not use invented or agent-authored constraints to stop correction', asy
       'The first result is 43.', [], 32000, new AbortController().signal)
     assert.equal('error' in result && result.error, 'Content check was unavailable or returned invalid findings')
     assert.deepEqual(result.missing, [])
+  }
+})
+
+it('requires delivery limitations to identify a real request span', async () => {
+  for (const requestQuote of [undefined, '', 'Ask a specialist to review my solution.', 'x'.repeat(2001)]) {
+    const model: ModelDriver = { run: unexpected, compact: unexpected, structured: async () => ({ value: {
+      missing: [], limitations: [{ quote: 'Specialists must first join.', requestQuote, reason: 'Collaboration is unavailable.' }] }, model: 'test', usage }) }
+    const result = await checkCandidateContent(model, { version: 1, workId: 'w', tenantId: 't', sessionId: 's', authorId: 'u', sourceRef: 'm',
+      originalText: 'What can you help me with?', revisions: [], attachments: [], evidence: snapshotEvidence('e', []) },
+      'I can explain concepts. Specialists must first join.', [], 32000, new AbortController().signal)
+    assert.equal('error' in result && result.error, 'Content check was unavailable or returned invalid findings')
+    assert.deepEqual(result.limitations, [])
   }
 })
