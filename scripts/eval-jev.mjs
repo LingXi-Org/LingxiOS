@@ -34,7 +34,8 @@ for (const [id, originalText, content, expected] of cases) {
   const started = Date.now()
   try {
     const review = await reviewMemoryDecision(measured, { request: { originalText, revisions: [], delegated: false },
-      action: 'memory.apply', args: { changes: [{ path: 'preferences/communication.md', content, tier: 'core' }] }, documents: [] })
+      action: 'memory.apply', args: { scopeType: 'learner', scopeId: 'synthetic-learner', changes: [{ action: 'create',
+        content: { path: 'preferences/communication.md', title: 'Communication preference', description: 'Synthetic proposed memory', body: content, layer: 'core', locked: false } }] }, documents: [] })
     results.push({ id, expected, approved: review.approved, confidence: review.confidence, passed: review.approved === expected, latencyMs: Date.now() - started })
   } catch { results.push({ id, expected, passed: false, error: 'decision_failed', latencyMs: Date.now() - started }) }
 }
