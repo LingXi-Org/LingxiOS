@@ -47,7 +47,8 @@ for (const escalate of [false, true]) it(`routes without a classifier and preser
     structured: async () => ({ model: 'deep', usage, value: { missing: [] } }), run: async request => {
       deepCalls++
       assert.ok(steps.some(step => step.kind === 'runtime.response'))
-      assert.ok(request.items.some(item => 'type' in item && item.type === 'function_call_output'))
+      assert.ok(!request.items.some(item => 'type' in item && item.type === 'function_call_output'),
+        'a response upgrade must not look like an external action')
       assert.ok(request.items.some(item => 'content' in item && String(item.content).includes('Verified fact.')))
       return { text: 'Deep answer.', output: [{ role: 'assistant', content: 'Deep answer.' }], usage }
     } }

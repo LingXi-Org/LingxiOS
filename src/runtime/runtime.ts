@@ -641,8 +641,6 @@ export class AgentRuntime {
         const requestVersion = (session.request?.revisions.length ?? 0) + 1
         await host.saveStep(work, { id: `response:deep:${requestVersion}`, kind: 'runtime.response', requestVersion,
           input: { profile: 'deep' }, output: '{}', artifacts: [] })
-        session.history.push(...turn.output, ...calls.map(call => ({ type: 'function_call_output' as const,
-          callId: call.callId, output: JSON.stringify({ profile: 'deep', instruction: 'Continue with full authorized context; no external action was executed.' }) })))
         await host.saveSession(work, session)
         continue
       }
