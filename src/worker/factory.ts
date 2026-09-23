@@ -19,9 +19,10 @@ export interface WorkerConnection {
   connectWorker(input: { workerId: string; workKinds: readonly string[] }): HostPort
 }
 export type ModelConfiguration = { id?: string } & Omit<OpenAIDriverOptions, 'fetchImpl' | 'sleep' | 'maxAttempts' | 'retryBaseMs'>
-export interface WorkerOptions extends Omit<AgentRuntimeOptions, 'rootModelBudget'> {
+export interface WorkerOptions extends Omit<AgentRuntimeOptions, 'rootModelBudget' | 'fastModel'> {
   controlPlane: WorkerConnection | { url: string; serviceToken: string }
   model: ModelDriver | ModelConfiguration
+  fastModel?: ModelDriver | ModelConfiguration
   modelBudget?: AgentRuntimeOptions['rootModelBudget']
   resources?: { model?: number; python?: number }
   processors?: Readonly<Record<string, WorkProcessor | 'conversation'>>
@@ -46,13 +47,17 @@ export function createWorker(options: WorkerOptions): AgentWorker {
   const connectionHost = 'connectWorker' in connection ? connection.connectWorker({ workerId, workKinds })
     : new HttpHostClient({ baseUrl: connection.url, serviceToken: connection.serviceToken, workerId, workKinds })
   const modelCapacity = options.resources?.model ?? concurrency
-  const model = limitModel('run' in options.model ? options.model : new OpenAIChatDriver(options.model.id ?? DEFAULT_MODEL.id, options.model),
-    new ResourceQuota(modelCapacity, 1024, modelCapacity > 1 ? 1 : 0, metrics, 'model'))
+  const quota = new ResourceQuota(modelCapacity, 1024, modelCapacity > 1 ? 1 : 0, metrics, 'model')
+  const model = limitModel('run' in options.model ? options.model : new OpenAIChatDriver(options.model.id ?? DEFAULT_MODEL.id, options.model), quota)
+  const fastModel = options.fastModel ? limitModel('run' in options.fastModel ? options.fastModel
+    : new OpenAIChatDriver(options.fastModel.id ?? DEFAULT_MODEL.id, options.fastModel), quota) : undefined
   const host = reviewedMemoryHost(connectionHost,model,options.modelBudget)
   const bridge: KernelHostBridge = { execute: (work, action, signal) => host.executeAction(work, action, signal) }
   const kernels = options.kernelFactory?.(bridge) ?? new KernelManager(bridge, { ...options.kernel, logger, maxKernels: options.resources?.python ?? concurrency,
     isolation: kernelIsolation(options.kernel?.isolation ?? process.env['AGENT_OS_KERNEL_ISOLATION'], process.env['NODE_ENV'] === 'production', options.trustProcessKernel) })
-  const runtime = new AgentRuntime(host, model, kernels, { ...options, metrics, ...(options.modelBudget ? { rootModelBudget: options.modelBudget } : {}) })
+  const { fastModel: _configuration, ...runtimeOptions } = options
+  const runtime = new AgentRuntime(host, model, kernels, { ...runtimeOptions, ...(fastModel ? { fastModel } : {}), metrics,
+    ...(options.modelBudget ? { rootModelBudget: options.modelBudget } : {}) })
   runtime.registerProcessor('memory_synthesis', memorySynthesisProcessor)
   runtime.registerProcessor('memory_index', memoryIndexProcessor)
   if (options.evolutionEvaluator) runtime.registerProcessor('memory_evaluation', memoryEvaluationProcessor(options.evolutionEvaluator))
@@ -61,6 +66,7 @@ export function createWorker(options: WorkerOptions): AgentWorker {
     runtime.registerProcessor(kind, processor)
   }
   return new AgentWorker({ host, runtime, kernels, workerId, logger, metrics, maxConcurrentRuns: concurrency,
+    reserveInteractiveByLane: !!fastModel,
     reservedInteractiveRuns: options.worker?.reservedInteractiveRuns ?? (concurrency > 1 ? 1 : 0),
     shutdownGraceMs: options.worker?.shutdownGraceMs ?? 20_000,
     ...(options.worker?.pollIdleMs === undefined ? {} : { pollIdleMs: options.worker.pollIdleMs }),

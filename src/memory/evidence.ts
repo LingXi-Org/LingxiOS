@@ -3,7 +3,8 @@ import { withTransaction, type SqlPool, type SqlQueryable } from '../control-pla
 import { sessionKeyOf, type AssistantMessage, type WorkItem } from '../protocol/types.js'
 import type { MemoryIdentity, MemoryScope } from './types.js'
 import { currentMemoryScopes, lockMemoryScopes } from './forget.js'
-import { authorizeScope, memorySettings, sourceIdentity, type MemoryOptions } from './access.js'
+import { authorizedScopes, authorizeScope, memorySettings, sourceIdentity, type MemoryOptions } from './access.js'
+import { NoEffectError } from '../tools/definition.js'
 import { excerpt, memoryDigest, memoryQuery, memorySearchText, pageLimit } from './text.js'
 import type { MemoryHistoryHit, MemorySearchResult } from './types.js'
 import { MemoryContentRejected, memoryWriteBody, type MemoryWritePolicy } from './policy.js'
@@ -104,7 +105,10 @@ export async function scheduleMemoryReflectionInTransaction(client: SqlQueryable
         [scope.tenantId,bucket['agent_id'],bucket['principal_id'],scope.scopeType,scope.scopeId,epoch!.epoch])).rows
       const sourceRunIds: string[] = []
       for (const source of candidates) {
-        const scopes = await options.resolveScopes(sourceIdentity(source),client)
+        const scopes = await authorizedScopes(options,sourceIdentity(source),client).catch(error => {
+          if (error instanceof NoEffectError && error.code === 'forbidden') return []
+          throw error
+        })
         if (scopes.some(item => item.tenantId===scope.tenantId && item.scopeType===scope.scopeType && item.scopeId===scope.scopeId)) sourceRunIds.push(String(source['id']))
         else await client.query(`UPDATE lingxios.agent_memory_evidence_scopes SET status='superseded'
           WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3 AND source_run_id=$4`,[scope.tenantId,scope.scopeType,scope.scopeId,source['id']])
@@ -171,7 +175,7 @@ export async function searchMemoryHistory(database: SqlQueryable, options: Memor
   for (const row of rows.slice(0,64)) {
     if (items.length>=limit) break
     scanned++; after=String(row['source_run_id']); afterRole=Number(row['role'])
-    const allowed = await options.resolveScopes(sourceIdentity(row),database)
+    const allowed = await authorizedScopes(options,sourceIdentity(row),database)
     if (!allowed.some(item => item.tenantId===scope.tenantId && item.scopeType===scope.scopeType && item.scopeId===scope.scopeId)) continue
     {
       const role = afterRole===0?'user':'assistant'

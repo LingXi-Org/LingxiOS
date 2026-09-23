@@ -3,6 +3,7 @@ import type { ToolDefinition } from '../tools/catalog.js'
 import { grantedTools } from '../tools/catalog.js'
 import type { RuntimePolicy } from './policy.js'
 import { fingerprint } from '../context/compiler.js'
+import { RESPONSE_UPGRADE } from './response-policy.js'
 
 export type HarnessMode = 'chat' | 'read' | 'execute'
 export function executionMode(work: Pick<WorkItem, 'meta'>): HarnessMode {
@@ -29,6 +30,10 @@ export interface ExecutionSnapshot {
 /** Evaluate policy once per hop; never let a worker policy widen the control-plane catalog. */
 export function executionSnapshot(context: TurnContext, policy: RuntimePolicy): ExecutionSnapshot {
   const mode = executionMode(context.work)
+  if (context.responseProfile === 'fast') {
+    const value = { mode, codeExecution: 'disabled' as const, grants: [], tools: [RESPONSE_UPGRADE] }
+    return { ...value, hash: fingerprint(value) }
+  }
   const proposed = policy.kernelCapabilities(context)
   const tools = grantedTools(context.tools ?? [], proposed).filter(tool => permitsTool(context.work, tool))
   // Legacy hosts without a catalog retain advisory grants; production hosts always send a catalog.

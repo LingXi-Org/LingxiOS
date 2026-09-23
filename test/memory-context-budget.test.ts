@@ -32,6 +32,9 @@ it('bounds core concurrency, defers optional recall and rejects revoked scopes o
   mode = 'error'
   assert.equal((await runtime.context(work)).status, 'available') // No optional search is started.
   const required = createMemoryRuntime(pool, { resolveScopes: async () => scopes })
+  const fast = await required.context(work, undefined, 'fast')
+  assert.deepEqual(fast.retrieval, ['optional_deferred', 'optional_deferred', 'optional_deferred'])
+  assert.equal(fast.budget.maxTokens, 1024)
   await assert.rejects(required.context(work), /storage failure/)
   mode = 'revoked'; resolutions = 0
   await assert.rejects(runtime.context(work), /revoked/)

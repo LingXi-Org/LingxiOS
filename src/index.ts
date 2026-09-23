@@ -1,5 +1,6 @@
 /** First-release public API: assembled runtime and stable data contracts. */
 export { releaseVersions } from './versions.js'
+export type { ResponsePolicy, ResponseProfile } from './runtime/response-policy.js'
 export type { ConversationIdentity, ThreadIdentity, ConversationPolicy, ConversationCapability, Participant, Visibility, Audience, AudienceInput,
   MessageReference, WorkConversation, IMMessageInput, IMIngressResult, IMDeliveryContext, IMDeliveryReceipt,
   GraphInput, GraphNode, SharedStateIdentity, SharedStateSnapshot, SharedStateUpdate, SharedStateChange, SharedStateResult } from './collaboration/types.js'

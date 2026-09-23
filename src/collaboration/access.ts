@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { NoEffectError } from '../tools/definition.js'
 import { canonicalJson } from '../context/compiler.js'
 import type { SqlQueryable } from '../control-plane/pg-store.js'
 import type { WorkItem } from '../protocol/types.js'
@@ -19,17 +20,17 @@ export async function conversationPolicy(database: SqlQueryable, scope: Conversa
   identity(scope)
   const { rows } = await database.query(`SELECT policy FROM lingxios.agent_conversations WHERE tenant_id=$1 AND id=$2${lock ? ' FOR SHARE' : ''}`,
     [scope.tenantId, scope.conversationId])
-  if (!rows[0]) throw new Error('conversation is unavailable')
+  if (!rows[0]) throw new NoEffectError('conversation is unavailable', 'forbidden')
   if (scope.threadId !== undefined) {
     const thread = await database.query(`SELECT 1 FROM lingxios.agent_conversation_threads
       WHERE tenant_id=$1 AND conversation_id=$2 AND id=$3`, [scope.tenantId, scope.conversationId, scope.threadId])
-    if (!thread.rows.length) throw new Error('thread is outside this conversation')
+    if (!thread.rows.length) throw new NoEffectError('thread is outside this conversation', 'forbidden')
   }
   return rows[0]['policy'] as ConversationPolicy
 }
 export function participant(policy: ConversationPolicy, id: string, capability: ConversationCapability, kind?: 'human' | 'agent') {
   const entry = policy.participants.find(item => item.id === id && (!kind || item.kind === kind))
-  if (!entry?.capabilities.includes(capability)) throw new Error(`conversation ${capability} capability is unavailable`)
+  if (!entry?.capabilities.includes(capability)) throw new NoEffectError(`conversation ${capability} capability is unavailable`, 'forbidden')
   return entry
 }
 export function audienceOf(policy: ConversationPolicy, input: AudienceInput = { visibility: 'conversation' }): Audience {
@@ -42,7 +43,7 @@ export function audienceOf(policy: ConversationPolicy, input: AudienceInput = { 
 export function requireAudience(policy: ConversationPolicy, audience: Audience, ids: string[]) {
   for (const id of ids) {
     participant(policy, id, 'read')
-    if (!audience.participantIds.includes(id)) throw new Error('participant is outside the audience')
+    if (!audience.participantIds.includes(id)) throw new NoEffectError('participant is outside the audience', 'forbidden')
   }
 }
 /** A resource may feed a result only when all result recipients may see that resource. */

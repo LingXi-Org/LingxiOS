@@ -16,6 +16,10 @@ export function buildPromptContext(context: TurnContext, policy: RuntimePolicy, 
   const available = (actions: string[]) => actions.every(action => execution.tools.some(tool => tool.action === action))
   const harness = context.harness
   const blocks: ContextBlock[] = [
+    ...(context.responseProfile === 'fast' ? [{ source: 'runtime:response', version: '1', trust: 'platform' as const,
+      truncated: false, cache: 'prefix' as const, content: 'Answer straightforward conversation directly with substantive text. Do not emit a holding phrase. '
+        + 'Before mathematical derivation, complex programming, research, source-dependent answers, using missing product records, external actions or any task needing tools, call response__upgrade with {}. '
+        + 'Escalation is permanent for this request version and loads full authorized context and deep reasoning. Never simulate tools or guess omitted facts.' }] : []),
     { source: 'product:rules', version: contractVersion, trust: 'product', truncated: false, cache: 'prefix',
       content: policy.productRules(candidate, context) },
     ...(harness ? harness.rules.filter(rule => available(rule.actions)).map(rule => ({ source: `harness:${rule.id}`, version: harness.hash,

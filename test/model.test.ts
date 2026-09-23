@@ -31,6 +31,17 @@ it('passes explicitly configured worker reasoning options', async () => {
   assert.equal(config.model.reasoningEffort, 'high')
 })
 
+it('explicitly disables thinking and omits reasoning effort for the fast profile', async () => {
+  const model = new OpenAIChatDriver(DEFAULT_MODEL.id, { apiKey: 'test', maxThinkingTokens: 0, fetchImpl: async (_url, init) => {
+    const body = JSON.parse(String(init?.body))
+    assert.equal(body.enable_thinking, false)
+    assert.equal(Object.hasOwn(body, 'reasoning_effort'), false)
+    assert.equal(Object.hasOwn(body, 'thinking_budget'), false)
+    return new Response('data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+  } })
+  assert.equal((await model.run({ instructions: '', items: [] })).text, 'answer')
+})
+
 function driver(delta: unknown, finishReason: string | null = 'stop') {
   return new OpenAIChatDriver('test', {
     apiKey: 'test',

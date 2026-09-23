@@ -73,15 +73,15 @@ it('wakes an idle worker without waiting for the poll deadline and preserves a p
   } finally { assert.deepEqual(await worker.stop(), { timedOut: false }) }
 })
 
-it('keeps reserved capacity for conversation admission while an operation stalls', async () => {
+for (const reserveInteractiveByLane of [false, true]) it(`keeps reserved interactive capacity while background work stalls (lane=${reserveInteractiveByLane})`, async () => {
   const calls: unknown[] = []
   let release!: () => void, entered!: () => void
   const background = new Promise<void>(resolve => { release = resolve })
   const interactive = new Promise<void>(resolve => { entered = resolve })
   const worker = new AgentWorker({ workerId: 'reserved', maxConcurrentRuns: 2, reservedInteractiveRuns: 1,
-    shutdownGraceMs: 1000, pollIdleMs: 10, healthPort: 0,
-    host: { claimWork: async (_signal, _lanes, executionClass) => {
-      calls.push(executionClass)
+    shutdownGraceMs: 1000, pollIdleMs: 10, healthPort: 0, reserveInteractiveByLane,
+    host: { claimWork: async (_signal, lanes, executionClass) => {
+      calls.push([lanes, executionClass])
       if (calls.length === 1) return { id: 'background', kind: 'turn', lane: 'background' } as WorkItem
       if (calls.length === 2) return { id: 'interactive', kind: 'turn', lane: 'interactive' } as WorkItem
       return null
@@ -89,6 +89,8 @@ it('keeps reserved capacity for conversation admission while an operation stalls
   await worker.start()
   try {
     await interactive
-    assert.deepEqual(calls.slice(0, 2), [undefined, 'conversation'])
+    assert.deepEqual(calls.slice(0, 2), reserveInteractiveByLane
+      ? [[undefined, undefined], [['interactive', 'approval'], undefined]]
+      : [[undefined, undefined], [undefined, 'conversation']])
   } finally { release(); await worker.stop() }
 })

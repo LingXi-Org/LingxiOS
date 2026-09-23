@@ -69,6 +69,7 @@ import { verifyGraphResults } from '../collaboration/graphs.js'
 import { enqueueChild, requestSnapshot } from './jobs.js'
 
 export interface LingxiOSOptions {
+  responsePolicy?: import('../runtime/response-policy.js').ResponsePolicy
   performance?: { notifications?: boolean; outboxConcurrency?: number; contextSnapshot?: boolean }
   realtime?: RealtimeOptions
   objects?: RuntimeObjectStore
@@ -272,9 +273,10 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         ...memory?[{name:'memory',methods:memory.tools.filter(tool=>tool.action.startsWith('memory.')).map(tool=>tool.action.split('.')[1]!)}]:[]]
     } },
     contextProvider: { ...(contextProvider.authorizeRequest ? { authorizeRequest: contextProvider.authorizeRequest.bind(contextProvider) } : {}),
-      async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal) {
+      async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal, loadOptions?: { responseProfile: import('../runtime/response-policy.js').ResponseProfile }) {
       if (behavior && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) && work.meta?.['harnessHash'] !== behavior.hash) throw new Error('harness version mismatch; resume with the pinned deployment or drain the old run')
-      const context = { ...await contextProvider.loadContext(work, signal), ...(behavior ? { harness: structuredClone(behavior) } : {}) }
+      const context = { responseProfile: loadOptions?.responseProfile ?? 'deep',
+        ...await contextProvider.loadContext(work, signal, loadOptions), ...(behavior ? { harness: structuredClone(behavior) } : {}) }
       if (work.conversation) {
         if ((context.evidence?.length || context.memory || context.dynamic) && (!context.audience || !containsAudience(context.audience, work.conversation.audience))) {
           throw new Error('IM context evidence, memory and dynamic data require an authorized audience')
@@ -295,7 +297,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       const previewVersion = options.realtime?.allowDraft ? Number((await options.database.query(
         'SELECT jsonb_array_length(steer_inputs)+1 AS version FROM lingxios.agent_work_items WHERE id=$1', [work.id])).rows[0]?.['version']) : 1
       return { ...context, previewAllowed: await realtime.allowed(work, previewVersion), ...(discoveredTools ? { discoveredTools } : {}),
-        ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await memory.context(work, signal) } : {}) }
+        ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await memory.context(work, signal, context.responseProfile) } : {}) }
     } },
     ...(options.delivery ? { delivery: options.delivery } : {}),
   }
@@ -356,6 +358,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   }
 
   const service = new ControlPlaneService({
+    ...(options.responsePolicy ? { responsePolicy: options.responsePolicy } : {}),
     authorizeWork: async work => { await authorizeConversationWork(options.database, work) },
     ...memory ? { memory } : {},
     ...(integration?.tools ? { tools: integration.tools } : {}),
@@ -552,15 +555,23 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       void flush().catch(error => logger.warn('outbox flush failed', { error: String(error) }))
     }
   }
+  let nextMemorySynthesis = 0, memorySynthesisFailures = 0
   const deliveryTimer = setInterval(() => {
     flushDeliveryChannels()
     background('dependencies', () => resumeDependents(options.database))
     background('approvals', () => resumeDecidedApprovals(options.database))
     background('queue fairness', () => sweepQueuedWork(options.database))
     if (memory) background('memory capture', () => drainMemoryCapture(options.database, options.memory!, shutdown.signal))
-    if (memory) background('memory synthesis', async () => {
-      await retryMemorySynthesis(options.database)
-      await scheduleMemoryReflection(options.database,options.memory!)
+    if (memory && performance.now() >= nextMemorySynthesis) background('memory synthesis', async () => {
+      try {
+        await retryMemorySynthesis(options.database)
+        await scheduleMemoryReflection(options.database,options.memory!)
+        memorySynthesisFailures = 0
+      } catch (error) {
+        memorySynthesisFailures = Math.min(6, memorySynthesisFailures + 1)
+        nextMemorySynthesis = performance.now() + Math.min(60_000, 1000 * 2 ** memorySynthesisFailures)
+        throw error
+      }
     })
   }, 1_000)
   const maintenanceTimer = setInterval(() => {

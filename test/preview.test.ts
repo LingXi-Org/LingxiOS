@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { CandidateBodyParser } from '../src/model/preview.js'
-import { PreviewBuffer } from '../src/runtime/preview.js'
+import { PreviewBuffer, uploadPreview } from '../src/runtime/preview.js'
+import { HostRequestError } from '../src/host/http-client.js'
 import { consumePreview, consumeRunEvent, createRunView, consumeRunState } from '../src/ui/index.js'
 import type { PreviewFrame } from '../src/protocol/preview.js'
 
@@ -33,7 +34,10 @@ it('sends the first body before generation ends, coalesces later tokens, and bou
   assert.equal((await iterator.next()).value?.text, 'second third')
   buffer.push('x'.repeat(16_385))
   assert.equal((await iterator.next()).value?.kind, 'reset')
-  buffer.push('must not follow the overflow reset')
+  const replay = (await iterator.next()).value!.text + (await iterator.next()).value!.text
+  assert.equal(replay, 'firstsecond third' + 'x'.repeat(16_385))
+  buffer.push('still streaming')
+  assert.equal((await iterator.next()).value?.text, 'still streaming')
   buffer.reset('attempt-2', 2); buffer.push('replacement'); buffer.close()
   const rest: PreviewFrame[] = []
   for await (const frame of iterator) rest.push(frame)
@@ -41,6 +45,33 @@ it('sends the first body before generation ends, coalesces later tokens, and bou
     { kind: 'reset', text: '', attemptId: 'attempt-2', requestVersion: 2 },
     { kind: 'delta', text: 'replacement', attemptId: 'attempt-2', requestVersion: 2 },
   ])
+})
+
+it('reconnects with a bounded reset and draft replay; authorization failures are terminal', async () => {
+  const buffer = new PreviewBuffer(), stop = new AbortController()
+  buffer.reset('attempt', 1); buffer.push('首字')
+  let uploads = 0
+  const received: PreviewFrame[] = []
+  await uploadPreview(buffer, async frames => {
+    uploads++
+    if (uploads === 1) {
+      const iterator = frames[Symbol.asyncIterator]()
+      await iterator.next(); await iterator.next()
+      buffer.push('断线期间')
+      throw new TypeError('connection lost')
+    }
+    for await (const frame of frames) {
+      received.push(frame)
+      if (frame.kind === 'delta') buffer.close()
+    }
+  }, stop.signal)
+  assert.equal(uploads, 2)
+  assert.deepEqual(received.map(frame => [frame.kind, frame.text]), [['reset', ''], ['delta', '首字断线期间']])
+  const revoked = new PreviewBuffer()
+  let denied = 0
+  await assert.rejects(uploadPreview(revoked, async () => { denied++; throw new HostRequestError(403, 'revoked') }, stop.signal))
+  assert.equal(denied, 1)
+  revoked.close()
 })
 
 it('replaces retried drafts, discards sequence gaps and revisions, and rejects previews after committed/failed state', () => {
