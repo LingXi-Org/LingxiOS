@@ -35,6 +35,8 @@ export interface ModelCallObservation {
   model: string
   usage?: ModelUsage
   latencyMs: number
+  firstContentMs?: number
+  configurationFingerprint?: string
   status: 'succeeded' | 'failed'
   error?: string
 }
@@ -55,7 +57,7 @@ export const DEFAULT_MODEL_BUDGET: Required<RootModelBudgetOptions> = {
 
 /** One provider attempt boundary shared by generation, reviews, compaction and embeddings. */
 export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>,
-  model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'countTokens'>, work: WorkItem,
+  model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'countTokens' | 'configurationFingerprint'>, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
   emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model') {
   let sequence = 0, calls = 0, tokens = 0, cost = 0
@@ -108,6 +110,8 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
         model: result?.model ?? callModel.modelId ?? 'unknown', usage: usage?.available ? usage : { available: false, inputTokens, outputTokens },
         cost: { amountMicros: costMicros, usage: usage?.available ? 'measured' : 'estimated', pricing: modelPricing(limits) },
         latencyMs: performance.now() - began, status: result ? 'succeeded' : 'failed',
+        ...(typeof diagnostics['providerFirstContentMs'] === 'number' ? { firstContentMs: diagnostics['providerFirstContentMs'] } : {}),
+        ...(callModel.configurationFingerprint ? { configurationFingerprint: callModel.configurationFingerprint } : {}),
         ...(failure ? { error: errorMessage(failure) } : {}),
       }
       // A completed provider request must be settled even after cancellation or lease loss.
@@ -128,10 +132,10 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
 
 export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>, source: ModelDriver, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
-  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>): ModelDriver {
+  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model'): ModelDriver {
   const model = source.singleAttempt?.() ?? source
-  const admission = executionClassOf(work) === 'operation' ? 'background' as const : 'foreground' as const
-  const { invoke, nextCallId } = modelExecution(host, model, work, limits, emit)
+  const admission = namespace !== 'fast-model' && executionClassOf(work) === 'operation' ? 'background' as const : 'foreground' as const
+  const { invoke, nextCallId } = modelExecution(host, model, work, limits, emit, namespace)
   const check = ({ prompt: _prompt, signal: _signal, ...input }: { prompt?: PromptManifest; signal?: AbortSignal | undefined }) => {
     if (!fitsModel(model, input)) throw new ModelContextBudgetError()
   }

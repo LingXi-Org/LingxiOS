@@ -24,6 +24,7 @@ export interface AgentWorkerOptions {
   workerId: string
   maxConcurrentRuns: number
   reservedInteractiveRuns?: number
+  reserveInteractiveByLane?: boolean
   shutdownGraceMs: number
   pollIdleMs?: number
   healthPort?: number
@@ -148,8 +149,10 @@ export class AgentWorker {
           continue
         }
         const backgroundLimit = this.options.maxConcurrentRuns - (this.options.reservedInteractiveRuns ?? 0)
-        const work = await abortable(this.options.host.claimWork(this.stopPolling.signal, undefined,
-          this.backgroundRuns >= backgroundLimit ? 'conversation' : undefined),this.stopPolling.signal)
+        const reservedOnly = this.backgroundRuns >= backgroundLimit
+        const work = await abortable(this.options.host.claimWork(this.stopPolling.signal,
+          reservedOnly && this.options.reserveInteractiveByLane ? ['interactive', 'approval'] : undefined,
+          reservedOnly && !this.options.reserveInteractiveByLane ? 'conversation' : undefined),this.stopPolling.signal)
         this.lastClaimAt = Date.now()
         if (this.stopping) return
         if (!work) {
@@ -159,7 +162,8 @@ export class AgentWorker {
           continue
         }
         if (this.active.has(work.id)) continue
-        const background = executionClassOf(work) === 'operation'
+        const background = this.options.reserveInteractiveByLane ? !['interactive', 'approval'].includes(work.lane)
+          : executionClassOf(work) === 'operation'
         if (background) this.backgroundRuns++
         this.options.metrics?.gauge('agentos_worker_active_runs', 'Runs in flight').set(this.active.size + 1)
         const done = this.options.runtime.runWork(work, this.shutdown.signal)

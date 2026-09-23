@@ -1,4 +1,5 @@
 import { abortable } from '../deadline.js'
+import { responseProfile, type ResponsePolicy } from '../runtime/response-policy.js'
 import { candidateHash, type Candidate, type CandidateVerification } from '../outcome/verification.js'
 import { grantedTools, TASK_TOOLS, parseTaskArgs, type ToolDefinition } from '../tools/catalog.js'
 import { readRequestAttachment } from '../context/request.js'
@@ -51,6 +52,7 @@ import type { createWorkspaceStore } from '../app/workspaces.js'
 import { workspacePath, type WorkspaceEntry } from '../protocol/workspace.js'
 
 export interface ControlPlaneDeps {
+  responsePolicy?: ResponsePolicy
   workspace?: ReturnType<typeof createWorkspaceStore>
   contextSnapshot?: (work: Omit<WorkItem, 'leaseToken'>) => Promise<{
     session: SessionRecord | null; steps: import('./steps.js').ExecutionStep[]; requestVersion: number
@@ -435,15 +437,21 @@ export class ControlPlaneService {
   async loadContext(proof: LeaseProof, includeSession = false, signal?: AbortSignal): Promise<TurnContext> {
     const work = await this.requireLease(proof)
     await this.deps.authorizeWork?.(work)
-    const [context, snapshot, grants, dependencies] = await Promise.all([
-      this.deps.contextProvider.loadContext(work, signal),
-      this.deps.contextSnapshot?.(work) ?? (async () => {
+    const snapshotPromise = this.deps.contextSnapshot?.(work) ?? (async () => {
         const [session, steps] = await Promise.all([this.deps.sessions.get(sessionKeyOf(work), work.id), this.deps.steps.list(work.id)])
         return { session, steps, requestVersion: (session?.request?.revisions.length ?? 0) + 1 }
-      })(),
-      this.deps.capabilityResolver.resolve(work),
+      })()
+    const [context, snapshot, dependencies] = await Promise.all([
+      snapshotPromise.then(snapshot => this.deps.contextProvider.loadContext(work, signal, {
+        responseProfile: snapshot.session?.request && [snapshot.session.request.attachments,
+          ...[...snapshot.session.request.inheritedRevisions ?? [], ...snapshot.session.request.revisions]
+            .map(revision => revision.attachments ?? [])].some(attachments => attachments.length)
+          ? 'deep' : responseProfile(this.deps.responsePolicy, work, snapshot.steps, snapshot.requestVersion),
+      })),
+      snapshotPromise,
       this.deps.work.children(work),
     ])
+    const grants = context.grants ?? await this.deps.capabilityResolver.resolve(work)
     if (typeof work.meta?.['text'] === 'string') {
       context.capabilities = [...new Set([...context.capabilities, 'task'])]
       if (context.promptContextCandidate) context.promptContextCandidate = { ...context.promptContextCandidate, capabilities: context.capabilities }

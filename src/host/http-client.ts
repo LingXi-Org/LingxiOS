@@ -173,7 +173,7 @@ export class HttpHostClient implements HostPort {
       headers: { authorization: `Bearer ${this.options.serviceToken}`, 'content-type': 'application/x-ndjson',
         'x-lingxios-fence': String(work.fence), 'x-lingxios-lease': work.leaseToken },
     }
-    // Ephemeral uploads are never replayed. The consumer recovers a snapshot/final result instead.
+    // The runtime owns bounded reconnects and reseeds the current fenced draft.
     const response = await this.fetchImpl(`${this.options.baseUrl.replace(/\/$/, '')}/v5/work/${encodeURIComponent(work.id)}/preview`, init)
     await response.body?.cancel()
     if (!response.ok) throw new HostRequestError(response.status, 'preview channel unavailable')

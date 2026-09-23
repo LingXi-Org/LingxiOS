@@ -109,7 +109,8 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
   return { tools:[...service.tools,...tools],api:service.api,
     prepareReview: (work: Omit<WorkItem,'leaseToken'>,action:HostAction) => withTransaction(database,db => prepareMemoryReview(db,options,work,action)),
     recordReview: (work: Omit<WorkItem,'leaseToken'>,action:HostAction,hash:string,review:MemoryReview) => withTransaction(database,db => recordMemoryReview(db,options,work,action,hash,review)),
-    async context(work: Omit<WorkItem, 'leaseToken'>, external?: AbortSignal) {
+    async context(work: Omit<WorkItem, 'leaseToken'>, external?: AbortSignal, profile: 'fast' | 'deep' = 'deep') {
+      const fast = profile === 'fast'
       const signal = AbortSignal.any([AbortSignal.timeout(settings.timeoutMs), ...external ? [external] : []])
       const db = deadlinePool(database, signal, settings.timeoutMs)
       const identity=identityOf(work),scopes=await abortable(authorizedScopes(options,identity,db,signal),signal)
@@ -124,11 +125,11 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
           const inventory = (await db.query(`SELECT
             COALESCE((SELECT jsonb_agg(core) FROM (SELECT *,COUNT(*) OVER() AS total FROM lingxios.agent_memories
               WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3 AND origin<>'evolved' AND layer='core'
-                AND status='active' AND (valid_until IS NULL OR valid_until>NOW()) ORDER BY pinned DESC,origin='explicit' DESC,path LIMIT 64) core),'[]') AS core,
+                AND status='active' AND (valid_until IS NULL OR valid_until>NOW()) ORDER BY pinned DESC,origin='explicit' DESC,path LIMIT (CASE WHEN $4::boolean THEN 16 ELSE 64 END)) core),'[]') AS core,
             COALESCE((SELECT jsonb_agg(directory) FROM (SELECT *,COUNT(*) OVER() AS total FROM lingxios.agent_memories
               WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3 AND origin<>'evolved'
-                AND status='active' AND (valid_until IS NULL OR valid_until>NOW()) ORDER BY path LIMIT 64) directory),'[]') AS directory`, scopeParams(scope))).rows[0]!
-          const result = options.contextBudget?.optionalRecall
+                AND status='active' AND (valid_until IS NULL OR valid_until>NOW()) ORDER BY path LIMIT (CASE WHEN $4::boolean THEN 0 ELSE 64 END)) directory),'[]') AS directory`, [...scopeParams(scope),fast])).rows[0]!
+          const result = fast || options.contextBudget?.optionalRecall
             ? { items: [], nextCursor: null, retrieval: 'optional_deferred' as const }
             : await abortable(service.recall(work, scope, query, db, signal), signal)
           return { rows: inventory['core'] as Record<string, unknown>[], entries: inventory['directory'] as Record<string, unknown>[], result }
@@ -139,11 +140,12 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
           recalled.push((result.items as MemoryHit[]).filter(item => item.layer!=='core')); retrieval.push(result.retrieval)
         }
       }
-      const strategies=options.evolution?await withTransaction(db,client=>pinnedEvolution(client,work,scopes)):[]
+      const strategies=!fast && options.evolution?await withTransaction(db,client=>pinnedEvolution(client,work,scopes)):[]
       const current = await abortable(authorizedScopes(options,identity,db,signal),signal)
       if (scopes.some(scope => !current.some(candidate => sameScope(scope,candidate)))) throw new Error('memory scope was revoked during retrieval')
       return fitMemorySnapshot(snapshotMemories({status:'available',core:roundRobin(core),directory:roundRobin(directory),recalled:roundRobin(recalled),strategies,
-        omitted:{core:omittedCore,directory:omittedDirectory,recalled:0,strategies:0},budget:{ratio:settings.ratio,maxTokens:settings.maxTokens},retrieval}),Infinity)
+        omitted:{core:omittedCore,directory:omittedDirectory,recalled:0,strategies:0},
+        budget:{ratio:settings.ratio,maxTokens:fast ? Math.min(1024,settings.maxTokens) : settings.maxTokens},retrieval}),Infinity)
     },
   }
 }

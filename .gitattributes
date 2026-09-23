@@ -1,0 +1,3 @@
+# Package consumers verify the schema bytes across build hosts.
+db/*.sql text eol=lf
+db/migrations/*.sql text eol=lf

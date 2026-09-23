@@ -8,6 +8,23 @@ import { retryMemorySynthesis,scheduleMemoryReflection } from '../src/memory/evi
 import { memoryFixture,content,identity,scope } from './memory-fixture.js'
 import type { WorkItem } from '../src/protocol/types.js'
 import type { WorkProcessorContext } from '../src/runtime/runtime.js'
+import { NoEffectError } from '../src/tools/definition.js'
+
+it('retires permanently revoked sources but preserves transient failures for a later retry', async () => {
+  const f = await memoryFixture({ reflection: { afterInteractions: 1 } })
+  try {
+    const source = await f.source()
+    let calls = 0
+    const denied = { ...f.options, resolveScopes: async () => { calls++; throw new NoEffectError('revoked', 'forbidden') } }
+    assert.deepEqual(await scheduleMemoryReflection(f.pool, denied), { jobIds: [] })
+    assert.deepEqual(await scheduleMemoryReflection(f.pool, denied), { jobIds: [] })
+    assert.equal(calls, 1)
+    assert.equal((await f.pool.query('SELECT status FROM lingxios.agent_memory_evidence_scopes WHERE source_run_id=$1', [source.work.id])).rows[0]?.['status'], 'superseded')
+    await f.source()
+    await assert.rejects(scheduleMemoryReflection(f.pool, { ...f.options, resolveScopes: async () => { throw new Error('temporary transport failure') } }), /temporary/)
+    assert.equal((await scheduleMemoryReflection(f.pool, f.options)).jobIds.length, 1)
+  } finally { await f.close() }
+})
 
 it('batches five committed interactions, keeps per-scope progress and learns with two independent model calls',async()=>{
   const other={...scope,scopeType:'project',scopeId:'p'}

@@ -63,7 +63,7 @@ import { canonicalJson } from '../context/compiler.js'
 import { releaseVersions } from '../versions.js'
 import { LATENCY_BUCKETS, type MetricsRegistry } from '../metrics.js'
 import { CandidateBodyParser } from '../model/preview.js'
-import { PreviewBuffer } from './preview.js'
+import { PreviewBuffer, uploadPreview } from './preview.js'
 import { checkedWorkspaceEntries, workspaceLimits, type WorkspaceState } from '../protocol/workspace.js'
 import type { ExecutionStep } from '../control-plane/steps.js'
 
@@ -80,6 +80,8 @@ export interface WorkProcessor {
 }
 
 export interface AgentRuntimeOptions {
+  /** Optional non-reasoning configuration for host-authorized automatic response routing. */
+  fastModel?: ModelDriver
   performance?: { checkpointDedup?: boolean; promptCache?: boolean; asyncCompaction?: boolean; onDemandAttachments?: boolean }
   metrics?: MetricsRegistry
   policy?: RuntimePolicy
@@ -116,6 +118,7 @@ interface AttemptSignals {
 }
 
 export class AgentRuntime {
+  private readonly fastModel: ModelDriver | undefined
   private readonly checkpointDedup: boolean
   private readonly promptCache: boolean
   private readonly asyncCompaction: boolean
@@ -157,7 +160,8 @@ export class AgentRuntime {
       preview = { buffer: new PreviewBuffer(), stop: new AbortController(), task: Promise.resolve() }
       this.previews.set(work.id, preview)
       const { buffer, stop } = preview
-      preview.task = this.host.streamPreview(work, buffer, AbortSignal.any([signal, stop.signal])).catch(error => {
+      const uploadSignal = AbortSignal.any([signal, stop.signal])
+      preview.task = uploadPreview(buffer, frames => this.host.streamPreview!(work, frames, uploadSignal), uploadSignal).catch(error => {
         buffer.close()
         if (!signal.aborted && !stop.signal.aborted) {
           this.logger.warn('preview channel unavailable; final result remains durable', { workId: work.id, error: errorMessage(error) })
@@ -174,6 +178,7 @@ export class AgentRuntime {
     private readonly kernels: KernelExecutor,
     options: AgentRuntimeOptions = {},
   ) {
+    this.fastModel = options.fastModel
     this.metrics = options.metrics
     this.checkpointDedup = options.performance?.checkpointDedup ?? true
     this.promptCache = options.performance?.promptCache ?? true
@@ -294,6 +299,7 @@ export class AgentRuntime {
         kind: 'run.started', stage: 'started', visibility: 'user',
         data: {
           kind: work.kind, lane: work.lane, attempts: work.attempts ?? 1, preemptions: work.preemptions ?? 0,
+          sourceRef: work.triggerRef,
           ...(work.availableAt ? { queueWaitMs: Math.max(0, Date.now() - Date.parse(work.availableAt)) } : {}),
         },
       })
@@ -355,20 +361,24 @@ export class AgentRuntime {
   private async runTurn(
     work: WorkItem, runId: string, signals: AttemptSignals, log: Logger,
     sessionRef: { session: SessionRecord | null; compaction?: ReturnType<typeof prepareCompaction> },
-    model: ModelDriver,
+    deepModel: ModelDriver,
   ): Promise<void> {
     const host = this.hostFor(work)
+    const fastModel = this.fastModel ? executionModel(host, this.fastModel, work, this.rootModelBudget,
+      event => this.event(work, runId, event), 'fast-model') : undefined
+    const contextBegan = performance.now()
     const context = await (host.loadInitialContext?.(work) ?? host.loadContext(work))
     await this.event(work, runId, {
       kind: 'input.loaded', stage: 'completed', visibility: 'internal',
-      data: { triggerRef: work.triggerRef },
+      data: { triggerRef: work.triggerRef, durationMs: performance.now() - contextBegan, responseProfile: context.responseProfile ?? 'deep' },
     })
 
     const initialExecution = executionSnapshot(context, this.policy)
     const session = await this.restoreSession(work, { ...context, tools: initialExecution.tools }, initialExecution)
     if (context.harness) {
       const binding = { runtime: releaseVersions.runtime, harness: context.harness.hash, prompt: this.promptContractVersion,
-        model: model.modelId ?? null, provider: model.configurationFingerprint ?? null }
+        model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
+        ...(fastModel ? { fastProvider: fastModel.configurationFingerprint ?? null } : {}) }
       const prior = context.executionSteps?.find(step => step.kind === 'runtime.binding')
       if (prior && canonicalJson(prior.input) !== canonicalJson(binding)) throw new Error('run behavior version changed; restore the pinned worker configuration')
       if (!prior) await this.hostFor(work).saveStep(work, { id: 'runtime:binding', kind: 'runtime.binding',
@@ -452,6 +462,15 @@ export class AgentRuntime {
       // Dynamic context stays outside conversational history; memory snapshots
       // are recorded separately with the model call for traceability.
       const liveContext = hop === 0 ? context : await this.hostFor(work).loadContext(work)
+      if (liveContext.responseProfile === 'fast' && !fastModel) throw new Error('automatic response routing requires a fast model configuration')
+      const model = liveContext.responseProfile === 'fast' ? fastModel! : deepModel
+      // The first deep context after an upgrade supplies the evidence skipped by the fast pass.
+      if (session.request && !session.request.evidence.items.length && liveContext.evidence?.length
+        && liveContext.executionSteps?.some(step => step.kind === 'runtime.response'
+          && step.requestVersion === session.request!.revisions.length + 1)) {
+        session.request.evidence = snapshotEvidence(session.request.evidence.id, liveContext.evidence)
+        await host.saveSession(work, session)
+      }
       liveContext.evidence = evidence().items
       if (liveContext.memory) liveContext.memory=fitMemorySnapshot(liveContext.memory,this.compaction.contextWindowTokens)
       const execution = hop === 0 ? initialExecution : executionSnapshot(liveContext, this.policy)
@@ -618,6 +637,15 @@ export class AgentRuntime {
         (item): item is Extract<ModelItem, { type: 'function_call' }> => 'type' in item && item.type === 'function_call',
       )
       if (calls.length) preview?.discard()
+      if (calls.length && liveContext.responseProfile === 'fast') {
+        const requestVersion = (session.request?.revisions.length ?? 0) + 1
+        await host.saveStep(work, { id: `response:deep:${requestVersion}`, kind: 'runtime.response', requestVersion,
+          input: { profile: 'deep' }, output: '{}', artifacts: [] })
+        session.history.push(...turn.output, ...calls.map(call => ({ type: 'function_call_output' as const,
+          callId: call.callId, output: JSON.stringify({ profile: 'deep', instruction: 'Continue with full authorized context; no external action was executed.' }) })))
+        await host.saveSession(work, session)
+        continue
+      }
       if (!preview && model.previewFormat === 'candidate-json') parser.push(turn.text)
       if (!calls.length && model.previewFormat === 'candidate-json' && parser.complete && turn.finalCandidate === undefined) turn = { ...turn, finalCandidate: turn.text }
 
@@ -716,7 +744,7 @@ export class AgentRuntime {
           if (signals.hasSteer()) continue
         }
         if (!violation && needsContentCheck && session.request) {
-          const check = await checkCandidateContent(model, session.request, turn.text.trim(), artifacts,
+          const check = await checkCandidateContent(deepModel, session.request, turn.text.trim(), artifacts,
             this.compaction.contextWindowTokens, signals.generationSignal(), resourceGaps, fileObservations,
             { steps: (liveContext.executionSteps ?? []).filter(step => !step.kind.startsWith('runtime.')).map(step => ({ id: step.id, requestVersion: step.requestVersion, kind: step.kind, output: step.output })),
               dependencies: liveContext.dependencies ?? [] })
