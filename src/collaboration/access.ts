@@ -61,6 +61,30 @@ export async function authorizeConversationWork(database: SqlQueryable, work: Om
   participant(policy, work.agentId, operation === 'read' ? 'read' : 'execute', 'agent')
   // Revoked recipients invalidate old outputs rather than silently changing their audience.
   for (const id of scope.audience.participantIds) participant(policy, id, 'read')
+  if (typeof work.meta?.['mentionParentWorkId'] === 'string') {
+    if (!policy.agentMentions) throw new NoEffectError('agent mentions are no longer enabled', 'forbidden')
+    const lineage = await database.query(`WITH RECURSIVE causes AS (
+      SELECT work.*,ARRAY[work.id] AS path FROM lingxios.agent_work_items work WHERE work.id=$1
+      UNION ALL SELECT parent.*,child.path||parent.id FROM lingxios.agent_work_items parent
+        JOIN causes child ON parent.id=child.meta->>'mentionParentWorkId'
+        WHERE parent.tenant_id=$2 AND parent.principal_id=$3 AND NOT parent.id=ANY(child.path) AND cardinality(child.path)<64
+    ) SELECT child.meta,parent.id,parent.tenant_id,parent.principal_id,parent.agent_id,parent.conversation,parent.thread_id,parent.cancel_requested_at,
+        parent.result_id,parent.fence,result.fence AS result_fence,result.request_version,jsonb_array_length(parent.steer_inputs)+1 AS current_version
+      FROM causes child JOIN lingxios.agent_work_items parent ON parent.id=child.meta->>'mentionParentWorkId'
+      LEFT JOIN lingxios.agent_results result ON result.id=child.meta->>'mentionResultId'
+        AND result.work_id=parent.id WHERE child.meta->>'mentionParentWorkId' IS NOT NULL ORDER BY parent.id${lock ? ' FOR SHARE OF parent' : ''}`,
+    [work.id, work.tenantId, work.principalId])
+    if (!lineage.rows.length || lineage.rows.length >= 64 || !lineage.rows.some(row => row['id'] === work.meta?.['rootWorkId'])) throw new Error('invalid mention ancestry')
+    for (const row of lineage.rows) {
+      const parentScope = row['conversation'] as WorkItem['conversation']
+      if (row['tenant_id'] !== work.tenantId || row['principal_id'] !== work.principalId
+        || !parentScope || parentScope.internal || parentScope.conversationId !== scope.conversationId
+        || row['thread_id'] !== (work.threadId ?? null) || !containsAudience(parentScope.audience, scope.audience)
+        || row['cancel_requested_at'] || row['result_id'] !== (row['meta'] as Record<string, unknown>)['mentionResultId']
+        || row['result_fence'] !== row['fence'] || row['request_version'] !== row['current_version']) throw new NoEffectError('mention cause was cancelled, revised or superseded', 'forbidden')
+      participant(policy, String(row['agent_id']), 'speak', 'agent')
+    }
+  }
   if (operation === 'speak') {
     if (scope.internal || scope.audience.visibility === 'internal') throw new Error('internal work cannot speak')
     participant(policy, work.agentId, 'speak', 'agent')

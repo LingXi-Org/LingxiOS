@@ -102,12 +102,12 @@ export class PgWorkStore implements WorkStore {
   }
   async ownsBudgetRoot(work: Omit<WorkItem, 'leaseToken'>, rootWorkId: string): Promise<boolean> {
     if (rootWorkId === work.id) return true
-    if (work.meta?.['rootWorkId'] !== rootWorkId || typeof work.meta?.['parentWorkId'] !== 'string') return false
+    if (work.meta?.['rootWorkId'] !== rootWorkId || typeof (work.meta?.['parentWorkId'] ?? work.meta?.['mentionParentWorkId']) !== 'string') return false
     const { rows } = await this.pool.query(`WITH RECURSIVE lineage AS (
       SELECT id,meta,ARRAY[id] AS path FROM lingxios.agent_work_items
       WHERE id=$1 AND tenant_id=$3 AND principal_id IS NOT DISTINCT FROM $4
       UNION ALL SELECT parent.id,parent.meta,child.path||parent.id
-      FROM lingxios.agent_work_items parent JOIN lineage child ON parent.id=child.meta->>'parentWorkId'
+      FROM lingxios.agent_work_items parent JOIN lineage child ON parent.id=COALESCE(child.meta->>'parentWorkId',child.meta->>'mentionParentWorkId')
       WHERE parent.tenant_id=$3 AND parent.principal_id IS NOT DISTINCT FROM $4
         AND NOT parent.id=ANY(child.path) AND cardinality(child.path)<64
     ) SELECT id FROM lineage WHERE id=$2`, [work.id,rootWorkId,work.tenantId,work.principalId ?? null])
@@ -365,7 +365,7 @@ export class PgWorkStore implements WorkStore {
         WHERE id = $1 AND status IN ('queued','leased','waiting') AND cancel_requested_at IS NULL`,
       [id, text],
     )
-    if (rowCount) await cancelDescendants(client, id)
+    if (rowCount) await cancelDescendants(client, id, true)
     return (rowCount ?? 0) > 0
     })
   }

@@ -73,14 +73,14 @@ export class MemoryWorkStore implements WorkStore {
     if (rootWorkId === work.id) return true
     if (work.meta?.['rootWorkId'] !== rootWorkId) return false
     const seen = new Set([work.id])
-    let parentId = work.meta?.['parentWorkId']
+    let parentId = work.meta?.['parentWorkId'] ?? work.meta?.['mentionParentWorkId']
     for (let depth = 0; typeof parentId === 'string' && depth < 64; depth++) {
       if (seen.has(parentId)) return false
       seen.add(parentId)
       const parent = this.rows.get(parentId)
       if (!parent || parent.tenantId !== work.tenantId || parent.principalId !== work.principalId) return false
       if (parent.id === rootWorkId) return true
-      parentId = parent.meta?.['parentWorkId']
+      parentId = parent.meta?.['parentWorkId'] ?? parent.meta?.['mentionParentWorkId']
     }
     return false
   }
