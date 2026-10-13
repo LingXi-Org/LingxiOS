@@ -200,6 +200,40 @@ it('continues an actionable partial candidate before committing its result', asy
   assert.equal(body, 'File created.')
 })
 
+// A public contribution must commit before another member can work; continuing
+// the missing whole-goal requirements here prevents ordinary mention dispatch.
+for (const assessmentStatus of ['partial', 'satisfied'] as const) it(`commits one public contribution without claiming the unfinished goal (${assessmentStatus})`, async () => {
+  const work: TurnContext['work'] = { id: 'public-turn', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn',
+    lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token',
+    meta: { conversationTurn: true, mode: 'execute', codeExecution: 'disabled' },
+    conversation: { conversationId: 'room', policyVersion: 1, source: { messageId: 'm', version: 1 },
+      audience: { visibility: 'conversation', participantIds: ['u','a','b'] }, internal: false } }
+  let turns = 0, reviews = 0
+  let committed: import('../src/protocol/types.js').AssistantMessage | undefined
+  const original = 'Compute and independently verify the result.'
+  const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
+    loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: [],
+      messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: original, createdAt: 'now' }] }),
+    executeAction: async () => ({ ok: true, value: { requestVersion: 1, pending: [], truncated: false } }),
+    loadSession: async () => null, saveSession: async () => {}, emitEvent: async () => {},
+    commitResult: async (_work, message) => { committed = message }, completeWork: async () => {}, yieldWork: async () => {} }
+  const usage = { available: false, inputTokens: 0, outputTokens: 0 }
+  const model: ModelDriver = { compact: async () => { throw new Error('unexpected compaction') },
+    structured: async () => { reviews++; return { value: { missing: [{ quote: 'independently verify', reason: 'Peer verification is still pending' }] }, model: 'reviewer', usage } },
+    run: async () => { turns++; return { text: '', output: [], usage, finalCandidate: JSON.stringify({
+      body: '@b Please independently verify the calculation.', status: assessmentStatus,
+      gaps: assessmentStatus === 'partial' ? ['Peer verification is pending'] : [],
+      checks: [{ requirement: original, status: assessmentStatus === 'partial' ? 'unknown' : 'met', basis: 'Contribution only' }],
+    }) } },
+  }
+  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected kernel') } }).runWork(work)
+  assert.equal(turns, 1)
+  assert.equal(reviews, 1)
+  assert.equal(committed?.body, '@b Please independently verify the calculation.')
+  assert.equal(committed?.envelope.goalOutcome.status, 'partial')
+  assert.match(JSON.stringify(committed?.envelope.goalOutcome.gaps), /Peer verification is still pending/)
+})
+
 it('drops optional recalled memory before allowing it to crowd out the original request', async () => {
   const work: TurnContext['work'] = { id: 'w', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }
   const original = 'Original requirement '.repeat(200)

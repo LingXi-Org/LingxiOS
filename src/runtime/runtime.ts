@@ -673,7 +673,8 @@ export class AgentRuntime {
         }
       }
 
-      if (assessment?.status === 'partial' && budget.consume('content_acceptance', JSON.stringify(assessment.gaps))) {
+      const conversationTurn = work.conversation?.internal === false && work.meta?.['conversationTurn'] === true
+      if (assessment?.status === 'partial' && !conversationTurn && budget.consume('content_acceptance', JSON.stringify(assessment.gaps))) {
         await rememberCandidate(turn.text, liveContext, assessment.gaps)
         session.history.push(...turn.output)
         await this.hostFor(work).saveSession(work, session)
@@ -760,7 +761,8 @@ export class AgentRuntime {
             ...check.missing.map(item => `Content review finding for ${JSON.stringify(item.quote)}: ${item.reason}`)]
           await rememberCandidate(turn.text, liveContext, [...(assessment?.gaps ?? []), ...acceptanceGaps])
           const repairable = check.missing.filter(item => !item.blockedBy)
-          if (repairable.length) {
+          if (conversationTurn) resourceGaps.push(...repairable.map(item => `Unfulfilled result for ${JSON.stringify(item.quote)}: ${item.reason}`))
+          if (repairable.length && !conversationTurn) {
             if (!budget.consume('content_acceptance', 'candidate requirements remain unmet')) {
               terminalError = new AgentOSError('content_acceptance_exhausted', 'Content acceptance correction budget exhausted')
               break

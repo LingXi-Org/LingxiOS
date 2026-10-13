@@ -76,6 +76,7 @@ it('committed agent mentions create public turns without waiting or resuming the
     await f.control.conversations.sync({ ...policy, version: 2, agentMentions: { maxDepth: 8, maxRuns: 32 } })
     const root = (await f.control.conversations.ingest(message('mention-root', { policyVersion: 2 }))).runs[0]!
     const lead = (await f.host.claimWork())!
+    assert.equal(lead.meta?.['conversationTurn'], true)
     const send = async (work: WorkItem, text: string, mentions: string[]) => {
       await f.commit(work, text)
       const run = { tenantId: work.tenantId, agentId: work.agentId, sessionId: work.sessionId, principalId: work.principalId!, runId: work.id }
@@ -142,6 +143,25 @@ it('agent mention limits, unsigned messages and revoked recipients never enqueue
   } finally { await f.close() }
 })
 
+it('bounds an all-member mention by the chain budget even in a large supported room', async () => {
+  const f = await setup()
+  try {
+    const peers = Array.from({ length: 70 }, (_, i) => ({ id: `peer-${i}`, kind: 'agent' as const,
+      capabilities: ['read', 'execute', 'speak'] as Array<'read' | 'execute' | 'speak'> }))
+    await f.control.conversations.sync({ ...policy, version: 2, participants: [...policy.participants, ...peers], agentMentions: { maxDepth: 8, maxRuns: 32 } })
+    const root = (await f.control.conversations.ingest(message('large-room', { policyVersion: 2 }))).runs[0]!
+    const lead = (await f.host.claimWork())!
+    await f.commit(lead, '@all Please contribute.')
+    const result = (await f.control.readRun(root))!
+    const input = message('large-room-reply', { policyVersion: 2, author: { id: 'lead', kind: 'agent' },
+      text: '@all Please contribute.', mentions: peers.map(peer => peer.id), causedBy: { resultId: result.resultId! } })
+    const accepted = await f.control.conversations.ingest(input)
+    assert.equal(accepted.reason, 'mention_limit')
+    assert.equal(accepted.runs.length, 31)
+    assert.deepEqual(await f.control.conversations.ingest(input), { ...accepted, deduplicated: true })
+  } finally { await f.close() }
+})
+
 it('delivers and replays the same frozen citation excerpts after the source changes', async () => {
   const evidence = [{ marker: 'S1', sourceId: 'source', sourceVersion: 'v1', chunkId: 'chunk', title: 'Source', excerpt: 'Original paragraph.' }]
   const sent: AssistantMessage[] = []
@@ -174,6 +194,8 @@ it('binds IM ownership, audiences, targeted reply slots, causal identities and e
   const f = await setup()
   try {
     const both = message('both', { mentions: ['helper', 'lead', 'helper'] }), first = await f.control.conversations.ingest(both)
+    // Existing consumers must keep the persisted v3.3.6 session after an upgrade.
+    assert.equal(first.runs[0]!.sessionId, 'im-session:28b1a174a11bfe468eecc9706db222936ad1a606bd39f05e7520466d5001e082')
     assert.deepEqual(first.runs.map(run => run.agentId), ['helper', 'lead'])
     assert.deepEqual(await f.control.conversations.ingest(both), { ...first, deduplicated: true })
     await assert.rejects(f.control.conversations.ingest({ ...both, text: 'changed' }), /identity reused/)

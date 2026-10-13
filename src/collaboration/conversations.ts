@@ -49,7 +49,7 @@ export async function registerThread(database: SqlPool, scope: ConversationIdent
 export async function ingestMessage(database: SqlPool, input: IMMessageInput, policyMeta: Record<string, unknown>): Promise<IMIngressResult> {
   identity(input); identifier(input.messageId); identifier(input.author?.id); positiveVersion(input.version); positiveVersion(input.policyVersion)
   if (!['human', 'agent', 'system'].includes(input.author.kind) || typeof input.text !== 'string' || !input.text.trim()
-    || input.text.length > 100_000 || input.mentions !== undefined && (!Array.isArray(input.mentions) || input.mentions.length > 64)) throw new Error('invalid IM message')
+    || input.text.length > 100_000 || input.mentions !== undefined && (!Array.isArray(input.mentions) || input.mentions.length > 256)) throw new Error('invalid IM message')
   for (const id of input.mentions ?? []) identifier(id)
   if (input.replyTo) { identifier(input.replyTo.messageId); positiveVersion(input.replyTo.version) }
   if (input.causedBy) identifier(input.causedBy.resultId)
@@ -142,13 +142,14 @@ export async function ingestMessage(database: SqlPool, input: IMMessageInput, po
     }
     for (const agentId of targets) {
       const runId = 'im:' + digest([input.tenantId, input.conversationId, input.messageId, input.version, agentId])
-      const sessionId = 'im-session:' + digest([input.conversationId, input.threadId ?? null, principalId, audience, policy.version, sender ? input.messageId : null])
+      const sessionId = 'im-session:' + digest([input.conversationId, input.threadId ?? null, principalId, audience, policy.version, ...(sender ? [input.messageId] : [])])
       const run: RunIdentity = { runId, tenantId: input.tenantId, agentId, sessionId, principalId,
         ...(input.threadId === undefined ? {} : { threadId: input.threadId }) }
       await enqueueWork(db, { ...run, id: runId, kind: 'turn', lane: 'interactive', triggerRef: input.messageId,
         conversation: { conversationId: input.conversationId, policyVersion: policy.version,
           source: { messageId: input.messageId, version: input.version }, audience, internal: false },
         meta: { ...policyMeta, text: input.text, authorName: input.author.id, attachments: message.attachments,
+          ...(policy.agentMentions ? { conversationTurn: true } : {}),
           ...(sender ? { rootWorkId, mentionRootWorkId: rootWorkId, mentionParentWorkId: sender.id,
             mentionResultId: input.causedBy!.resultId, mentionDepth: depth,
             ...(sender.meta?.['mode'] === undefined ? {} : { mode: sender.meta['mode'] }),
