@@ -43,7 +43,7 @@ const taskDefinitions: Array<ToolDefinition & { parse(args: Record<string, unkno
     effect: 'transaction', approval: false, parse: args => {
       if (typeof args['question'] !== 'string' || !args['question'].trim() || args['question'].length > 4000) throw new Error('task.ask requires one non-empty question of at most 4000 characters')
     } },
-  { name: 'task__check_receipt', action: 'task.check_receipt', description: 'Compare a recorded action receipt with the complete expected value. This does not refresh the resource.',
+  { name: 'task__check_receipt', action: 'task.check_receipt', description: 'Compare a recorded action receipt with the complete expected value. Copy idempotencyKey and action exactly from the tool output receipt.idempotencyKey and receipt.action. Set expected to the complete original result.value (the tool output value), not the output wrapper, a subset, or value.result. For truncated values, read the full observation first. This does not refresh the resource.',
     parameters: { type: 'object', properties: { idempotencyKey: text, action: text, expected: {} },
       required: ['idempotencyKey','action','expected'], additionalProperties: false }, effect: 'read', approval: false, parse: args => {
       if (typeof args['idempotencyKey'] !== 'string' || !args['idempotencyKey'] || args['idempotencyKey'].length > 4000

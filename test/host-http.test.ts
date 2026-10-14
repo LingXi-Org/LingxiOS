@@ -145,10 +145,15 @@ it('preserves goal outcomes and enforces session leases over real HTTP', async (
       limitation: 'This checks a recorded action result, not current resource state or overall goal completion.' })
     assert.deepEqual((await checkReceipt({ ...check, expected: { id: 'r', version: 3, saved: true } })).value,
       { ...(checked.value as Record<string, unknown>), status: 'fail' })
+    for (const expected of [{ id: 'r' }, { ok: true, value: check.expected }, { result: check.expected }]) {
+      assert.deepEqual(await checkReceipt({ ...check, expected }), {
+        ok: true, value: { ...(checked.value as Record<string, unknown>), status: 'fail' },
+      })
+    }
     assert.equal((await checkReceipt({ ...check, action: 'resource.read' })).ok, false)
     assert.equal((await checkReceipt({ ...check, idempotencyKey: JSON.stringify(['other-work', 'business', 0]) })).ok, false)
     resourceGranted = false
-    assert.equal((await checkReceipt(check)).ok, false)
+    assert.deepEqual(await checkReceipt(check), { ok: false, error: 'capability denied: receipt action is not granted to this work item' })
     const replayDenied = await client.executeAction(work, { runId: work.id, cellId: 'check-0', callIndex: 0,
       idempotencyKey: JSON.stringify([work.id, 'check-0', 0]), action: 'task.check_receipt', args: check })
     assert.equal(replayDenied.ok, false)

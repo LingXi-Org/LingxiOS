@@ -55,7 +55,7 @@ import { refreshResourceChecks } from './resource-refresh.js'
 import { DefaultRuntimePolicy, type RuntimePolicy } from './policy.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { ModelBudgetExceededError } from '../errors.js'
-import { boundedToolOutput, parseIPythonArguments } from './tool.js'
+import { boundedDirectToolOutput, boundedToolOutput, parseIPythonArguments } from './tool.js'
 import { receiptReferences } from '../context/observations.js'
 import { exposedTools } from '../tools/discovery.js'
 import { promptProgram } from '../prompts/program.js'
@@ -1056,9 +1056,8 @@ export class AgentRuntime {
         const facts = progressFacts({ artifacts: execution.artifacts, observations: receipts.map(receipt => ({ action: receipt.action, result: receipt.result })) })
         if (JSON.stringify(facts) !== '{}') budget.observe(facts)
       }
-      const { evidence: _evidence, ...directResult } = receipts[0]?.result ?? { ok: false }
       session.history.push({ type: 'function_call_output', callId: call.callId,
-        output: call.name === 'ipython' ? output : boundedToolOutput(directResult, undefined, receiptReferences(receipts)) })
+        output: call.name === 'ipython' ? output : boundedDirectToolOutput(receipts[0]!) })
       await this.event(work, runId, {
         kind: 'ipython.completed', stage: 'completed', visibility: 'internal',
         data: {
@@ -1230,45 +1229,55 @@ export class AgentRuntime {
     }
     for (const [callId, call] of pendingCalls) {
       const step = await this.hostFor(work).recoverStep(work, call.stepId ?? callId)
+      let receipts: Array<{ action: string; idempotencyKey: string; result: HostActionResult }> | null = null
       if (step) {
         context.priorArtifacts = [...context.priorArtifacts ?? [], ...step.artifacts]
-        session.history.push({ type: 'function_call_output', callId, output: step.output })
         const journal = JSON.parse(step.output) as { receipts?: Array<{ action: string; idempotencyKey: string; result: HostActionResult }> }
-        for (const receipt of journal.receipts ?? []) {
-          if (session.request?.evidence) {
-            session.request.evidence = appendReadEvidence(session.request.evidence, receipt.idempotencyKey, receipt.result, receipt.action)
-          }
-          if (receipt.action === 'task.check_resource' && session.request) {
-            session.request.resourceChecks = appendResourceCheck(session.request.resourceChecks ?? [], receipt.idempotencyKey,
-              receipt.result, session.request.revisions.length + 1)
-          } else if (receipt.action === 'task.contract' && receipt.result.ok && receipt.result.directive?.type === 'task_contract' && session.request) {
-            const draft = receipt.result.directive.data
-            session.request.contract = createTaskContract(session.request.originalText, session.request.revisions.length + 1, {
-              deliverables: draft?.['deliverables'], constraints: draft?.['constraints'], actions: draft?.['actions'], acceptance: draft?.['acceptance'],
-            })
-          }
+        receipts = journal.receipts ?? null
+        let output = step.output
+        if (call.name !== 'ipython') {
+          if (!receipts?.length) receipts = await this.hostFor(work).recoverCell(work, call.stepId ?? callId)
+          if (!receipts?.length) throw new Error('unresolved direct tool receipt; reconcile before continuing')
+          output = boundedDirectToolOutput(receipts[0]!, undefined, { recovered: true })
         }
-        continue
+        session.history.push({ type: 'function_call_output', callId, output })
+      } else {
+        receipts = await this.hostFor(work).recoverCell(work, call.stepId ?? callId)
+        const tool = context.tools?.find(tool => tool.name === call.name)
+        if (!receipts?.length && tool && ['read', 'transaction', 'idempotent'].includes(tool.effect)) {
+          const identity = { runId: work.id, cellId: call.stepId ?? callId, callIndex: 0 }
+          const key = actionKeyOf(identity)
+          receipts = [{ action: tool.action, idempotencyKey: key, result: await this.hostFor(work).executeAction(work,
+            { ...identity, idempotencyKey: key, action: tool.action, args: JSON.parse(call.arguments) as Record<string, unknown> }) }]
+        }
+        if (!receipts?.length) throw new Error('unresolved tool execution checkpoint; reconcile before continuing')
+        context.priorArtifacts = [...context.priorArtifacts ?? [], ...receipts.flatMap(({ result }) => result.ok ? result.artifacts ?? [] : [])]
+        if (receipts.some(({ result }) => result.executionState === 'unknown')
+          && receipts.some(({ result }) => result.directive?.type === 'defer')) {
+          throw new Error('cell continued after a terminal action with an unknown outcome; reconcile before continuing')
+        }
+        session.history.push({
+          type: 'function_call_output', callId,
+          output: call.name === 'ipython'
+            ? boundedToolOutput({ recovered: true, localExecutionOutput: 'not_recovered', receipts }, undefined,
+              execution.tools.some(tool => tool.action === 'observations.read') ? receiptReferences(receipts) : [])
+            : boundedDirectToolOutput(receipts[0]!, undefined, { recovered: true }),
+        })
       }
-      let receipts = await this.hostFor(work).recoverCell(work, call.stepId ?? callId)
-      const tool = context.tools?.find(tool => tool.name === call.name)
-      if (!receipts?.length && tool && ['read', 'transaction', 'idempotent'].includes(tool.effect)) {
-        const identity = { runId: work.id, cellId: call.stepId ?? callId, callIndex: 0 }
-        const key = actionKeyOf(identity)
-        receipts = [{ action: tool.action, idempotencyKey: key, result: await this.hostFor(work).executeAction(work,
-          { ...identity, idempotencyKey: key, action: tool.action, args: JSON.parse(call.arguments) as Record<string, unknown> }) }]
+      if (step || call.name !== 'ipython') for (const receipt of receipts ?? []) {
+        if (session.request?.evidence) {
+          session.request.evidence = appendReadEvidence(session.request.evidence, receipt.idempotencyKey, receipt.result, receipt.action)
+        }
+        if (receipt.action === 'task.check_resource' && session.request) {
+          session.request.resourceChecks = appendResourceCheck(session.request.resourceChecks ?? [], receipt.idempotencyKey,
+            receipt.result, session.request.revisions.length + 1)
+        } else if (receipt.action === 'task.contract' && receipt.result.ok && receipt.result.directive?.type === 'task_contract' && session.request) {
+          const draft = receipt.result.directive.data
+          session.request.contract = createTaskContract(session.request.originalText, session.request.revisions.length + 1, {
+            deliverables: draft?.['deliverables'], constraints: draft?.['constraints'], actions: draft?.['actions'], acceptance: draft?.['acceptance'],
+          })
+        }
       }
-      if (!receipts?.length) throw new Error('unresolved tool execution checkpoint; reconcile before continuing')
-      context.priorArtifacts = [...context.priorArtifacts ?? [], ...receipts.flatMap(({ result }) => result.ok ? result.artifacts ?? [] : [])]
-      if (receipts.some(({ result }) => result.executionState === 'unknown')
-        && receipts.some(({ result }) => result.directive?.type === 'defer')) {
-        throw new Error('cell continued after a terminal action with an unknown outcome; reconcile before continuing')
-      }
-      session.history.push({
-        type: 'function_call_output', callId,
-        output: boundedToolOutput({ recovered: true, localExecutionOutput: 'not_recovered', receipts }, undefined,
-          execution.tools.some(tool => tool.action === 'observations.read') ? receiptReferences(receipts) : []),
-      })
     }
     session.compactionEpoch ??= 0
     if (session.request?.workId !== work.id) {
