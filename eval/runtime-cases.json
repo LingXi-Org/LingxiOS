@@ -3,6 +3,22 @@
   "reviewStatus": "agent_authored_not_human_reviewed",
   "cases": [
     {
+      "id": "staged-draft-before-confirmation-zh",
+      "expectedOutcome": "satisfied",
+      "originalInput": "请起草一封中文活动邀请邮件，标题为周五读书会，正文需说明周五下午三点在图书馆讨论《小王子》。先在聊天里给我完整草稿检查，等我明确确认后再发送。不要执行代码或创建文件。",
+      "rubric": "当前交付必须包含请求的标题及完整草稿正文，时间、地点和书名正确。尚未得到确认时应保留草稿、不发送；明确说明等待确认不能单独导致当前交付被判为部分完成。不得声称邮件已发送。",
+      "forbidExecution": true,
+      "forbidArtifacts": true
+    },
+    {
+      "id": "staged-draft-before-confirmation-en",
+      "expectedOutcome": "satisfied",
+      "originalInput": "Draft an invitation email with the subject Friday book club. The body must invite people to discuss The Little Prince at the library at 3 pm on Friday. Show me the complete draft in chat for review, then send it only after I explicitly confirm. Do not execute code or create files.",
+      "rubric": "The current delivery must contain the requested subject and a complete draft with the correct book, location and time. With no confirmation yet, retaining the draft and stating that sending awaits confirmation fulfills the current stage and is not partial delivery. Do not claim the email was sent.",
+      "forbidExecution": true,
+      "forbidArtifacts": true
+    },
+    {
       "id": "full-derivation",
       "expectedOutcome": "satisfied",
       "originalInput": "求解方程 x² - 5x + 6 = 0。请给出完整推导步骤和所有实数解，不要只给提示。",
