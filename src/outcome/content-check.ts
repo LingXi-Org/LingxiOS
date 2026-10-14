@@ -94,7 +94,8 @@ export async function checkCandidateContent(model: ModelDriver, request: Request
       if (!failure && (!Array.isArray(limitations) || limitations.length > 16)) failure = { path: 'limitations', constraint: 'array_max_16' }
       else if (!failure && Array.isArray(limitations)) for (const [index, item] of limitations.entries()) {
         failure = !item || typeof item !== 'object' || Array.isArray(item) ? { path: `limitations[${index}]`, constraint: 'object' }
-          : typeof item.quote !== 'string' || !item.quote.trim() || item.quote.length > 2000 || !body.includes(item.quote)
+          // Null-request remarks are discarded below; only retained findings need exact grounding.
+          : typeof item.quote !== 'string' || !item.quote.trim() || item.quote.length > 2000 || (item.requestQuote !== null && !body.includes(item.quote))
             ? { path: `limitations[${index}].quote`, constraint: 'exact_body_quote' }
           : item.requestQuote !== null && (typeof item.requestQuote !== 'string' || !item.requestQuote.trim()
             || item.requestQuote.length > 2000 || !texts.some(text => text.includes(item.requestQuote)))
