@@ -334,8 +334,9 @@ export class OpenAIChatDriver implements ModelDriver {
       stream_options: { include_usage: true },
     }, request.signal)
     const accumulator = await this.consumeStream(response, request.onTextDelta)
+    const diagnostics = { finishReasons: accumulator.finishReasons, usage: this.usageOf(accumulator) }
     if (!accumulator.finishReasons.length || accumulator.finishReasons.some(reason => reason !== 'stop' && reason !== 'tool_calls')) {
-      throw new ModelDriverError('model stream did not finish normally', { kind: 'provider', finishReasons: accumulator.finishReasons })
+      throw new ModelDriverError('model stream did not finish normally', { ...diagnostics, kind: 'provider' })
     }
     const output: ModelItem[] = []
     const text = accumulator.text
@@ -345,7 +346,7 @@ export class OpenAIChatDriver implements ModelDriver {
       if (!call.id.trim()
         || call.name === IPYTHON_TOOL_NAME && !allowPython
         || call.name !== IPYTHON_TOOL_NAME && !request.tools?.some(tool => tool.name === call.name)) {
-        throw new ModelDriverError('model returned an invalid tool identity', { kind: 'protocol', finishReasons: accumulator.finishReasons })
+        throw new ModelDriverError('model returned an invalid tool identity', { ...diagnostics, kind: 'protocol' })
       }
       output.push({
         type: 'function_call',
@@ -356,10 +357,10 @@ export class OpenAIChatDriver implements ModelDriver {
     }
     if (output.length === 0) {
       throw new ModelDriverError('model returned neither assistant text nor a tool call', {
-        kind: 'protocol', finishReasons: accumulator.finishReasons,
+        ...diagnostics, kind: 'protocol',
       })
     }
-    const result: ModelTurnResult = { output, text, usage: this.usageOf(accumulator) }
+    const result: ModelTurnResult = { output, text, usage: diagnostics.usage }
     if (accumulator.model !== undefined) result.model = accumulator.model
     if (accumulator.finishReasons.length > 0) result.diagnostics = { finishReasons: accumulator.finishReasons }
     return result
@@ -381,18 +382,19 @@ export class OpenAIChatDriver implements ModelDriver {
       usage?: ProviderUsage
       choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>
     }
-    if (payload.choices?.[0]?.finish_reason !== 'stop') throw new ModelDriverError('model response did not finish normally', { finishReasons: [payload.choices?.[0]?.finish_reason ?? 'missing'] })
+    const diagnostics = { finishReasons: [payload.choices?.[0]?.finish_reason ?? 'missing'], usage: this.usageOf({ usage: payload.usage ?? {} }) }
+    if (payload.choices?.[0]?.finish_reason !== 'stop') throw new ModelDriverError('model response did not finish normally', diagnostics)
     const content = payload.choices?.[0]?.message?.content
     if (typeof content !== 'string' || !content.trim()) {
-      throw new ModelDriverError('structured call returned no content', { finishReasons: [] })
+      throw new ModelDriverError('structured call returned no content', { ...diagnostics, finishReasons: [] })
     }
     let value: unknown
     try {
       value = JSON.parse(content)
     } catch {
-      throw new ModelDriverError('structured call returned invalid JSON', { finishReasons: [] })
+      throw new ModelDriverError('structured call returned invalid JSON', { ...diagnostics, finishReasons: [] })
     }
-    return { value, model: payload.model ?? this.modelId, usage: this.usageOf({ usage: payload.usage ?? {} }) }
+    return { value, model: payload.model ?? this.modelId, usage: diagnostics.usage }
   }
 
   async compact(request: CompactionRequest): Promise<CompactionResult> {
@@ -416,11 +418,12 @@ export class OpenAIChatDriver implements ModelDriver {
       usage?: ProviderUsage
       choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>
     }
-    if (payload.choices?.[0]?.finish_reason !== 'stop') throw new ModelDriverError('model response did not finish normally', { finishReasons: [payload.choices?.[0]?.finish_reason ?? 'missing'] })
+    const diagnostics = { finishReasons: [payload.choices?.[0]?.finish_reason ?? 'missing'], usage: this.usageOf({ usage: payload.usage ?? {} }) }
+    if (payload.choices?.[0]?.finish_reason !== 'stop') throw new ModelDriverError('model response did not finish normally', diagnostics)
     const content = payload.choices?.[0]?.message?.content
     if (typeof content !== 'string' || !content.trim()) {
-      throw new ModelDriverError('compaction returned no summary', { finishReasons: [] })
+      throw new ModelDriverError('compaction returned no summary', { ...diagnostics, finishReasons: [] })
     }
-    return { value: content.trim(), model: payload.model ?? this.modelId, usage: this.usageOf({ usage: payload.usage ?? {} }) }
+    return { value: content.trim(), model: payload.model ?? this.modelId, usage: diagnostics.usage }
   }
 }

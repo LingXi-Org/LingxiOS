@@ -97,7 +97,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       let result: T | undefined, failure: unknown
       const diagnostics: Record<string, unknown> = {}
       try { result = await abortable(operation(signal, callId, diagnostics), signal) } catch (error) { failure = error }
-      const usage = result?.usage
+      const usage = result?.usage ?? (failure instanceof ModelDriverError ? failure.diagnostics.usage : undefined)
       const inputTokens = usage?.available ? usage.inputTokens : input
       const outputTokens = usage?.available ? usage.outputTokens : output
       const costMicros = Math.ceil((inputTokens * limits.inputCostMicrosPerMillion + outputTokens * limits.outputCostMicrosPerMillion) / 1_000_000)

@@ -2,6 +2,46 @@ import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { DEFAULT_MODEL, OpenAIChatDriver } from '../src/model/openai.js'
 import { loadWorkerConfig } from '../src/config.js'
+import { ModelDriverError } from '../src/errors.js'
+import { executionModel, DEFAULT_MODEL_BUDGET, type ModelCallObservation } from '../src/model/execution.js'
+import type { WorkItem } from '../src/protocol/types.js'
+
+// Failure inventory: rejected paid output loses measured usage, looks successful, retries a
+// protocol failure, leaks response text, or releases the wrong token/cost reservation.
+for (const mode of ['tool', 'empty', 'truncated', 'structured', 'compact'] as const) {
+  it(`settles measured usage while preserving the rejected ${mode} response`, async () => {
+    const observations: ModelCallObservation[] = [], settlements: unknown[] = []
+    let calls = 0
+    const usage = { prompt_tokens: 31, completion_tokens: 17 }
+    const source = new OpenAIChatDriver('fixture', { apiKey: 'test', maxOutputTokens: 100, maxAttempts: 1,
+      fetchImpl: async () => {
+        calls++
+        if (mode === 'structured' || mode === 'compact') return Response.json({ model: 'fixture', usage,
+          choices: [{ finish_reason: 'stop', message: { content: mode === 'structured' ? 'PRIVATE_INVALID_JSON' : '' } }] })
+        return new Response(`data: ${JSON.stringify({ model: 'fixture', usage, choices: [{
+          finish_reason: mode === 'truncated' ? 'length' : mode === 'tool' ? 'tool_calls' : 'stop',
+          delta: mode === 'tool' ? { tool_calls: [{ index: 0, id: 'call', function: { name: 'unexposed_tool', arguments: '{}' } }] }
+            : mode === 'truncated' ? { content: 'PRIVATE_TRUNCATED_OUTPUT' } : {},
+        }] })}\n\ndata: [DONE]\n\n`)
+      } })
+    const work = { id: 'work', fence: 1, tenantId: 'tenant', agentId: 'agent', sessionId: 'session' } as WorkItem
+    const model = executionModel({
+      reserveModelCall: async () => ({ allowed: true, deadlineAt: new Date(Date.now() + 60000).toISOString(),
+        remainingCalls: 10, remainingTokens: 100000, remainingCostMicros: 1000000 }),
+      recordModelUsage: async (_work, _callId, settlement, observation) => { settlements.push(settlement); observations.push(observation!) },
+    }, source, work, { ...DEFAULT_MODEL_BUDGET, inputCostMicrosPerMillion: 1000000, outputCostMicrosPerMillion: 2000000 })
+    const result = mode === 'structured' ? model.structured({ instructions: '', input: {} })
+      : mode === 'compact' ? model.compact({ instructions: '', items: [] })
+        : model.run({ instructions: '', items: [], tools: [], codeExecution: 'disabled' })
+    await assert.rejects(result, ModelDriverError)
+    const attempts = mode === 'tool' || mode === 'empty' ? 1 : 3
+    assert.equal(calls, attempts)
+    assert.deepEqual(settlements, Array.from({ length: attempts }, () => ({ inputTokens: 31, outputTokens: 17, costMicros: 65 })))
+    assert.deepEqual(observations.map(({ status, usage, cost }) => ({ status, usage, amount: cost!.amountMicros, basis: cost!.usage })),
+      Array.from({ length: attempts }, () => ({ status: 'failed', usage: { available: true, inputTokens: 31, outputTokens: 17 }, amount: 65, basis: 'measured' })))
+    assert.doesNotMatch(JSON.stringify(observations), /PRIVATE_|unexposed_tool/)
+  })
+}
 
 it('keeps worker provider options unset unless explicitly configured', async () => {
   const config = loadWorkerConfig({ AGENT_OS_CONTROL_PLANE_URL: 'http://localhost', AGENT_OS_SERVICE_TOKEN: 'test', AGENT_OS_MODEL_API_KEY: 'test' })
