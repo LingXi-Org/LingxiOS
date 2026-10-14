@@ -85,6 +85,8 @@ export class CapabilityDeniedError extends AgentOSError {
 // Model ---------------------------------------------------------------------
 
 export interface ModelDiagnostics {
+  /** Provider usage remains billable when its completed response violates the protocol. */
+  usage?: import('./model/driver.js').ModelUsage
   kind?: 'provider' | 'protocol'
   status?: number
   finishReasons: string[]
