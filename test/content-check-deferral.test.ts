@@ -3,6 +3,8 @@
 // a real gap; malformed scope output clears valid findings; scope inputs mutate request/evidence or
 // lose ordered revisions; follow-up calls exceed budget, ignore cancellation, or overwrite primary
 // accounting. These tests exercise the contract; real-model cases check the semantic classification.
+// Grounded human blockers must not be deferred, consume a scope call alone, renumber other IDs,
+// or become removable when a scope model attempts to return their excluded IDs.
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { it } from 'node:test'
@@ -83,6 +85,40 @@ it('preserves original valid gaps and blockers exactly when no finding is deferr
   assert.deepEqual(findings(result), { missing: [blocked], limitations: [publicLimitation] })
   assert.equal('error' in result, false)
   assert.deepEqual(review, before)
+})
+
+it('preserves a lone grounded human blocker without a scope call', async () => {
+  const blocked = { ...currentMissing, blockedBy: humanQuote }
+  const review = { missing: [blocked], limitations: [] }
+  const { model, calls } = fixture([review])
+  const result = await check(model)
+  assert.equal(calls.length, 1)
+  assert.deepEqual(findings(result), review)
+  assert.equal('error' in result, false)
+  assert.equal('deferralReview' in result, false)
+})
+
+it('excludes grounded blockers while preserving stable IDs for eligible findings', async () => {
+  const blocked = { ...currentMissing, blockedBy: humanQuote }
+  const review = { missing: [blocked, futureMissing], limitations: [futureLimitation] }
+  const { model, calls } = fixture([review, { deferred: [{ ...deferred, id: 'missing:1' }, deferred] }])
+  const result = await check(model)
+  assert.equal(calls.length, 2)
+  assert.deepEqual((calls[1]!.input as Record<string, unknown>)['findings'], [
+    { ...futureMissing, id: 'missing:1' }, { ...futureLimitation, id: 'limitation:0' },
+  ])
+  assert.deepEqual(findings(result), { missing: [blocked], limitations: [] })
+  assert.equal('error' in result, false)
+})
+
+it('rejects an excluded blocked ID without clearing any valid findings', async () => {
+  const blocked = { ...currentMissing, blockedBy: humanQuote }
+  const review = { missing: [blocked, futureMissing], limitations: [futureLimitation] }
+  const { model, calls } = fixture([review, { deferred: [{ ...deferred, id: 'missing:0' }, deferred] }])
+  const result = await check(model)
+  assert.equal(calls.length, 2)
+  assert.equal('error' in result, true)
+  assert.deepEqual(findings(result), { missing: [blocked, futureMissing], limitations: [publicLimitation] })
 })
 
 it('retains a mixed current/future finding as a whole when the scope review does not defer it', async () => {

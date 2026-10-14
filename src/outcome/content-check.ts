@@ -104,7 +104,8 @@ export async function checkCandidateContent(model: ModelDriver, request: Request
         .filter(item => item.requestQuote !== null)
       const checked = { ...identity, missing: value!.missing as Array<{ quote: string; reason: string; blockedBy?: string }>,
         limitations: acceptedLimitations.map(({ quote, reason }) => ({ quote, reason })), model: result.model, usage: result.usage }
-      const findings = [...checked.missing.map((item, index) => ({ ...item, id: `missing:${index}` })),
+      // Explicit human blockers stay current gaps regardless of a model's deferral judgment.
+      const findings = [...checked.missing.map((item, index) => ({ ...item, id: `missing:${index}` })).filter(item => item.blockedBy === undefined),
         ...acceptedLimitations.map((item, index) => ({ ...item, id: `limitation:${index}` }))]
       if (!findings.length) return checked
       try {
@@ -127,7 +128,7 @@ export async function checkCandidateContent(model: ModelDriver, request: Request
             || typeof item.reason !== 'string' || !item.reason.trim() || item.reason.length > 2000) throw new Error('Invalid deferral review')
           ids.add(item.id)
         }
-        return { ...checked, missing: checked.missing.filter((_, index) => !ids.has(`missing:${index}`)),
+        return { ...checked, missing: checked.missing.filter((item, index) => item.blockedBy !== undefined || !ids.has(`missing:${index}`)),
           limitations: checked.limitations.filter((_, index) => !ids.has(`limitation:${index}`)),
           deferralReview: { inputSha256: createHash('sha256').update(serializedDeferral).digest('hex'), findings,
             deferred: value.deferred as Array<{ id: string; quote: string; reason: string }>, model: scope.model, usage: scope.usage } }
