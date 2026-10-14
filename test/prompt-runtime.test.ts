@@ -7,6 +7,7 @@ import { DEFAULT_MODEL_BUDGET, executionModel, type ModelCallObservation } from 
 import { OpenAIChatDriver } from '../src/model/openai.js'
 import type { ModelDriver } from '../src/model/driver.js'
 import type { TurnContext } from '../src/protocol/types.js'
+import { executionSnapshot } from '../src/runtime/execution-policy.js'
 
 const context: TurnContext = {
   work: { id: 'w', tenantId: 't', agentId: 'a', sessionId: 's', triggerRef: 'm', kind: 'turn', lane: 'interactive', fence: 1, homeEpoch: 1, leaseToken: 'token' },
@@ -95,9 +96,30 @@ it('reads the capability resolver once for each prompt snapshot', () => {
   class ChangingPolicy extends DefaultRuntimePolicy {
     override kernelCapabilities() { calls++; return [{ name: `grant-${calls}` }] }
   }
-  const compiled = buildPromptContext(context, new ChangingPolicy(), 0)
+  const compiled = buildPromptContext({ ...context, tools: [{ name: 'grant-1__read', action: 'grant-1.read', description: 'Read.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false }, effect: 'read', approval: false }] }, new ChangingPolicy(), 0)
   assert.equal(calls, 1)
   assert.match(compiled.systemInstructions, /grant-1/)
+})
+
+// Failures: stale advisory grants advertise absent tools; a negative capability
+// list replaces them; filtering changes host authorization or suppresses real tools.
+it('advertises only registered authorized tools without changing advisory execution grants', () => {
+  const stale = { ...context, productRules: '', capabilities: ['email', 'calendar'], grants: [{ name: 'email' }, { name: 'calendar' }] }
+  const execution = executionSnapshot(stale, policy)
+  assert.deepEqual(execution.grants, stale.grants)
+  const prompt = buildPromptContext(stale, policy, 0, undefined, undefined, execution)
+  assert.deepEqual(prompt.capabilities, [])
+  assert.doesNotMatch(prompt.systemInstructions, /email|calendar|日历|邮件/i)
+  assert.match(prompt.systemInstructions, /Use only exposed tools and granted methods/)
+  assert.match(prompt.systemInstructions, /Never invent identifiers, receipts or resource state/)
+  assert.deepEqual(execution.grants, stale.grants, 'prompt assembly must not mutate host authorization')
+  const tool = { name: 'email__read', action: 'email.read', description: 'Read a message.',
+    parameters: { type: 'object' as const, properties: {}, additionalProperties: false as const }, effect: 'read' as const, approval: false }
+  const registered = buildPromptContext({ ...stale, tools: [tool] }, policy, 1)
+  assert.deepEqual(registered.capabilities, ['email'], 'availability comes from the catalog, never a product blacklist')
+  assert.match(registered.systemInstructions, /"methods":\["read"\]/)
+  assert.doesNotMatch(registered.systemInstructions, /calendar/i)
 })
 
 it('records the exact auxiliary prompt used by every driver and rejects stale manifests before reserving budget', async () => {
