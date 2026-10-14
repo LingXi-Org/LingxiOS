@@ -12,7 +12,11 @@ export function buildPromptContext(context: TurnContext, policy: RuntimePolicy, 
   execution: ExecutionSnapshot = executionSnapshot(context, policy), cache = true): PromptContext {
   const candidate = context.promptContextCandidate ?? { version: 3, epoch: 0, assembledAt: '', systemInstructions: '',
     persona: context.persona, capabilities: context.capabilities, sourceVersions: {} }
-  const { grants, codeExecution, mode } = execution
+  const { codeExecution, mode } = execution
+  // Advisory host grants can outlive their tools. Advertise only the current
+  // authorized catalog; execution and control-plane authorization stay unchanged.
+  const grants = [...new Set(execution.tools.map(tool => tool.action.split('.')[0]!))]
+    .map(name => ({ name, methods: execution.tools.filter(tool => tool.action.startsWith(name + '.')).map(tool => tool.action.split('.')[1]!) }))
   const available = (actions: string[]) => actions.every(action => execution.tools.some(tool => tool.action === action))
   const harness = context.harness
   const blocks: ContextBlock[] = [

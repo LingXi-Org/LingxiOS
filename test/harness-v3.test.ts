@@ -72,6 +72,30 @@ it('answers ordinary JSON verbatim with one model call and injects the current r
   assert.equal(result.message?.envelope.assessment, undefined)
 })
 
+it('sends only available capabilities and generic truthfulness rules for representative conversations', async () => {
+  for (const [original, answer] of [
+    ['你好。', '你好！'],
+    ['你能帮我做什么？', '我可以回答问题、解释概念、整理你提供的文字。'],
+    ['请发送邮件并创建日历会议。', '当前没有可用工具执行这两项操作，操作均未完成。'],
+  ]) {
+    let calls = 0
+    const result = await fixture(original!, { compact: unexpected,
+      run: async request => {
+        calls++
+        assert.doesNotMatch(request.instructions, /email|calendar|日历|邮件/i)
+        assert.doesNotMatch(JSON.stringify(request.tools), /email|calendar|日历|邮件/i)
+        assert.match(request.instructions, /Never invent identifiers, receipts or resource state/)
+        return { text: answer!, output: [], usage }
+      },
+      structured: async request => ({ model: 'fixture', usage, value: Array.isArray((request.input as { findings?: unknown }).findings)
+        ? { deferred: [] } : { missing: original!.includes('邮件') ? [{ quote: original!, reason: 'No execution receipt exists.' }] : [] } }),
+    }, [])
+    assert.ok(calls > 0)
+    if (original!.includes('邮件')) assert.notEqual(result.message?.envelope.goalOutcome.status, 'satisfied')
+    else assert.equal(result.message?.body, answer)
+  }
+})
+
 it('independently reviews omitted requirements without relying on a model-authored checklist', async () => {
   let calls = 0, reviews = 0
   const result = await fixture('Name both options and include their costs.', { compact: unexpected,

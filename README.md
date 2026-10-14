@@ -11,7 +11,7 @@ The package has four public entries: `@lyyzka/lingxios`, `@lyyzka/lingxios/worke
 ## Install
 
 ```sh
-npm install @lyyzka/lingxios@3.3.11
+npm install @lyyzka/lingxios@3.4.3
 ```
 
 Configure the GitHub Packages registry for the `@lyyzka` scope before installing:
@@ -69,6 +69,12 @@ Creating a control plane never claims work. A Worker receives the model, Kernel,
 ## Native tools and recovery
 
 Each `ToolDefinition` supplies one input parser and model-visible schema plus authorization, effect type, execution, approval preview, reconciliation, and verification. Validation and authorization occur before an action intent is recorded. PostgreSQL writes receive the same transaction as their action receipt. Reads may be retried; confirmed receipts are restored; unknown external effects wait for reconciliation.
+
+Model-visible capabilities are derived from the current authorized tool catalog.
+Hosts must provide tool definitions for capabilities they want advertised; advisory
+grants without a registered tool do not appear in the prompt. Omit unavailable
+capabilities instead of adding feature-specific denial instructions. Host grants,
+authorization checks and generic evidence requirements still govern execution.
 
 Work lifecycle, goal outcome, and delivery state are separate. `readRunState()` returns a consistent snapshot of all three. A `satisfied` goal requires current authoritative checks when the request created resources; model self-assessment alone cannot mark verification as passed.
 
