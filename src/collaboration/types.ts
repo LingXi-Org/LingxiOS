@@ -16,6 +16,8 @@ export interface ConversationPolicy extends Omit<ConversationIdentity, 'threadId
   owner: { kind: 'participant' | 'organization'; id: string }
   participants: Participant[]
   defaultAgentId?: string
+  /** Opt in to public turns caused by committed agent messages, without parent waits. */
+  agentMentions?: { maxDepth: number; maxRuns: number }
 }
 export type Visibility = 'conversation' | 'participants' | 'internal'
 export type AudienceInput = { visibility: 'conversation' } | { visibility: 'participants'; participantIds: string[] }
@@ -43,7 +45,7 @@ export interface IMMessageInput extends ConversationIdentity, MessageReference {
 export interface IMIngressResult {
   runs: RunIdentity[]
   deduplicated: boolean
-  reason?: 'agent_message' | 'system_message' | 'outbox_echo' | 'no_speaker'
+  reason?: 'agent_message' | 'system_message' | 'outbox_echo' | 'no_speaker' | 'mention_limit'
 }
 export interface IMDeliveryContext extends ConversationIdentity {
   policyVersion: number

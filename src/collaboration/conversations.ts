@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import { snapshotAttachments } from '../context/attachments.js'
-import { cancelRun, enqueueWork, type RunIdentity } from '../app/jobs.js'
+import { cancelRun, cancelDescendants, enqueueWork, requestSnapshot, type RunIdentity } from '../app/jobs.js'
 import { withTransaction, workItemFromRow, type SqlPool, type SqlQueryable } from '../control-plane/pg-store.js'
 import type { WorkItem } from '../protocol/types.js'
 import type { ContextProvider } from '../control-plane/stores.js'
@@ -20,6 +20,9 @@ export async function syncConversation(database: SqlPool, policy: ConversationPo
   }
   if (policy.owner.kind === 'participant' && !policy.participants.some(item => item.id === policy.owner.id)) throw new Error('conversation owner must be a participant')
   if (policy.defaultAgentId !== undefined) participant(policy, policy.defaultAgentId, 'read', 'agent')
+  if (policy.agentMentions && (policy.kind !== 'group'
+    || !Number.isSafeInteger(policy.agentMentions.maxDepth) || policy.agentMentions.maxDepth < 1 || policy.agentMentions.maxDepth > 32
+    || !Number.isSafeInteger(policy.agentMentions.maxRuns) || policy.agentMentions.maxRuns < 1 || policy.agentMentions.maxRuns > 256)) throw new Error('invalid agent mention limits')
   const snapshot = structuredClone(policy)
   snapshot.participants.sort((a, b) => a.id.localeCompare(b.id))
   for (const member of snapshot.participants) member.capabilities.sort()
@@ -46,7 +49,7 @@ export async function registerThread(database: SqlPool, scope: ConversationIdent
 export async function ingestMessage(database: SqlPool, input: IMMessageInput, policyMeta: Record<string, unknown>): Promise<IMIngressResult> {
   identity(input); identifier(input.messageId); identifier(input.author?.id); positiveVersion(input.version); positiveVersion(input.policyVersion)
   if (!['human', 'agent', 'system'].includes(input.author.kind) || typeof input.text !== 'string' || !input.text.trim()
-    || input.text.length > 100_000 || input.mentions !== undefined && (!Array.isArray(input.mentions) || input.mentions.length > 64)) throw new Error('invalid IM message')
+    || input.text.length > 100_000 || input.mentions !== undefined && (!Array.isArray(input.mentions) || input.mentions.length > 256)) throw new Error('invalid IM message')
   for (const id of input.mentions ?? []) identifier(id)
   if (input.replyTo) { identifier(input.replyTo.messageId); positiveVersion(input.replyTo.version) }
   if (input.causedBy) identifier(input.causedBy.resultId)
@@ -77,21 +80,50 @@ export async function ingestMessage(database: SqlPool, input: IMMessageInput, po
       [input.tenantId, input.conversationId, input.replyTo.messageId, input.replyTo.version, input.threadId ?? null])
       if (!parent.rows[0] || !containsAudience(parent.rows[0]['audience'] as Audience, audience)) throw new Error('reply cause is unavailable to this audience')
     }
+    let sender: WorkItem | undefined
+    let senderVersion: number | undefined
     if (input.causedBy) {
-      const cause = await db.query(`SELECT work.conversation FROM lingxios.agent_results result
+      const cause = await db.query(`SELECT work.*,result.message,result.fence AS result_fence,result.request_version AS result_version FROM lingxios.agent_results result
         JOIN lingxios.agent_work_items work ON work.id=result.work_id WHERE result.id=$1 AND work.tenant_id=$2
-        AND work.conversation->>'conversationId'=$3 AND work.thread_id IS NOT DISTINCT FROM $4`,
+        AND work.conversation->>'conversationId'=$3 AND work.thread_id IS NOT DISTINCT FROM $4 FOR SHARE OF work`,
       [input.causedBy.resultId, input.tenantId, input.conversationId, input.threadId ?? null])
       if (!cause.rows[0] || !containsAudience((cause.rows[0]['conversation'] as WorkConversation).audience, audience)) throw new Error('result cause is outside this conversation audience')
+      if (policy.agentMentions && input.author.kind === 'agent') {
+        const row = cause.rows[0]
+        sender = workItemFromRow(row, '', 1)
+        senderVersion = Number(row['result_version'])
+        if (sender.agentId !== input.author.id || sender.conversation?.internal || row['cancel_requested_at']
+          || row['result_id'] !== input.causedBy.resultId || row['fence'] !== row['result_fence']
+          || senderVersion !== (row['steer_inputs'] as unknown[]).length + 1
+          || (row['message'] as { body: string }).body !== input.text) throw new Error('result cause author or content was cancelled, revised or superseded')
+        await authorizeConversationWork(db, sender, 'speak', true)
+        const delivered = await db.query(`SELECT outcome FROM lingxios.agent_im_messages
+          WHERE tenant_id=$1 AND conversation_id=$2 AND input->'causedBy'->>'resultId'=$3 LIMIT 1`,
+        [input.tenantId, input.conversationId, input.causedBy.resultId])
+        if (delivered.rows[0]) return { ...delivered.rows[0]['outcome'] as IMIngressResult, deduplicated: true }
+      }
     }
     const outcome: IMIngressResult = { runs: [], deduplicated: false }
-    if (input.causedBy) outcome.reason = 'outbox_echo'
-    else if (input.author.kind !== 'human') outcome.reason = input.author.kind === 'agent' ? 'agent_message' : 'system_message'
-    const targets = outcome.reason ? [] : (message.mentions.length ? message.mentions : policy.defaultAgentId ? [policy.defaultAgentId] : [])
-      .filter(id => audience.participantIds.includes(id) && policy.participants.some(item => item.id === id && item.kind === 'agent'
+    if (!sender) {
+      if (input.causedBy) outcome.reason = 'outbox_echo'
+      else if (input.author.kind !== 'human') outcome.reason = input.author.kind === 'agent' ? 'agent_message' : 'system_message'
+    }
+    let targets = outcome.reason ? [] : (message.mentions.length ? message.mentions : !sender && policy.defaultAgentId ? [policy.defaultAgentId] : [])
+      .filter(id => (!sender || id !== sender.agentId) && audience.participantIds.includes(id) && policy.participants.some(item => item.id === id && item.kind === 'agent'
         && ['read', 'execute', 'speak'].every(capability => item.capabilities.includes(capability as 'read' | 'execute' | 'speak'))))
     if (!outcome.reason && !targets.length) outcome.reason = 'no_speaker'
-    if (targets.length) participant(policy, input.author.id, 'execute', 'human')
+    const principalId = sender?.principalId ?? input.author.id
+    const rootWorkId = sender ? String(sender.meta?.['rootWorkId'] ?? sender.id) : undefined
+    const depth = sender ? Number(sender.meta?.['mentionDepth'] ?? 0) + 1 : 0
+    if (sender && targets.length) {
+      const count = await db.query(`SELECT COUNT(*)::int AS count FROM lingxios.agent_work_items
+        WHERE tenant_id=$1 AND (id=$2 OR meta->>'mentionRootWorkId'=$2)`, [input.tenantId, rootWorkId])
+      const remaining = Math.max(0, policy.agentMentions!.maxRuns - Number(count.rows[0]!['count']))
+      if (depth > policy.agentMentions!.maxDepth || targets.length > remaining) outcome.reason = 'mention_limit'
+      targets = depth > policy.agentMentions!.maxDepth ? [] : targets.slice(0, remaining)
+    }
+    if (targets.length) participant(policy, principalId, 'execute', 'human')
+    const inheritedRequest = sender && targets.length ? await requestSnapshot(db, sender.id, senderVersion!) : undefined
     await db.query(`INSERT INTO lingxios.agent_im_messages(tenant_id,conversation_id,message_id,version,thread_id,fingerprint,input,audience,outcome)
       VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb)`,
     [input.tenantId, input.conversationId, input.messageId, input.version, input.threadId ?? null, fingerprint, JSON.stringify(message), JSON.stringify(audience), JSON.stringify(outcome)])
@@ -105,17 +137,25 @@ export async function ingestMessage(database: SqlPool, input: IMMessageInput, po
           principalId: work.principalId!, ...(work.threadId === undefined ? {} : { threadId: work.threadId }) })
         // Finished older replies also lose delivery eligibility after an edit.
         await db.query('UPDATE lingxios.agent_work_items SET cancel_requested_at=COALESCE(cancel_requested_at,NOW()) WHERE id=$1', [work.id])
+        await cancelDescendants(db, work.id, true)
       }
     }
     for (const agentId of targets) {
       const runId = 'im:' + digest([input.tenantId, input.conversationId, input.messageId, input.version, agentId])
-      const sessionId = 'im-session:' + digest([input.conversationId, input.threadId ?? null, input.author.id, audience, policy.version])
-      const run: RunIdentity = { runId, tenantId: input.tenantId, agentId, sessionId, principalId: input.author.id,
+      const sessionId = 'im-session:' + digest([input.conversationId, input.threadId ?? null, principalId, audience, policy.version, ...(sender ? [input.messageId] : [])])
+      const run: RunIdentity = { runId, tenantId: input.tenantId, agentId, sessionId, principalId,
         ...(input.threadId === undefined ? {} : { threadId: input.threadId }) }
       await enqueueWork(db, { ...run, id: runId, kind: 'turn', lane: 'interactive', triggerRef: input.messageId,
         conversation: { conversationId: input.conversationId, policyVersion: policy.version,
           source: { messageId: input.messageId, version: input.version }, audience, internal: false },
-        meta: { ...policyMeta, text: input.text, authorName: input.author.id, attachments: message.attachments } })
+        meta: { ...policyMeta, text: input.text, authorName: input.author.id, attachments: message.attachments,
+          ...(policy.agentMentions ? { conversationTurn: true } : {}),
+          ...(sender ? { rootWorkId, mentionRootWorkId: rootWorkId, mentionParentWorkId: sender.id,
+            mentionResultId: input.causedBy!.resultId, mentionDepth: depth,
+            ...(sender.meta?.['mode'] === undefined ? {} : { mode: sender.meta['mode'] }),
+            ...(sender.meta?.['codeExecution'] === 'disabled' ? { codeExecution: 'disabled' } : {}),
+            delegation: { parentWorkId: sender.id, rootWorkId, parentRequestVersion: senderVersion,
+              instructionAuthorId: sender.agentId, parentRequest: inheritedRequest, assignment: input.text } } : {}) } })
       await db.query(`INSERT INTO lingxios.agent_reply_slots(tenant_id,conversation_id,message_id,message_version,agent_id,work_id) VALUES($1,$2,$3,$4,$5,$6)`,
         [input.tenantId, input.conversationId, input.messageId, input.version, agentId, runId])
       outcome.runs.push(run)
@@ -144,8 +184,8 @@ export async function conversationMessages(database: SqlQueryable, work: Omit<Wo
   [work.tenantId, work.conversation.conversationId, work.conversation.source.messageId, work.conversation.source.version])
   if (!trigger.rows[0]) throw new Error('IM trigger is unavailable')
   const source = trigger.rows[0]['input'] as IMMessageInput
-  return [...messages.filter(message => message.ref !== work.triggerRef), { ref: work.triggerRef, authorId: work.principalId!,
-    authorName: source.author.id, authorKind: 'human', body: source.text, createdAt: new Date(trigger.rows[0]['recorded_at'] as string | Date).toISOString() }]
+  return [...messages.filter(message => message.ref !== work.triggerRef), { ref: work.triggerRef, authorId: source.author.id,
+    authorName: source.author.id, authorKind: source.author.kind, body: source.text, createdAt: new Date(trigger.rows[0]['recorded_at'] as string | Date).toISOString() }]
 }
 
 export async function imDeliveryContext(database: SqlQueryable, work: Omit<WorkItem, 'leaseToken'>, resultId: string): Promise<IMDeliveryContext | undefined> {

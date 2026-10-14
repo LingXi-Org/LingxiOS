@@ -122,6 +122,29 @@ it('preserves grounded blockers and explanatory null request quotes without a sc
   assert.deepEqual({ missing: result.missing, limitations: result.limitations }, { missing: value.missing, limitations: [] })
 })
 
+// Excluded explanatory remarks are not findings; paraphrasing them must not
+// invalidate current grounded gaps, while actual findings still require exact quotes.
+it('discards a paraphrased explanatory remark without losing a grounded current blocker', async () => {
+  const missing = [{ quote: 'Prepare a draft.', reason: 'Still incomplete.', blockedBy: 'Do not publish without my confirmation.' }]
+  const { model, calls } = fixture([{ missing, limitations: [{ quote: 'Publication is reserved for a later confirmation.',
+    requestQuote: null, reason: 'No currently due result is missing.' }] }])
+  const result = await checkCandidateContent(model, request, body, [], 32000, new AbortController().signal)
+  assert.equal(calls.length, 1)
+  assert.equal('error' in result, false)
+  assert.deepEqual({ missing: result.missing, limitations: result.limitations }, { missing, limitations: [] })
+})
+
+it('still rejects an ungrounded current finding alongside a paraphrased explanatory remark', async () => {
+  const value = { missing: [], limitations: [{ quote: 'Publication is reserved for a later confirmation.',
+    requestQuote: null, reason: 'No currently due result is missing.' }, ...invalidQuote.limitations] }
+  const { model, calls } = fixture([value, value])
+  const result = await checkCandidateContent(model, request, body, [], 32000, new AbortController().signal)
+  assert.equal(calls.length, 2)
+  assert.equal('error' in result && result.error, errorMessage)
+  assert.deepEqual((calls[1]!.input as Record<string, unknown>)['validationFailures'],
+    [{ path: 'limitations[1].quote', constraint: 'exact_body_quote' }])
+})
+
 it('checks the repaired input against the context budget before making another paid call', async () => {
   const probe = fixture([valid])
   await checkCandidateContent(probe.model, request, body, [], 32000, new AbortController().signal)
