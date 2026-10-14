@@ -378,7 +378,11 @@ export class ControlPlaneService {
     if (completion.status === 'completed' && typeof work.meta?.['text'] === 'string' && !completion.goalOutcome) {
       throw new ControlPlaneError(400, 'goal outcome is required for a captured request')
     }
-    if (completion.goalOutcome) {
+    if (completion.status !== 'completed' && completion.goalOutcome && completion.goalOutcome.status !== 'blocked') {
+      throw new ControlPlaneError(400, 'failed or cancelled work requires a blocked goal outcome')
+    }
+    // A fenced failure must settle even when its request sources can no longer be read.
+    if (completion.goalOutcome && completion.status === 'completed') {
       const request = (await this.getSession(proof, sessionKeyOf(work)))?.request
       const version = request?.workId === work.id ? request.revisions.length + 1 : 1
       if (completion.goalOutcome.requestVersion !== version) throw new ControlPlaneError(409, 'goal outcome request version mismatch')
@@ -437,10 +441,10 @@ export class ControlPlaneService {
   async loadContext(proof: LeaseProof, includeSession = false, signal?: AbortSignal): Promise<TurnContext> {
     const work = await this.requireLease(proof)
     await this.deps.authorizeWork?.(work)
-    const snapshotPromise = this.deps.contextSnapshot?.(work) ?? (async () => {
+    const snapshotPromise = (this.deps.contextSnapshot?.(work) ?? (async () => {
         const [session, steps] = await Promise.all([this.deps.sessions.get(sessionKeyOf(work), work.id), this.deps.steps.list(work.id)])
-        return { session, steps, requestVersion: (session?.request?.revisions.length ?? 0) + 1 }
-      })()
+        return { session, steps, requestVersion: session?.request?.workId === work.id ? session.request.revisions.length + 1 : 1 }
+      })()).then(async snapshot => ({ ...snapshot, session: await this.authorizeSession(work, snapshot.session) }))
     const [context, snapshot, dependencies] = await Promise.all([
       snapshotPromise.then(snapshot => this.deps.contextProvider.loadContext(work, signal, {
         responseProfile: snapshot.session?.request && [snapshot.session.request.attachments,
@@ -457,7 +461,6 @@ export class ControlPlaneService {
       if (context.promptContextCandidate) context.promptContextCandidate = { ...context.promptContextCandidate, capabilities: context.capabilities }
     }
     const { steps, requestVersion } = snapshot
-    if (snapshot.session?.request) await this.deps.contextProvider.authorizeRequest?.(work, snapshot.session.request)
     const checkpoint = steps.findLast(step => step.kind === 'runtime.checkpoint' && step.requestVersion === requestVersion)
     const priorArtifacts = new Map<string, KernelArtifact>()
     if (work.fence > 1) {
@@ -899,11 +902,25 @@ export class ControlPlaneService {
     await this.deps.authorizeWork?.(work)
     if (key !== sessionKeyOf(work)) throw new ControlPlaneError(403, 'session is outside this work lease')
     const session = await this.deps.sessions.get(key, work.id)
+    return this.authorizeSession(work, session)
+  }
+
+  private async authorizeSession(work: Omit<WorkItem, 'leaseToken'>, session: SessionRecord | null): Promise<SessionRecord | null> {
     if (session && (session.tenantId !== work.tenantId || session.agentId !== work.agentId
       || session.sessionId !== work.sessionId || session.threadId !== work.threadId)) {
       throw new ControlPlaneError(409, 'stored session identity mismatch')
     }
-    if (session?.request) await this.deps.contextProvider.authorizeRequest?.(work, session.request)
+    if (session?.request) {
+      try { await this.deps.contextProvider.authorizeRequest?.(work, session.request) }
+      catch (error) {
+        if (session.request.workId === work.id) throw error
+        this.logger.warn('prior session authorization failed; starting with fresh context', { runId: work.id })
+        // Summaries, tool outputs and cached prompts may all contain revoked source material.
+        return { key: session.key, tenantId: session.tenantId, agentId: session.agentId, sessionId: session.sessionId,
+          ...(session.threadId !== undefined ? { threadId: session.threadId } : {}), revision: session.revision,
+          compactionEpoch: session.compactionEpoch + 1, history: [], appliedWorkIds: [] }
+      }
+    }
     return session
   }
 
