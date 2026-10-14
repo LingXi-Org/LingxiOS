@@ -16,6 +16,12 @@ export function buildPromptContext(context: TurnContext, policy: RuntimePolicy, 
   const available = (actions: string[]) => actions.every(action => execution.tools.some(tool => tool.action === action))
   const harness = context.harness
   const blocks: ContextBlock[] = [
+    ...(context.work.conversation?.internal === false && context.work.meta?.['conversationTurn'] === true
+      ? [{ source: 'runtime:conversation-turn', version: '1', trust: 'platform' as const, truncated: false, cache: 'prefix' as const,
+        content: 'This execution owns one public contribution to a collaborative conversation. Publish your assigned contribution and explicit next-member mentions in the final body, then end this turn so they can start. '
+          + 'An unfinished original goal remains partial; list its unmet requirements honestly in the assessment, without waiting or doing a peer\'s assignment yourself. '
+          + 'Use partial, not delegated, for pending peer work: ordinary mentions create no child task or taskRef. Never claim the original goal or a business action is complete without evidence. '
+          + 'The runtime will record remaining gaps and will not automatically resume this turn.' }] : []),
     ...(context.responseProfile === 'fast' ? [{ source: 'runtime:response', version: '1', trust: 'platform' as const,
       truncated: false, cache: 'prefix' as const, content: 'Answer straightforward conversation directly with substantive text. Do not emit a holding phrase. '
         + 'Before mathematical derivation, complex programming, research, source-dependent answers, using missing product records, external actions or any task needing tools, call response__upgrade with {}. '

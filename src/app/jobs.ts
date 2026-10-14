@@ -172,7 +172,7 @@ export async function reviseRun(database: SqlQueryable, identity: RunIdentity, t
     status=CASE WHEN status='waiting' THEN 'queued' ELSE status END,available_at=NOW(),goal_outcome=NULL,updated_at=NOW()
     WHERE ${scopeSql} AND status IN ('queued','leased','waiting') AND cancel_requested_at IS NULL RETURNING id`,
   [...params(identity),JSON.stringify([{ id: randomUUID(), text, createdAt: new Date().toISOString(), author }])])
-  if (rows.length) await cancelDescendants(database, identity.runId)
+  if (rows.length) await cancelDescendants(database, identity.runId, true)
   return rows.length === 1
 }
 
@@ -182,26 +182,27 @@ export async function cancelRun(database: SqlQueryable, identity: StoredRunIdent
       goal_outcome=CASE WHEN status='leased' THEN goal_outcome ELSE jsonb_build_object('status','blocked','verification','not_run',
         'requestVersion',jsonb_array_length(steer_inputs)+1,'gaps',jsonb_build_array('Cancelled by user')) END,
       finished_at=CASE WHEN status='leased' THEN finished_at ELSE NOW() END,updated_at=NOW()
-    WHERE ${scopeSql} AND status IN ('queued','leased','waiting') RETURNING id`, params(identity))
-  if (rows.length) await cancelDescendants(database, identity.runId)
+    WHERE ${scopeSql} AND (status IN ('queued','leased','waiting') OR (status='succeeded' AND EXISTS (
+      SELECT 1 FROM lingxios.agent_work_items child WHERE child.meta->>'mentionParentWorkId'=$1))) RETURNING id`, params(identity))
+  if (rows.length) await cancelDescendants(database, identity.runId, true)
   return rows.length === 1
 }
 
 /** The caller holds the parent's row lock, so no child can be inserted behind cancellation. */
-export async function cancelDescendants(database: SqlQueryable, parentId: string) {
+export async function cancelDescendants(database: SqlQueryable, parentId: string, includeMentions = false) {
   await database.query(`WITH RECURSIVE descendants AS (
     SELECT child.id,child.tenant_id,child.principal_id,ARRAY[parent.id,child.id] AS path FROM lingxios.agent_work_items parent
-      JOIN lingxios.agent_work_items child ON child.meta->>'parentWorkId'=parent.id
+      JOIN lingxios.agent_work_items child ON (child.meta->>'parentWorkId'=parent.id OR ($2 AND child.meta->>'mentionParentWorkId'=parent.id))
         AND child.tenant_id=parent.tenant_id AND child.principal_id IS NOT DISTINCT FROM parent.principal_id WHERE parent.id=$1
     UNION ALL SELECT child.id,child.tenant_id,child.principal_id,parent.path||child.id FROM lingxios.agent_work_items child
-      JOIN descendants parent ON child.meta->>'parentWorkId'=parent.id AND child.tenant_id=parent.tenant_id
+      JOIN descendants parent ON (child.meta->>'parentWorkId'=parent.id OR ($2 AND child.meta->>'mentionParentWorkId'=parent.id)) AND child.tenant_id=parent.tenant_id
         AND child.principal_id IS NOT DISTINCT FROM parent.principal_id WHERE NOT child.id=ANY(parent.path) AND cardinality(parent.path)<64
   ) UPDATE lingxios.agent_work_items work SET cancel_requested_at=COALESCE(cancel_requested_at,NOW()),
       status=CASE WHEN status='leased' THEN status ELSE 'cancelled' END,
       finished_at=CASE WHEN status='leased' THEN finished_at ELSE NOW() END,
       goal_outcome=CASE WHEN status='leased' THEN goal_outcome ELSE jsonb_build_object('status','blocked','verification','not_run',
         'requestVersion',jsonb_array_length(steer_inputs)+1,'gaps',jsonb_build_array('Parent request terminated or revised')) END,updated_at=NOW()
-    WHERE id IN (SELECT id FROM descendants) AND status IN ('queued','leased','waiting')`, [parentId])
+    WHERE id IN (SELECT id FROM descendants) AND status IN ('queued','leased','waiting')`, [parentId, includeMentions])
 }
 
 export async function enqueueWork(database: SqlQueryable, input: EnqueueWorkInput): Promise<EnqueueResult> {

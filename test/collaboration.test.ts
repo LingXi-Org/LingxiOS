@@ -16,6 +16,7 @@ import { graphNodes } from '../src/collaboration/graphs.js'
 import { authorizedScopes, identityOf } from '../src/memory/access.js'
 import { imDeliveryContext } from '../src/collaboration/conversations.js'
 import { validateStateUpdate } from '../src/collaboration/state.js'
+import { PgWorkStore } from '../src/control-plane/pg-store.js'
 import { consumeRunStreamEvent, createRunView, type AssistantMessage, type RunStreamEvent } from '../src/ui/index.js'
 
 const policy: ConversationPolicy = { tenantId: 'tenant', conversationId: 'room', version: 1, kind: 'group',
@@ -66,6 +67,101 @@ async function setup(options: Partial<LingxiOSOptions> = {}) {
   return { db, pool, control, host, save, commit, action, async close() { await control.stop(); await db.close() } }
 }
 
+// Failure cases: an IM echo creates duplicate work, an agent impersonates a human,
+// a finished sender resumes, A cannot be mentioned again, budgets reset, or stale
+// results and changed audiences authorize new work after cancellation/revocation.
+it('committed agent mentions create public turns without waiting or resuming their sender', async () => {
+  const f = await setup()
+  try {
+    await f.control.conversations.sync({ ...policy, version: 2, agentMentions: { maxDepth: 8, maxRuns: 32 } })
+    const root = (await f.control.conversations.ingest(message('mention-root', { policyVersion: 2 }))).runs[0]!
+    const lead = (await f.host.claimWork())!
+    assert.equal(lead.meta?.['conversationTurn'], true)
+    const send = async (work: WorkItem, text: string, mentions: string[]) => {
+      await f.commit(work, text)
+      const run = { tenantId: work.tenantId, agentId: work.agentId, sessionId: work.sessionId, principalId: work.principalId!, runId: work.id }
+      const result = (await f.control.readRun(run))!, delivery = (await imDeliveryContext(f.pool, work, result.resultId!))!
+      const input = message(delivery.messageKey, { policyVersion: 2, author: { id: work.agentId, kind: 'agent' },
+        text, mentions, causedBy: { resultId: result.resultId! }, replyTo: delivery.source })
+      const accepted = await f.control.conversations.ingest(input)
+      assert.deepEqual(await f.control.conversations.ingest(input), { ...accepted, deduplicated: true })
+      return accepted
+    }
+    const first = await send(lead, '@helper Please check.', ['helper', 'helper', 'lead'])
+    assert.deepEqual(first.runs.map(run => [run.agentId, run.principalId]), [['helper', 'u']])
+    const helper = (await f.host.claimWork())!
+    assert.equal(helper.conversation?.internal, false)
+    assert.equal(await new PgWorkStore(f.pool).ownsBudgetRoot(helper, root.runId), true)
+    const context = await f.host.loadContext(helper)
+    assert.equal(context.messages.find(item => item.ref === helper.triggerRef)?.authorKind, 'agent')
+    await f.save(helper)
+    const second = await send(helper, '@other Verify independently.', ['other'])
+    assert.equal(second.runs[0]!.agentId, 'other')
+    const other = (await f.host.claimWork())!
+    const back = await send(other, '@lead Please clarify this one point.', ['lead'])
+    assert.equal(back.runs[0]!.agentId, 'lead')
+    const leadAgain = (await f.host.claimWork())!
+    assert.notEqual(leadAgain.id, lead.id)
+    assert.equal((await send(leadAgain, 'Here is the clarification.', [])).reason, 'no_speaker')
+    await resumeDependents(f.pool)
+    assert.equal(await f.host.claimWork(), null)
+    assert.equal((await f.control.readRun(root))!.status, 'succeeded')
+    assert.equal((await f.db.query('SELECT 1 FROM lingxios.agent_work_waits')).rows.length, 0)
+    await assert.rejects(f.control.conversations.ingest(message('forged-mention', { policyVersion: 2,
+      author: { id: 'helper', kind: 'agent' }, text: '@lead', mentions: ['lead'], causedBy: { resultId: (await f.control.readRun(root))!.resultId! } })), /result|author|cause/)
+    await f.control.conversations.ingest(message('mention-root', { policyVersion: 2, version: 2 }))
+    await assert.rejects(f.control.conversations.ingest(message('stale-result', { policyVersion: 2,
+      author: { id: 'lead', kind: 'agent' }, text: '@helper Please check.', mentions: ['helper'], causedBy: { resultId: (await f.control.readRun(root))!.resultId! } })), /cancel|revis|supersed|cause/)
+  } finally { await f.close() }
+})
+
+it('agent mention limits, unsigned messages and revoked recipients never enqueue extra work', async () => {
+  const f = await setup()
+  try {
+    await f.control.conversations.sync({ ...policy, version: 2, agentMentions: { maxDepth: 1, maxRuns: 3 } })
+    assert.equal((await f.control.conversations.ingest(message('unsigned', { policyVersion: 2,
+      author: { id: 'lead', kind: 'agent' }, mentions: ['helper'] }))).reason, 'agent_message')
+    const root = (await f.control.conversations.ingest(message('limited', { policyVersion: 2 }))).runs[0]!
+    const lead = (await f.host.claimWork())!
+    await f.commit(lead, '@helper @other Check.')
+    const result = (await f.control.readRun(root))!
+    const first = await f.control.conversations.ingest(message('limited-reply', { policyVersion: 2,
+      author: { id: 'lead', kind: 'agent' }, text: '@helper @other Check.', mentions: ['helper', 'other'], causedBy: { resultId: result.resultId! } }))
+    assert.equal(first.runs.length, 2)
+    const child = (await f.host.claimWork())!
+    await f.commit(child, '@lead Continue.')
+    const childRun = first.runs.find(run => run.runId === child.id)!
+    const next = message('depth-limit', { policyVersion: 2, author: { id: child.agentId, kind: 'agent' }, text: '@lead Continue.',
+      mentions: ['lead'], causedBy: { resultId: (await f.control.readRun(childRun))!.resultId! } })
+    assert.equal((await f.control.conversations.ingest(next)).reason, 'mention_limit')
+    assert.equal((await f.control.conversations.ingest(next)).deduplicated, true)
+    const revoked = structuredClone(policy); revoked.version = 3; revoked.participants = revoked.participants.filter(item => item.id !== 'u')
+    revoked.owner = { kind: 'organization', id: 'tenant' }
+    await f.control.conversations.sync(revoked)
+    const pending = first.runs.find(run => run.runId !== child.id)!
+    await assert.rejects(f.host.loadContext({ ...child, id: pending.runId, agentId: pending.agentId }), /lease|capability|audience/)
+  } finally { await f.close() }
+})
+
+it('bounds an all-member mention by the chain budget even in a large supported room', async () => {
+  const f = await setup()
+  try {
+    const peers = Array.from({ length: 70 }, (_, i) => ({ id: `peer-${i}`, kind: 'agent' as const,
+      capabilities: ['read', 'execute', 'speak'] as Array<'read' | 'execute' | 'speak'> }))
+    await f.control.conversations.sync({ ...policy, version: 2, participants: [...policy.participants, ...peers], agentMentions: { maxDepth: 8, maxRuns: 32 } })
+    const root = (await f.control.conversations.ingest(message('large-room', { policyVersion: 2 }))).runs[0]!
+    const lead = (await f.host.claimWork())!
+    await f.commit(lead, '@all Please contribute.')
+    const result = (await f.control.readRun(root))!
+    const input = message('large-room-reply', { policyVersion: 2, author: { id: 'lead', kind: 'agent' },
+      text: '@all Please contribute.', mentions: peers.map(peer => peer.id), causedBy: { resultId: result.resultId! } })
+    const accepted = await f.control.conversations.ingest(input)
+    assert.equal(accepted.reason, 'mention_limit')
+    assert.equal(accepted.runs.length, 31)
+    assert.deepEqual(await f.control.conversations.ingest(input), { ...accepted, deduplicated: true })
+  } finally { await f.close() }
+})
+
 it('delivers and replays the same frozen citation excerpts after the source changes', async () => {
   const evidence = [{ marker: 'S1', sourceId: 'source', sourceVersion: 'v1', chunkId: 'chunk', title: 'Source', excerpt: 'Original paragraph.' }]
   const sent: AssistantMessage[] = []
@@ -98,6 +194,8 @@ it('binds IM ownership, audiences, targeted reply slots, causal identities and e
   const f = await setup()
   try {
     const both = message('both', { mentions: ['helper', 'lead', 'helper'] }), first = await f.control.conversations.ingest(both)
+    // Existing consumers must keep the persisted v3.3.6 session after an upgrade.
+    assert.equal(first.runs[0]!.sessionId, 'im-session:28b1a174a11bfe468eecc9706db222936ad1a606bd39f05e7520466d5001e082')
     assert.deepEqual(first.runs.map(run => run.agentId), ['helper', 'lead'])
     assert.deepEqual(await f.control.conversations.ingest(both), { ...first, deduplicated: true })
     await assert.rejects(f.control.conversations.ingest({ ...both, text: 'changed' }), /identity reused/)
