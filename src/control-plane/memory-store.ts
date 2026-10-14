@@ -412,7 +412,7 @@ export class MemorySessionStore implements SessionStore {
   async get(key: string, workId?: string): Promise<SessionRecord | null> {
     const stored = this.sessions.get(key)
     if (!stored) return null
-    const request = workId ? this.requests.get(workId) : stored.request
+    const request = workId ? this.requests.get(workId) ?? stored.request : stored.request
     const { request: _activeRequest, ...base } = stored
     return structuredClone({ ...base, ...(request ? { request } : {}) })
   }

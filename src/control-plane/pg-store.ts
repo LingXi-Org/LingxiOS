@@ -200,6 +200,23 @@ export class PgWorkStore implements WorkStore {
       )
       const row = rows[0]
       if (!row) return finish(null)
+      if (row['status'] === 'leased') {
+        const prior = await client.query(`SELECT reason FROM lingxios.agent_attempts
+          WHERE work_id=$1 AND fence<$2 ORDER BY fence DESC LIMIT 2`, [row['id'], row['fence']])
+        // Only consecutive abandoned leases count; normal waits and preemptions reset recovery.
+        if (prior.rows.length === 2 && prior.rows.every(attempt => attempt['reason'] === 'lease_expired')) {
+          const error = 'Worker recovery limit reached after three abandoned attempts; please retry the request.'
+          await client.query(`UPDATE lingxios.agent_work_items SET status='failed',fence=fence+1,
+            error=$2,goal_outcome=jsonb_build_object('status','blocked','verification','inconclusive',
+              'requestVersion',jsonb_array_length(steer_inputs)+1,'gaps',jsonb_build_array($2::text)),
+            lease_token_hash=NULL,leased_by=NULL,lease_expires_at=NULL,finished_at=NOW(),updated_at=NOW()
+            WHERE id=$1`, [row['id'], error])
+          await client.query('DELETE FROM lingxios.agent_os_session_leases WHERE work_id=$1', [row['id']])
+          await cancelDescendants(client, String(row['id']))
+          await resumeDependents(client, String(row['id']))
+          return finish(null)
+        }
+      }
       const sessionKey = sessionKeyOf({ tenantId: String(row['tenant_id']), agentId: String(row['agent_id']), sessionId: String(row['session_id']), ...(row['thread_id'] === null ? {} : { threadId: String(row['thread_id']) }) })
       // Win session exclusivity before changing its route or filesystem epoch.
       const proposedFence = Number(row['fence']) + 1
