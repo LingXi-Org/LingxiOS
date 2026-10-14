@@ -7,7 +7,10 @@ import { it } from 'node:test'
 import type { HostPort } from '../src/host/port.js'
 import type { ModelDriver } from '../src/model/driver.js'
 import type { KernelExecutor } from '../src/kernel/manager.js'
-import type { ModelItem, RunEvent, SessionRecord, TurnContext, WorkCompletion } from '../src/protocol/types.js'
+import { actionKeyOf, type HostAction, type HostActionResult, type ModelItem, type RunEvent, type SessionRecord, type TurnContext, type WorkCompletion } from '../src/protocol/types.js'
+import { MAX_TOOL_OUTPUT_CHARS } from '../src/protocol/constants.js'
+import { observationRef } from '../src/context/observations.js'
+import { boundedToolOutput } from '../src/runtime/tool.js'
 import { AgentRuntime } from '../src/runtime/runtime.js'
 import { ApprovalPendingError, ModelDriverError } from '../src/errors.js'
 import type { ModelCallObservation } from '../src/runtime/runtime.js'
@@ -523,33 +526,83 @@ it('fails without a fabricated answer on root budget exhaustion and honors late 
   }
 })
 
-it('keeps direct tool values once in model history while preserving durable receipts and evidence', async () => {
+for (const recovery of ['none', 'step', 'cell'] as const) for (const scenario of ['short', 'long', 'denied', 'unknown'] as const) it(`preserves canonical direct tool receipts and result boundaries (${scenario}, recovery=${recovery})`, async () => {
   const work: TurnContext['work'] = { id: 'direct', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }
-  const result = { ok: true, value: { text: 'unique-read-value' }, evidence: [{ sourceId: 'source', sourceVersion: 'v1', chunkId: 'chunk', title: 'Source', excerpt: 'unique-read-value' }] }
+  const result: HostActionResult = scenario === 'denied'
+    ? { ok: false, executionState: 'rejected', code: 'forbidden', error: 'permission revoked' }
+    : scenario === 'unknown' ? { ok: false, executionState: 'unknown', error: 'receipt unavailable' }
+    : { ok: true, value: scenario === 'long' ? { text: '\\"😀'.repeat(5000) }
+      : { result: { id: 'unique-read-value' }, state: { revision: 1, visibleHash: 'current' } },
+      evidence: [{ sourceId: 'source', sourceVersion: 'v1', chunkId: 'chunk', title: 'Source', excerpt: 'private-evidence-excerpt' }] }
   let calls = 0, persisted = false, delivered = false
+  const recoveredAction = { runId: work.id, cellId: 'step:canonical', callIndex: 0, action: 'data.read', args: {},
+    idempotencyKey: actionKeyOf({ runId: work.id, cellId: 'step:canonical', callIndex: 0 }) }
+  let executed: HostAction | undefined = recovery === 'none' ? undefined : recoveredAction
+  let executions = 0, modelOutput = '', evidenceSeparated = false
+  const recoveredReceipts = [{ action: recoveredAction.action, idempotencyKey: recoveredAction.idempotencyKey, result }]
   const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
     loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: ['data'],
       tools: [{ name: 'data__read', action: 'data.read', effect: 'read', approval: false, description: 'Read', parameters: { type: 'object', properties: {}, additionalProperties: false } }],
       messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Read the data.', createdAt: 'now' }] }),
-    executeAction: async (_work, action) => action.action === 'task.inspect' ? { ok: true, value: { requestVersion: 1, pending: [] } } : result,
-    loadSession: async () => null, saveSession: async () => {}, emitEvent: async () => {},
+    executeAction: async (_work, action) => {
+      if (action.action === 'task.inspect') return { ok: true, value: { requestVersion: 1, pending: [] } }
+      executions++
+      executed = action
+      return result
+    },
+    loadSession: async () => recovery === 'none' ? null : {
+      key: '["t","a","s",null]', tenantId: 't', agentId: 'a', sessionId: 's', appliedWorkIds: [work.id], revision: 1, compactionEpoch: 0,
+      history: [{ type: 'function_call', name: 'data__read', callId: 'read', stepId: recoveredAction.cellId, arguments: '{}' }],
+      request: { version: 1, workId: work.id, tenantId: 't', sessionId: 's', authorId: 'u', sourceRef: 'm', originalText: 'Read the data.',
+        revisions: [], attachments: [], evidence: snapshotEvidence('request', []) },
+    },
+    recoverStep: async () => recovery === 'step' ? {
+      output: boundedToolOutput({ stdout: '', stderr: '', result, truncated: false, artifacts: [], receipts: recoveredReceipts }), artifacts: [],
+    } : null,
+    recoverCell: async () => recovery === 'none' || recovery === 'step' && scenario === 'denied' ? null : recoveredReceipts,
+    saveSession: async () => {}, emitEvent: async () => {},
     saveStep: async (_work, step) => {
       if (step.kind !== 'data__read' || !step.output) return
-      assert.deepEqual(JSON.parse(step.output).receipts[0].result, result)
+      if (scenario !== 'long') assert.deepEqual(JSON.parse(step.output).receipts[0].result, result)
       persisted = true
     }, commitResult: async () => { delivered = true }, completeWork: async () => {}, yieldWork: async () => {} }
   const usage = { available: false, inputTokens: 0, outputTokens: 0 }
   const model: ModelDriver = { compact: async () => { throw new Error('unexpected compaction') },
     structured: async () => ({ value: { missing: [] }, model: 'test', usage }), run: async request => {
-      if (++calls === 1) return { text: '', output: [{ type: 'function_call', callId: 'read', name: 'data__read', arguments: '{}' }], usage }
+      if (++calls === 1 && recovery === 'none') return { text: '', output: [{ type: 'function_call', callId: 'read', name: 'data__read', arguments: '{}' }], usage }
       const output = request.items.find(item => 'type' in item && item.type === 'function_call_output')
       assert.ok(output && 'output' in output)
-      assert.deepEqual(JSON.parse(output.output), { ok: true, value: result.value })
-      assert.match(JSON.stringify(request.items), /Retrieved evidence follows/)
+      modelOutput = output.output
+      evidenceSeparated = JSON.stringify(request.items).includes('Retrieved evidence follows')
       return { text: 'Read the value.', output: [{ role: 'assistant', content: 'Read the value.' }], usage }
     } }
   await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected Python') } }).runWork(work)
-  assert.deepEqual({ calls, persisted, delivered }, { calls: 2, persisted: true, delivered: true })
+  assert.deepEqual({ calls, persisted, delivered, executions }, recovery === 'none'
+    ? { calls: 2, persisted: true, delivered: true, executions: 1 }
+    : { calls: 1, persisted: false, delivered: true, executions: 0 })
+  assert.ok(executed)
+  const receipt = { action: 'data.read', idempotencyKey: actionKeyOf({ runId: work.id, cellId: executed.cellId, callIndex: 0 }) }
+  assert.notEqual(receipt.idempotencyKey, 'read', 'provider call IDs are not canonical receipt keys')
+  assert.ok(modelOutput.length <= MAX_TOOL_OUTPUT_CHARS)
+  assert.doesNotMatch(modelOutput, /private-evidence-excerpt|"evidence"/)
+  const { evidence: _evidence, ...visibleResult } = result
+  const recovered = recovery === 'none' ? {} : { recovered: true }
+  if (scenario === 'long') {
+    const parsed = JSON.parse(modelOutput)
+    assert.deepEqual({ ...parsed, preview: undefined }, {
+      truncated: true, originalCharacters: JSON.stringify(visibleResult).length,
+      observations: [observationRef(receipt.idempotencyKey, result.value)], read: 'observations.read',
+      preview: undefined, receipt, ...recovered,
+    })
+    assert.ok(JSON.stringify(visibleResult).startsWith(parsed.preview))
+    assert.ok(parsed.preview.length > 0)
+  } else {
+    assert.deepEqual(JSON.parse(modelOutput), { ...visibleResult, receipt, ...recovered })
+    if (scenario === 'short') {
+      assert.equal(modelOutput.split('unique-read-value').length - 1, 1)
+      assert.equal(evidenceSeparated, true)
+    }
+  }
 })
 
 it('preserves unknown action outcomes in public events and model receipts', async () => {

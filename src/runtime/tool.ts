@@ -1,8 +1,9 @@
 /**
- * Parsing and bounding of the single `ipython` tool call.
+ * Parsing and bounding of model tool calls.
  */
 import { MAX_TOOL_OUTPUT_CHARS } from '../protocol/constants.js'
-import type { ObservationRef } from '../context/observations.js'
+import { receiptReferences, type ObservationRef } from '../context/observations.js'
+import type { HostActionResult } from '../protocol/types.js'
 
 /**
  * Parse the model-emitted tool arguments strictly: a JSON object with exactly
@@ -49,4 +50,14 @@ export function boundedToolOutput(value: unknown, maxChars: number = MAX_TOOL_OU
     ...(observations.length > references.length ? { omittedReferences: observations.length - references.length } : {}) }
   // JSON escapes the preview again. Reserve its worst-case expansion and a possible split surrogate.
   return JSON.stringify({ ...metadata, preview: serialized.slice(0, Math.max(0, Math.floor((maxChars - JSON.stringify(metadata).length - 80) / 2))) })
+}
+
+/** Keep the canonical receipt outside any truncated preview and the business value. */
+export function boundedDirectToolOutput(receipt: { action: string; idempotencyKey: string; result: HostActionResult },
+  maxChars: number = MAX_TOOL_OUTPUT_CHARS, recovery?: { recovered: true }): string {
+  const { evidence: _evidence, ...result } = receipt.result
+  const metadata = { receipt: { action: receipt.action, idempotencyKey: receipt.idempotencyKey }, ...recovery }
+  const reserved = JSON.stringify(metadata).length - 1
+  const output = boundedToolOutput(result, maxChars - reserved, receiptReferences([receipt]))
+  return JSON.stringify({ ...JSON.parse(output), ...metadata })
 }

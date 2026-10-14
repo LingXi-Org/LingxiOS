@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { boundedToolOutput, parseIPythonArguments } from '../src/runtime/tool.js'
+import { boundedDirectToolOutput, boundedToolOutput, parseIPythonArguments } from '../src/runtime/tool.js'
 
 describe('parseIPythonArguments', () => {
   it('accepts a strict single-code object', () => {
@@ -45,5 +45,26 @@ describe('boundedToolOutput', () => {
 
   it('handles undefined without corrupting JSON', () => {
     assert.equal(boundedToolOutput(undefined), 'null')
+  })
+})
+
+describe('boundedDirectToolOutput', () => {
+  for (const limit of [512, 8000]) it(`reserves complete receipt identity within ${limit} characters`, () => {
+    const receipt = { action: 'documents.read', idempotencyKey: JSON.stringify(['run', 'cell-\\"😀', 0]) }
+    const result = { ok: true, value: { text: '\\"😀'.repeat(5000) },
+      evidence: [{ sourceId: 'private', sourceVersion: '1', chunkId: 'chunk', title: 'Private', excerpt: 'private-evidence' }] }
+    const output = boundedDirectToolOutput({ ...receipt, result }, limit)
+    const parsed = JSON.parse(output)
+    assert.deepEqual(parsed.receipt, receipt)
+    assert.equal(parsed.truncated, true)
+    assert.ok(output.length <= limit)
+    assert.doesNotMatch(output, /private-evidence|"evidence"/)
+  })
+
+  it('preserves the whole result value without interpreting nested receipt-looking fields', () => {
+    const receipt = { action: 'documents.create', idempotencyKey: '["run","canonical",0]' }
+    const result = { ok: true, executionState: 'succeeded' as const,
+      value: { result: { id: 'document' }, state: { revision: 1 }, receipt: { idempotencyKey: 'untrusted-content' } } }
+    assert.deepEqual(JSON.parse(boundedDirectToolOutput({ ...receipt, result })), { ...result, receipt })
   })
 })
