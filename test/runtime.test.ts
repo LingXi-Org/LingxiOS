@@ -222,7 +222,11 @@ for (const assessmentStatus of ['partial', 'satisfied'] as const) it(`commits on
     commitResult: async (_work, message) => { committed = message }, completeWork: async () => {}, yieldWork: async () => {} }
   const usage = { available: false, inputTokens: 0, outputTokens: 0 }
   const model: ModelDriver = { compact: async () => { throw new Error('unexpected compaction') },
-    structured: async () => { reviews++; return { value: { missing: [{ quote: 'independently verify', reason: 'Peer verification is still pending' }] }, model: 'reviewer', usage } },
+    structured: async request => {
+      reviews++
+      if (Array.isArray((request.input as { findings?: unknown }).findings)) return { value: { deferred: [] }, model: 'reviewer', usage }
+      return { value: { missing: [{ quote: 'independently verify', reason: 'Peer verification is still pending' }] }, model: 'reviewer', usage }
+    },
     run: async () => { turns++; return { text: '', output: [], usage, finalCandidate: JSON.stringify({
       body: '@b Please independently verify the calculation.', status: assessmentStatus,
       gaps: assessmentStatus === 'partial' ? ['Peer verification is pending'] : [],
@@ -231,7 +235,7 @@ for (const assessmentStatus of ['partial', 'satisfied'] as const) it(`commits on
   }
   await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected kernel') } }).runWork(work)
   assert.equal(turns, 1)
-  assert.equal(reviews, 1)
+  assert.equal(reviews, 2)
   assert.equal(committed?.body, '@b Please independently verify the calculation.')
   assert.equal(committed?.envelope.goalOutcome.status, 'partial')
   assert.match(JSON.stringify(committed?.envelope.goalOutcome.gaps), /Peer verification is still pending/)
