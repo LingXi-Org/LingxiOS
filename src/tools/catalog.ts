@@ -43,12 +43,17 @@ const taskDefinitions: Array<ToolDefinition & { parse(args: Record<string, unkno
     effect: 'transaction', approval: false, parse: args => {
       if (typeof args['question'] !== 'string' || !args['question'].trim() || args['question'].length > 4000) throw new Error('task.ask requires one non-empty question of at most 4000 characters')
     } },
-  { name: 'task__check_receipt', action: 'task.check_receipt', description: 'Compare a recorded action receipt with the complete expected value. Copy idempotencyKey and action exactly from the tool output receipt.idempotencyKey and receipt.action. Set expected to the complete original result.value (the tool output value), not the output wrapper, a subset, or value.result. For truncated values, read the full observation first. This does not refresh the resource.',
-    parameters: { type: 'object', properties: { idempotencyKey: text, action: text, expected: {} },
-      required: ['idempotencyKey','action','expected'], additionalProperties: false }, effect: 'read', approval: false, parse: args => {
+  { name: 'task__check_receipt', action: 'task.check_receipt', description: 'Compare a recorded action receipt. Prefer copying idempotencyKey, action and expectedSha256 exactly from the tool output receipt.idempotencyKey, receipt.action and receipt.sha256, including when the value is truncated. Provide exactly one of expectedSha256 or expected. The alternative expected must be the complete original result.value, including any nested result and state fields. This checks only the recorded value; it does not refresh the resource or verify overall goal completion.',
+    parameters: { type: 'object', properties: { idempotencyKey: text, action: text, expected: {},
+      expectedSha256: { type: 'string', pattern: '^[a-f0-9]{64}$' } },
+      required: ['idempotencyKey','action'], additionalProperties: false }, effect: 'read', approval: false, parse: args => {
+      const hasExpected = Object.hasOwn(args, 'expected')
       if (typeof args['idempotencyKey'] !== 'string' || !args['idempotencyKey'] || args['idempotencyKey'].length > 4000
         || typeof args['action'] !== 'string' || !args['action'] || args['action'].length > 4000 || args['action'].startsWith('task.')
-        || args['expected'] === undefined) throw new Error('task.check_receipt requires idempotencyKey, a business action and its complete expected value')
+        || hasExpected === Object.hasOwn(args, 'expectedSha256')
+        || (hasExpected ? args['expected'] === undefined : typeof args['expectedSha256'] !== 'string' || !/^[a-f0-9]{64}$/.test(args['expectedSha256']))) {
+        throw new Error('task.check_receipt requires idempotencyKey, a business action and exactly one complete expected value or expectedSha256')
+      }
     } },
   { name: 'task__check_resource', action: 'task.check_resource', description: 'Read authorized resource fields now and compare them to expected values.',
     parameters: { type: 'object', properties: { action: text, args: { type: 'object' }, expected: { type: 'object', minProperties: 1, maxProperties: 16 } },

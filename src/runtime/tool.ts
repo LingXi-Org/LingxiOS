@@ -2,7 +2,7 @@
  * Parsing and bounding of model tool calls.
  */
 import { MAX_TOOL_OUTPUT_CHARS } from '../protocol/constants.js'
-import { receiptReferences, type ObservationRef } from '../context/observations.js'
+import { observationRef, receiptReferences, type ObservationRef } from '../context/observations.js'
 import type { HostActionResult } from '../protocol/types.js'
 
 /**
@@ -56,7 +56,9 @@ export function boundedToolOutput(value: unknown, maxChars: number = MAX_TOOL_OU
 export function boundedDirectToolOutput(receipt: { action: string; idempotencyKey: string; result: HostActionResult },
   maxChars: number = MAX_TOOL_OUTPUT_CHARS, recovery?: { recovered: true }): string {
   const { evidence: _evidence, ...result } = receipt.result
-  const metadata = { receipt: { action: receipt.action, idempotencyKey: receipt.idempotencyKey }, ...recovery }
+  const observed = result.ok && result.value !== undefined && result.approval === undefined && result.directive === undefined && result.executionState !== 'unknown'
+  const metadata = { receipt: { action: receipt.action, idempotencyKey: receipt.idempotencyKey,
+    ...(observed ? { sha256: observationRef(receipt.idempotencyKey, JSON.parse(JSON.stringify(result.value))).sha256 } : {}) }, ...recovery }
   const reserved = JSON.stringify(metadata).length - 1
   const output = boundedToolOutput(result, maxChars - reserved, receiptReferences([receipt]))
   return JSON.stringify({ ...JSON.parse(output), ...metadata })

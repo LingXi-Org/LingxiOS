@@ -297,7 +297,7 @@ it('reviews complex candidates against original requirements, bounds corrections
         assert.equal((request.input as { originalText: string }).originalText, originalText)
         const observations = (request.input as { resourceChecks: typeof resourceChecks }).resourceChecks
         assert.deepEqual(observations[0], resourceChecks[0])
-        assert.equal(observations.length, mode === 'steered' ? 2 : reviews + 1)
+        assert.equal(observations.length, mode === 'steered' || mode === 'invalid' ? 2 : reviews + 1)
         assert.deepEqual(observations.at(-1)?.result.value.observed, { cost: 20 })
         assert.doesNotMatch(request.instructions, /Mission/)
         return { value: { missing: (mode === 'fixed' || mode === 'steered') && reviews === 2 ? []
@@ -307,7 +307,7 @@ it('reviews complex candidates against original requirements, bounds corrections
     await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected kernel') } }).runWork(work)
     assert.equal(completion?.status, 'completed')
     assert.deepEqual(deltas, [body])
-    assert.equal(reviews, mode === 'exhausted' ? 3 : mode === 'fixed' || mode === 'steered' ? 2 : 1)
+    assert.equal(reviews, mode === 'exhausted' ? 3 : 2)
     if (mode === 'fixed') {
       assert.equal(completion?.goalOutcome?.status, 'partial')
       assert.equal(body, 'Comparison with costs.')
@@ -581,7 +581,8 @@ for (const recovery of ['none', 'step', 'cell'] as const) for (const scenario of
     ? { calls: 2, persisted: true, delivered: true, executions: 1 }
     : { calls: 1, persisted: false, delivered: true, executions: 0 })
   assert.ok(executed)
-  const receipt = { action: 'data.read', idempotencyKey: actionKeyOf({ runId: work.id, cellId: executed.cellId, callIndex: 0 }) }
+  const receipt = { action: 'data.read', idempotencyKey: actionKeyOf({ runId: work.id, cellId: executed.cellId, callIndex: 0 }),
+    ...(result.ok ? { sha256: observationRef(executed.idempotencyKey, result.value).sha256 } : {}) }
   assert.notEqual(receipt.idempotencyKey, 'read', 'provider call IDs are not canonical receipt keys')
   assert.ok(modelOutput.length <= MAX_TOOL_OUTPUT_CHARS)
   assert.doesNotMatch(modelOutput, /private-evidence-excerpt|"evidence"/)

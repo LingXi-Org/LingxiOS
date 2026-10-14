@@ -1,8 +1,10 @@
 import { MemoryStepStore } from '../src/control-plane/steps.js'
 import { MemoryModelBudgetStore } from '../src/control-plane/memory-store.js'
 import { snapshotEvidence } from '../src/context/evidence.js'
-import type { AssistantMessage, ModelItem } from '../src/protocol/types.js'
+import type { AssistantMessage, HostActionResult, ModelItem } from '../src/protocol/types.js'
 import { createTaskContract } from '../src/context/task-contract.js'
+import { observationRef } from '../src/context/observations.js'
+import type { ActionIntent } from '../src/control-plane/stores.js'
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { ControlPlaneServer, ControlPlaneService } from '../src/control-plane/http-server.js'
@@ -28,6 +30,65 @@ it('retries truncated, failed, and oversized successful response bodies', async 
     fetchImpl: async () => { attempts++; return Response.json({ revision: 2 }) } })
   await assert.rejects(limited.claimWork(), /exceeds 2 bytes/)
   assert.equal(attempts, 3)
+})
+
+it('keeps receipt digest checks scoped to settled values and the complete request identity', async () => {
+  const actions = new MemoryActionLedger()
+  const service = new ControlPlaneService({ modelBudgets: new MemoryModelBudgetStore(), steps: new MemoryStepStore(),
+    work: new MemoryWorkStore(), sessions: new MemorySessionStore(), events: new MemoryEventStore(), actions,
+    contextProvider: { loadContext: async () => { throw new Error('unexpected') } },
+    capabilityResolver: { resolve: async () => [{ name: 'task' }, { name: 'resource' }] },
+    actionExecutor: { prepare: async () => {}, execute: async () => { throw new Error('unexpected') } },
+    delivery: { onEvent: async () => {}, deliverMessage: async () => {} },
+  })
+  await service.enqueue({ id: 'digest', tenantId: 't', agentId: 'a', principalId: 'u', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm' })
+  const work = (await service.claim('worker'))!
+  const expected = { id: 'r', version: 2 }
+  const unobserved: HostActionResult[] = [
+    { ok: false, executionState: 'rejected', value: expected },
+    { ok: true, executionState: 'unknown', value: expected },
+    { ok: true, value: expected, approval: { id: 'approval', status: 'PENDING' } },
+    { ok: true, value: expected, directive: { type: 'defer', reason: 'user' } },
+    { ok: true },
+  ]
+  const identities: Partial<ActionIntent>[] = [
+    { workId: 'other' }, { tenantId: 'other' }, { principalId: 'other' }, { agentId: 'other' },
+    { sessionId: 'other' }, { threadId: 'other' }, { requestVersion: 2 },
+  ]
+  for (const [index, scenario] of [...unobserved.map(result => ({ result, identity: {} })),
+    ...identities.map(identity => ({ result: { ok: true, value: expected }, identity }))].entries()) {
+    const idempotencyKey = JSON.stringify([work.id, `receipt-${index}`, 0])
+    await actions.reserve(idempotencyKey, idempotencyKey, {
+      workId: work.id, tenantId: work.tenantId, principalId: 'u', agentId: work.agentId,
+      sessionId: work.sessionId, threadId: null, requestVersion: 1, ...scenario.identity,
+      action: { runId: work.id, cellId: `receipt-${index}`, callIndex: 0, idempotencyKey, action: 'resource.write', args: {} },
+    })
+    await actions.record(idempotencyKey, scenario.result)
+    const result = await service.executeAction(work, {
+      runId: work.id, cellId: `check-${index}`, callIndex: 0, idempotencyKey: JSON.stringify([work.id, `check-${index}`, 0]),
+      action: 'task.check_receipt', args: { idempotencyKey, action: 'resource.write', expectedSha256: observationRef(idempotencyKey, expected).sha256 },
+    })
+    if (index < unobserved.length) assert.deepEqual(result, { ok: true, value: {
+      scope: 'recorded_action_result', requestVersion: 1, idempotencyKey, action: 'resource.write', status: 'not_observed',
+      limitation: 'This checks a recorded action result, not current resource state or overall goal completion.',
+    } })
+    else assert.equal(result.ok, false)
+  }
+  const value = { date: new Date('2026-10-14T00:00:00Z'), nested: { omitted: undefined, nonfinite: NaN }, list: [undefined, Infinity] }
+  const persisted = JSON.parse(JSON.stringify(value))
+  for (const [index, stored] of [value, persisted].entries()) {
+    const idempotencyKey = JSON.stringify([work.id, `json-${index}`, 0])
+    await actions.reserve(idempotencyKey, idempotencyKey, {
+      workId: work.id, tenantId: work.tenantId, principalId: 'u', agentId: work.agentId, sessionId: work.sessionId, threadId: null, requestVersion: 1,
+      action: { runId: work.id, cellId: `json-${index}`, callIndex: 0, idempotencyKey, action: 'resource.write', args: {} },
+    })
+    await actions.record(idempotencyKey, { ok: true, value: stored })
+    const result = await service.executeAction(work, {
+      runId: work.id, cellId: `check-json-${index}`, callIndex: 0, idempotencyKey: JSON.stringify([work.id, `check-json-${index}`, 0]),
+      action: 'task.check_receipt', args: { idempotencyKey, action: 'resource.write', expectedSha256: observationRef(idempotencyKey, persisted).sha256 },
+    })
+    assert.equal((result.value as Record<string, unknown>)['status'], 'pass')
+  }
 })
 
 it('preserves goal outcomes and enforces session leases over real HTTP', async () => {
@@ -150,10 +211,25 @@ it('preserves goal outcomes and enforces session leases over real HTTP', async (
         ok: true, value: { ...(checked.value as Record<string, unknown>), status: 'fail' },
       })
     }
+    const digestCheck = { idempotencyKey: check.idempotencyKey, action: check.action,
+      expectedSha256: observationRef(check.idempotencyKey, { saved: true, version: 2, id: 'r' }).sha256 }
+    const digestResult = await checkReceipt(digestCheck)
+    assert.deepEqual(digestResult, checked)
+    for (const expectedSha256 of ['0'.repeat(64), observationRef(check.idempotencyKey, { id: 'r' }).sha256]) {
+      assert.deepEqual(await checkReceipt({ ...digestCheck, expectedSha256 }), {
+        ok: true, value: { ...(checked.value as Record<string, unknown>), status: 'fail' },
+      })
+    }
+    for (const invalid of [
+      { ...digestCheck, expectedSha256: 'bad-hash' }, { ...digestCheck, expected: check.expected },
+      { idempotencyKey: check.idempotencyKey, action: check.action },
+    ]) assert.equal((await checkReceipt(invalid)).ok, false)
+    assert.equal((await checkReceipt({ ...digestCheck, action: 'resource.read' })).ok, false)
     assert.equal((await checkReceipt({ ...check, action: 'resource.read' })).ok, false)
     assert.equal((await checkReceipt({ ...check, idempotencyKey: JSON.stringify(['other-work', 'business', 0]) })).ok, false)
     resourceGranted = false
     assert.deepEqual(await checkReceipt(check), { ok: false, error: 'capability denied: receipt action is not granted to this work item' })
+    assert.deepEqual(await checkReceipt(digestCheck), { ok: false, error: 'capability denied: receipt action is not granted to this work item' })
     const replayDenied = await client.executeAction(work, { runId: work.id, cellId: 'check-0', callIndex: 0,
       idempotencyKey: JSON.stringify([work.id, 'check-0', 0]), action: 'task.check_receipt', args: check })
     assert.equal(replayDenied.ok, false)
@@ -199,6 +275,7 @@ it('preserves goal outcomes and enforces session leases over real HTTP', async (
       revisions: [{ ...revisions[0]!, attachments: [{ ...attachment, size: -1 }] }] } }), /invalid request attachments/)
     await client.saveSession(work, revised)
     assert.equal((await checkReceipt(check)).ok, false)
+    assert.equal((await checkReceipt(digestCheck)).ok, false)
     assert.deepEqual((await client.loadSession(work, session.key))?.request, revised.request)
     const contract = createTaskContract('Original', 2, { deliverables: ['Answer'], constraints: [], actions: [], acceptance: ['Complete'] })
     await assert.rejects(client.saveSession(work, { ...revised, request: { ...revised.request, contract: { ...contract, originalInputSha256: 'forged' } } }), /invalid request task contract/)

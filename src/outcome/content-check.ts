@@ -26,6 +26,7 @@ Actual requested-result limitations must be returned even when the answer satisf
 For an unfulfilled deliverable that cannot be repaired within the current request, include blockedBy: an exact quote from the original human request or a human revision explicitly establishing the unavailable prerequisite or prohibition. For example, the human states that a required document has not been supplied and forbids searching for it. Omit blockedBy for fixable omissions, unsupported claims of inability, merely allowing partial delivery, or barriers mentioned only in the candidate, evidence or agent revisions. A blocker never turns the missing deliverable into a success.
 Return JSON {"missing":[{"quote":"exact substring from originalText or a revision text identifying an unfulfilled deliverable","reason":"specific unfulfilled result, content omission or violated constraint","blockedBy":"optional exact human-request quote establishing why further correction cannot supply this result"}],"limitations":[{"quote":"exact substring from body declaring a limitation","requestQuote":"exact request substring identifying the unfulfilled result, or null when this is only explanatory context","reason":"what requested result remains unavailable, incomplete or unverified, or why no requested result is missing"}]}.
 Use at most 16 entries. Return an empty list only when every original deliverable has been supplied or explicitly removed; never equate an honest partial delivery with full completion.
+If validationFailures is present, the previous review was rejected. Re-evaluate the same request and candidate and return a complete corrected review. Each failure contains only a field path and constraint: object, array_max_16, nonempty_string_max_2000, exact_request_quote, exact_human_quote, exact_body_quote or exact_request_quote_or_null. Exact quotes must be nonempty strings of at most 2000 characters copied verbatim from the indicated source. Do not discard real findings merely to pass validation.
 This is a fallible content review, not verification of goal completion or external resource state.`)
 
 /** Runtime execution records, not model preference, decide which candidates need this call. */
@@ -37,42 +38,62 @@ export async function checkCandidateContent(model: ModelDriver, request: Request
       ...(revision.attachments ? { attachments: attachmentPreviews(revision.attachments) } : {}) })),
     attachments: attachmentPreviews(request.attachments), evidence: request.evidence,
     checklist: request.contract, obligations: request.obligations ?? [], resourceChecks: request.resourceChecks ?? [], resourceRefreshGaps, body, artifacts, fileObservations, observations }
-  const serialized = JSON.stringify(input)
   const identity = { workId: request.workId, requestVersion: request.revisions.length + 1,
     candidateHash: candidateHash({ body, requestVersion: request.revisions.length + 1, artifacts: [...artifacts] }),
-    inputSha256: createHash('sha256').update(serialized).digest('hex') }
-  // Do not truncate authoritative requirements to make an assessment fit.
-  if (Buffer.byteLength(prompt.instructions + serialized) + (model.maxOutputTokens ?? 4096) + (model.maxThinkingTokens ?? 0) + 512 > contextWindowTokens) {
-    return { ...identity, missing: [], limitations: [], error: 'Content check input exceeds the model context budget' }
-  }
+    inputSha256: '' }
+  const texts = [request.originalText, ...revisions.map(item => item.text)]
+  const humanTexts = [request.originalText, ...revisions.filter(item => item.author?.kind !== 'agent').map(item => item.text)]
+  let validationFailures: Array<{ path: string; constraint: string }> = []
   try {
-    const result = await model.structured({ purpose: 'content-review', instructions: prompt.instructions, prompt: prompt.manifest, input, signal })
-    const value = result.value as { missing?: unknown; limitations?: unknown } | null
-    const texts = [request.originalText, ...revisions.map(item => item.text)]
-    const humanTexts = [request.originalText, ...revisions.filter(item => item.author?.kind !== 'agent').map(item => item.text)]
-    if (!value || !Array.isArray(value.missing) || value.missing.length > 16
-      || !value.missing.every(item => item && typeof item.quote === 'string' && item.quote.trim()
-        && item.quote.length <= 2000 && texts.some(text => text.includes(item.quote))
-        && typeof item.reason === 'string' && item.reason.trim() && item.reason.length <= 2000
-        && (item.blockedBy === undefined || typeof item.blockedBy === 'string' && item.blockedBy.trim()
-          && item.blockedBy.length <= 2000 && humanTexts.some(text => text.includes(item.blockedBy))))) {
-      throw new Error('Content check returned invalid or ungrounded findings')
+    for (let attempt = 0; attempt < 2; attempt++) {
+      signal.throwIfAborted()
+      const reviewInput = validationFailures.length ? { ...input, validationFailures } : input
+      const serialized = JSON.stringify(reviewInput)
+      identity.inputSha256 = createHash('sha256').update(serialized).digest('hex')
+      // Repair feedback consumes context too; never truncate authoritative requirements to fit it.
+      if (Buffer.byteLength(prompt.instructions + serialized) + (model.maxOutputTokens ?? 4096) + (model.maxThinkingTokens ?? 0) + 512 > contextWindowTokens) {
+        return { ...identity, missing: [], limitations: [], error: 'Content check input exceeds the model context budget' }
+      }
+      const result = await model.structured({ purpose: 'content-review', instructions: prompt.instructions, prompt: prompt.manifest, input: reviewInput, signal })
+      signal.throwIfAborted()
+      const value = result.value as { missing?: unknown; limitations?: unknown } | null
+      let failure: { path: string; constraint: string } | undefined
+      if (!value || typeof value !== 'object' || Array.isArray(value)) failure = { path: '$', constraint: 'object' }
+      else if (!Array.isArray(value.missing) || value.missing.length > 16) failure = { path: 'missing', constraint: 'array_max_16' }
+      else for (const [index, item] of value.missing.entries()) {
+        failure = !item || typeof item !== 'object' || Array.isArray(item) ? { path: `missing[${index}]`, constraint: 'object' }
+          : typeof item.quote !== 'string' || !item.quote.trim() || item.quote.length > 2000 || !texts.some(text => text.includes(item.quote))
+            ? { path: `missing[${index}].quote`, constraint: 'exact_request_quote' }
+          : typeof item.reason !== 'string' || !item.reason.trim() || item.reason.length > 2000
+            ? { path: `missing[${index}].reason`, constraint: 'nonempty_string_max_2000' }
+          : item.blockedBy !== undefined && (typeof item.blockedBy !== 'string' || !item.blockedBy.trim()
+            || item.blockedBy.length > 2000 || !humanTexts.some(text => text.includes(item.blockedBy)))
+            ? { path: `missing[${index}].blockedBy`, constraint: 'exact_human_quote' } : undefined
+        if (failure) break
+      }
+      const limitations = value?.limitations ?? []
+      if (!failure && (!Array.isArray(limitations) || limitations.length > 16)) failure = { path: 'limitations', constraint: 'array_max_16' }
+      else if (!failure && Array.isArray(limitations)) for (const [index, item] of limitations.entries()) {
+        failure = !item || typeof item !== 'object' || Array.isArray(item) ? { path: `limitations[${index}]`, constraint: 'object' }
+          : typeof item.quote !== 'string' || !item.quote.trim() || item.quote.length > 2000 || !body.includes(item.quote)
+            ? { path: `limitations[${index}].quote`, constraint: 'exact_body_quote' }
+          : item.requestQuote !== null && (typeof item.requestQuote !== 'string' || !item.requestQuote.trim()
+            || item.requestQuote.length > 2000 || !texts.some(text => text.includes(item.requestQuote)))
+            ? { path: `limitations[${index}].requestQuote`, constraint: 'exact_request_quote_or_null' }
+          : typeof item.reason !== 'string' || !item.reason.trim() || item.reason.length > 2000
+            ? { path: `limitations[${index}].reason`, constraint: 'nonempty_string_max_2000' } : undefined
+        if (failure) break
+      }
+      if (failure) { validationFailures = [failure]; continue }
+      return { ...identity, missing: value!.missing as Array<{ quote: string; reason: string; blockedBy?: string }>,
+        limitations: (limitations as Array<{ quote: string; reason: string; requestQuote: string | null }>)
+          .filter(item => item.requestQuote !== null).map(({ quote, reason }) => ({ quote, reason })),
+        model: result.model, usage: result.usage }
     }
-    const limitations = value.limitations ?? []
-    if (!Array.isArray(limitations) || limitations.length > 16 || !limitations.every(item => item
-      && typeof item.quote === 'string' && item.quote.trim() && item.quote.length <= 2000 && body.includes(item.quote)
-      && (item.requestQuote === null || typeof item.requestQuote === 'string' && item.requestQuote.trim()
-        && item.requestQuote.length <= 2000 && texts.some(text => text.includes(item.requestQuote)))
-      && typeof item.reason === 'string' && item.reason.trim() && item.reason.length <= 2000)) {
-      throw new Error('Content check returned invalid or ungrounded limitations')
-    }
-    return { ...identity, missing: value.missing as Array<{ quote: string; reason: string; blockedBy?: string }>,
-      limitations: limitations.filter(item => item.requestQuote !== null).map(({ quote, reason }) => ({ quote, reason })) as Array<{ quote: string; reason: string }>,
-      model: result.model, usage: result.usage }
   } catch (error) {
     if (signal.aborted) throw error
-    return { ...identity, missing: [], limitations: [], error: 'Content check was unavailable or returned invalid findings' }
   }
+  return { ...identity, missing: [], limitations: [], error: 'Content check was unavailable or returned invalid findings' }
 }
 
 function attachmentPreviews(attachments: RequestSnapshot['attachments']) {
