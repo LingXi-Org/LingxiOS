@@ -6,6 +6,7 @@ import { readRequestAttachment } from '../context/request.js'
 import { NoEffectError } from '../tools/definition.js'
 import { permitsTool, executionMode } from '../runtime/execution-policy.js'
 import { canonicalJson } from '../context/compiler.js'
+import { observationRef } from '../context/observations.js'
 import { toolContractHash } from '../tools/contracts.js'
 import { snapshotObligations } from '../outcome/obligations.js'
 import { modelPricing } from '../model/execution.js'
@@ -620,7 +621,7 @@ export class ControlPlaneService {
         const contract = createTaskContract(request.originalText, request.revisions.length + 1, action.args)
         result = { ok: true, value: { status: 'draft_validated', requestVersion: contract.requestVersion }, directive: { type: 'task_contract', data: { ...contract } } }
       } else if (action.action === 'task.check_receipt') {
-        const { idempotencyKey, action: expectedAction, expected } = action.args
+        const { idempotencyKey, action: expectedAction, expected, expectedSha256 } = action.args
         const intent = await this.deps.actions.findIntent(idempotencyKey as string)
         if (!intent || intent.workId !== work.id || intent.tenantId !== work.tenantId
           || intent.principalId !== (work.principalId ?? null) || intent.agentId !== work.agentId
@@ -630,9 +631,11 @@ export class ControlPlaneService {
         }
         const receipt = await this.deps.actions.find(idempotencyKey as string)
         const observed = receipt?.ok === true && receipt.executionState !== 'unknown'
-          && receipt.directive === undefined && receipt.value !== undefined
+          && receipt.approval === undefined && receipt.directive === undefined && receipt.value !== undefined
+        const matches = observed && (expectedSha256 === undefined ? isDeepStrictEqual(receipt.value, expected)
+          : observationRef(idempotencyKey as string, JSON.parse(JSON.stringify(receipt.value))).sha256 === expectedSha256)
         result = { ok: true, value: { scope: 'recorded_action_result', requestVersion, idempotencyKey,
-          action: expectedAction, status: !observed ? 'not_observed' : isDeepStrictEqual(receipt.value, expected) ? 'pass' : 'fail',
+          action: expectedAction, status: !observed ? 'not_observed' : matches ? 'pass' : 'fail',
           ...(observed ? { observed: receipt.value } : {}),
           limitation: 'This checks a recorded action result, not current resource state or overall goal completion.' } }
       } else if (action.action === 'task.check_resource') {
