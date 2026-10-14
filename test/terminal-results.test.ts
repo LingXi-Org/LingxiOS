@@ -34,7 +34,7 @@ for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume'
       emitEvent: async (_work, event) => { events.push(event) },
       commitResult: async (_work, message) => { messages.push(message) },
       completeWork: async (_work, value) => { completion = value }, yieldWork: async () => {} }
-    const model: ModelDriver = { compact: unexpected, structured: async () => ({ value: { missing: ['review','request_blocked'].includes(mode)
+    const model: ModelDriver = { compact: unexpected, structured: async request => ({ value: Array.isArray((request.input as { findings?: unknown }).findings) ? { deferred: [] } : { missing: ['review','request_blocked'].includes(mode)
       ? [{ quote: 'second parts.', reason: 'The requested result remains unavailable despite the disclosed limitation.',
         ...(mode === 'request_blocked' ? { blockedBy: 'The second result has not been supplied; do not search for it.' } : {}) }] : [],
       limitations: mode === 'declared_partial' ? [{ quote: 'The second part is unavailable.', requestQuote: 'second parts.', reason: 'The second result remains unavailable.' }]

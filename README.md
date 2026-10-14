@@ -11,7 +11,7 @@ The package has four public entries: `@lyyzka/lingxios`, `@lyyzka/lingxios/worke
 ## Install
 
 ```sh
-npm install @lyyzka/lingxios@3.3.10
+npm install @lyyzka/lingxios@3.3.11
 ```
 
 Configure the GitHub Packages registry for the `@lyyzka` scope before installing:

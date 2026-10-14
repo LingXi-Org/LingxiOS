@@ -41,12 +41,16 @@ it('assembles the public app through HTTP model and Python, persisting results a
     req.on('end', async () => {
       const payload = JSON.parse(Buffer.concat(buffers).toString('utf8'))
       if (!payload.stream && payload.response_format?.type === 'json_object') {
-        contentChecks++
-        assert.match(payload.messages[0].content, /Check a candidate delivery/)
-        res.writeHead(200, { 'content-type': 'application/json' })
         const input = JSON.parse(payload.messages.at(-1).content)
+        const deferral = Array.isArray(input.findings)
+        if (deferral) assert.match(payload.messages[0].content, /Decide only whether each proposed content-review finding/)
+        else {
+          contentChecks++
+          assert.match(payload.messages[0].content, /Check a candidate delivery/)
+        }
+        res.writeHead(200, { 'content-type': 'application/json' })
         const missing = input.revisions?.length ? [{ quote: input.revisions.at(-1).text, reason: 'Candidate ignores the revision.' }] : []
-        res.end(JSON.stringify({ model: 'test', choices: [{ message: { content: JSON.stringify({ missing }) }, finish_reason: 'stop' }] }))
+        res.end(JSON.stringify({ model: 'test', choices: [{ message: { content: JSON.stringify(deferral ? { deferred: [] } : { missing }) }, finish_reason: 'stop' }] }))
         return
       }
       requests.push(payload)

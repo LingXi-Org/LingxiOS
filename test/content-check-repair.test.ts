@@ -113,7 +113,7 @@ for (const [label, value, failure] of [
   assert.deepEqual({ missing: result.missing, limitations: result.limitations }, valid)
 })
 
-it('preserves grounded findings and explanatory null request quotes without retrying', async () => {
+it('preserves grounded blockers and explanatory null request quotes without a scope review', async () => {
   const value = { missing: [{ quote: 'Prepare a draft.', reason: 'Still incomplete.', blockedBy: 'Do not publish without my confirmation.' }],
     limitations: [{ quote: 'Publication awaits your confirmation.', requestQuote: null, reason: 'Future publication needs confirmation.' }] }
   const { model, calls } = fixture([value])

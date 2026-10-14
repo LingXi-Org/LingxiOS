@@ -293,6 +293,7 @@ it('reviews complex candidates against original requirements, bounds corrections
         }), usage }
       },
       structured: async request => {
+        if (Array.isArray((request.input as { findings?: unknown }).findings)) return { value: { deferred: [] }, model: 'fixture', usage }
         reviews++
         assert.equal((request.input as { originalText: string }).originalText, originalText)
         const observations = (request.input as { resourceChecks: typeof resourceChecks }).resourceChecks

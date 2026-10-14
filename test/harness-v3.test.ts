@@ -77,6 +77,7 @@ it('independently reviews omitted requirements without relying on a model-author
   const result = await fixture('Name both options and include their costs.', { compact: unexpected,
     run: async () => ({ text: ++calls === 1 ? 'A and B.' : 'A costs 10; B costs 20.', output: [], usage }),
     structured: async request => {
+      if (Array.isArray((request.input as { findings?: unknown }).findings)) return { model: 'reviewer', value: { deferred: [] }, usage }
       reviews++
       assert.equal(request.prompt?.purpose, 'content-review')
       assert.equal(request.prompt?.instructionsSha256, textSha256(request.instructions))
@@ -103,7 +104,10 @@ it('reviews an omitted file even when the model executes no tool', async () => {
   let reviews = 0
   const result = await fixture('Create a report file.', { compact: unexpected,
     run: async () => ({ text: 'The report is ready.', output: [], usage }),
-    structured: async () => { reviews++; return { model: 'reviewer', value: { missing: [{ quote: 'report file', reason: 'No file was created or attached.' }] }, usage } } })
+    structured: async request => {
+      if (Array.isArray((request.input as { findings?: unknown }).findings)) return { model: 'reviewer', value: { deferred: [] }, usage }
+      reviews++; return { model: 'reviewer', value: { missing: [{ quote: 'report file', reason: 'No file was created or attached.' }] }, usage }
+    } })
   assert.equal(reviews, 3)
   assert.notEqual(result.message?.envelope.goalOutcome.status, 'satisfied')
 })
