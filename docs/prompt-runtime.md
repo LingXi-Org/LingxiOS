@@ -45,6 +45,8 @@ Background compaction starts at the smaller of 60% of the configured model windo
 
 When `task.read_evidence` is available, evidence exceeding 32,000 UTF-8 bytes becomes a bounded catalogue in model context. The tool reads exact text ranges and citation markers from the unchanged current-request snapshot, with authorization checked again. Catalogue titles alone never establish support for a claim. Without that tool, hosts retain the full evidence projection.
 
+Delegated work can initialize its evidence from the exact durable parent snapshot after source authorization is rechecked. New child evidence still requires the child's own recorded, authorized read receipts.
+
 Content review receives the conversation data supplied to generation, before the candidate is appended, so follow-up answers can be checked against earlier discussion. Large evidence snapshots contribute their exact cited excerpts and an omitted-source count; the reviewer also sees recorded reads. Historical assistant claims and summaries never prove current side effects, and authoritative requests are never truncated to fit a review.
 
 Prefix metadata describes reusable bytes, not a guaranteed provider cache hit. It does not establish tenant isolation at a provider or control provider cache retention. UTF-8 byte counts are conservative diagnostics, not measured token usage. This implementation has no custom cache service, tokenizer dependency or cache-clearing API.

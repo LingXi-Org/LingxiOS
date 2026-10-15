@@ -81,8 +81,35 @@ it('records attachment range citations and reauthorizes snapshots before reads, 
       idempotencyKey: JSON.stringify([work.id,`bad-${index}`,0]), args: { ...evidenceRead.args, index } })
     assert.equal(denied.ok, false)
   }
+  // Delegation must retain authentic parent reads, reject rewritten provenance,
+  // accept only the child's own new reads, and recheck source permission.
+  await service.enqueue({ id: 'child', tenantId: 't', agentId: 'b', sessionId: 'child-session', principalId: 'u',
+    kind: 'turn', lane: 'interactive', triggerRef: 'm', meta: { text: 'Check the recorded value',
+      attachments: session.request!.attachments, delegation: { parentWorkId: work.id, rootWorkId: work.id,
+        parentRequestVersion: 1, instructionAuthorId: 'a', parentRequest: structuredClone(session.request), assignment: 'Check the recorded value' } } })
+  const child = (await service.claim('child-worker'))!
+  const inherited: SessionRecord = { key: sessionKeyOf(child), tenantId: 't', agentId: 'b', sessionId: 'child-session',
+    history: [], appliedWorkIds: [child.id], revision: 0, compactionEpoch: 0, request: snapshotRequest(await service.loadContext(child)) }
+  for (const mutation of [{ excerpt: 'Value: 99' }, { actionKey: 'forged-read' }]) {
+    const forged = structuredClone(inherited)
+    Object.assign(forged.request!.evidence.items[0]!, mutation)
+    await assert.rejects(service.saveSession(child, forged), /saved initial snapshot/)
+  }
+  revoked = true
+  await assert.rejects(service.saveSession(child, inherited), /source permission revoked/)
+  revoked = false
+  inherited.revision = (await service.saveSession(child, inherited)).revision
+  assert.deepEqual((await service.getSession(child, inherited.key))!.request!.evidence, session.request!.evidence)
+  const childRead = { ...action, runId: child.id, cellId: 'child-read', idempotencyKey: JSON.stringify([child.id, 'child-read', 0]),
+    args: { ...action.args, offset: 0, limit: 7 } }
+  const childReceipt = await service.executeAction(child, childRead)
+  assert.equal(childReceipt.ok, true)
+  inherited.request!.evidence = appendReadEvidence(inherited.request!.evidence, childRead.idempotencyKey, childReceipt, childRead.action)
+  inherited.revision = (await service.saveSession(child, inherited)).revision
+  assert.equal(inherited.request!.evidence.items.length, 2)
   const body = '[Value: 47](#cite-S1)', envelope = createResponseEnvelope(body,{ status: 'partial',verification: 'inconclusive',requestVersion: 1 },session.request!.evidence)
   revoked = true
+  await assert.rejects(service.getSession(child, inherited.key), /source permission revoked/)
   await assert.rejects(service.getSession(work,key),/source permission revoked/)
   await assert.rejects(service.loadContext(work),/source permission revoked/)
   await assert.rejects(service.executeAction(work,action),/source permission revoked/)

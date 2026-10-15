@@ -1061,7 +1061,11 @@ export class ControlPlaneService {
       }
     }
     if ((previous?.workId !== work.id || !previous.evidence) && session.request?.evidence?.items.some(item => item.actionKey !== undefined)) {
-      throw new ControlPlaneError(409, 'research evidence requires a saved initial snapshot')
+      const delegation = work.meta?.['delegation'] as { parentRequest?: import('../context/request.js').RequestSnapshot } | undefined
+      if (!isDeepStrictEqual(session.request.evidence, delegation?.parentRequest?.evidence)) {
+        throw new ControlPlaneError(409, 'research evidence requires a saved initial snapshot')
+      }
+      await this.deps.contextProvider.authorizeRequest?.(work, session.request)
     }
     if (previous?.workId === work.id && previous.evidence && !isDeepStrictEqual(previous.evidence, session.request?.evidence)) {
       const next = session.request?.evidence
