@@ -19,6 +19,26 @@ const invalidQuote = { missing: [], limitations: [{ quote: 'PRIVATE_UNGROUNDED_Q
 const errorMessage = 'Content check was unavailable or returned invalid findings'
 const unexpected = async (): Promise<never> => { throw new Error('unexpected model method') }
 
+// Irrelevant evidence can exceed a reviewer window even after execution projects
+// it on demand. Preserve exact cited excerpts and report omitted source count.
+it('reviews cited originals within budget when unrelated evidence is large', async () => {
+  const evidence = snapshotEvidence('large', Array.from({ length: 200 }, (_, index) => ({ marker: `S${index + 1}`,
+    sourceId: `source-${index}`, sourceVersion: 'v1', chunkId: `chunk-${index}`, title: `Source ${index}`,
+    excerpt: index === 0 ? 'The correct number is 47.' : 'Unrelated source content. '.repeat(1000) })))
+  let called = false
+  const model: ModelDriver = { maxOutputTokens: 100, run: unexpected, compact: unexpected, structured: async call => {
+    called = true
+    const input = call.input as { evidence: typeof evidence; omittedEvidenceItems: number }
+    assert.deepEqual(input.evidence.items, [evidence.items[0]])
+    assert.equal(input.omittedEvidenceItems, 199)
+    return { value: valid, model: 'test', usage }
+  } }
+  const result = await checkCandidateContent(model, { ...request, originalText: 'What is the number?', evidence },
+    '[47](#cite-S1)', [], 32000, new AbortController().signal)
+  assert.equal(called, true)
+  assert.equal('error' in result, false)
+})
+
 function fixture(responses: unknown[]) {
   const calls: StructuredCallRequest[] = [], metered: typeof usage[] = []
   const model: ModelDriver = { maxOutputTokens: 100, run: unexpected, compact: unexpected, structured: async input => {

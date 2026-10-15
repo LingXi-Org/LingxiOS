@@ -16,6 +16,34 @@ import { ApprovalPendingError, ModelDriverError } from '../src/errors.js'
 import type { ModelCallObservation } from '../src/runtime/runtime.js'
 import { modelPricing, DEFAULT_MODEL_BUDGET } from '../src/model/execution.js'
 
+// The reviewer must see the same prior conversation as generation, but never
+// receive the candidate itself as independent historical evidence.
+it('grounds a follow-up content review in the conversation supplied to generation', async () => {
+  const work: TurnContext['work'] = { id: 'followup-review', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn',
+    lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token', meta: { mode: 'execute', deliveryMode: 'auto' } }
+  const saved: SessionRecord = { key: '["t","a","s",null]', tenantId: 't', agentId: 'a', sessionId: 's', revision: 1,
+    compactionEpoch: 0, appliedWorkIds: [], history: [{ role: 'user', content: 'Our agreed phrase is sapphire-47.' }] }
+  let outcome: string | undefined, reviewed = false
+  const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
+    loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: [],
+      messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'What phrase did we agree on?', createdAt: 'now' }] }),
+    loadSession: async () => structuredClone(saved), saveSession: async () => {}, emitEvent: async () => {},
+    executeAction: async () => ({ ok: true, value: { requestVersion: 1, pending: [], truncated: false } }),
+    commitResult: async (_work, message) => { outcome = message.envelope.goalOutcome.status }, completeWork: async () => {}, yieldWork: async () => {} }
+  const usage = { available: true, inputTokens: 100, outputTokens: 20 }, body = 'The answer from our conversation is sapphire-47.'
+  const model: ModelDriver = { compact: async () => { throw new Error('unexpected') },
+    structured: async request => {
+      reviewed = true
+      const context = JSON.stringify((request.input as { observations?: { conversation?: unknown } }).observations?.conversation ?? [])
+      assert.match(context, /Our agreed phrase is sapphire-47/)
+      assert.ok(!context.includes(body))
+      return { model: 'test', usage, value: { missing: [] } }
+    }, run: async () => ({ text: body, usage, output: [{ role: 'assistant', content: body }] }) }
+  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected') } }).runWork(work)
+  assert.equal(reviewed, true)
+  assert.equal(outcome, 'satisfied')
+})
+
 // Background reservations must not consume a foreground reply's budget; completed
 // summaries must survive the final reply instead of being discarded at shutdown.
 for (const [maxTokens, window, historyChars] of [[110_000, 128_000, 80_000], [1_000_000, 128_000, 80_000], [1_000_000, 1_000_000, 400_000]]) it(`prioritizes replies and saves ready summaries (budget=${maxTokens}, window=${window})`, async () => {

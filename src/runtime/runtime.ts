@@ -756,7 +756,7 @@ export class AgentRuntime {
           const check = await checkCandidateContent(deepModel, session.request, turn.text.trim(), artifacts,
             this.compaction.contextWindowTokens, signals.generationSignal(), resourceGaps, fileObservations,
             { steps: (liveContext.executionSteps ?? []).filter(step => !step.kind.startsWith('runtime.')).map(step => ({ id: step.id, requestVersion: step.requestVersion, kind: step.kind, output: step.output })),
-              dependencies: liveContext.dependencies ?? [] })
+              dependencies: liveContext.dependencies ?? [], conversation: modelItems })
           await signals.refresh()
           if (signals.leaseLost()) throw signals.leaseLost()!
           if (signals.lifecycle.signal.aborted) throw new RunCancelledError('lifecycle')
