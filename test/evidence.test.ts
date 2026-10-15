@@ -85,7 +85,7 @@ it('records attachment range citations and reauthorizes snapshots before reads, 
   // accept only the child's own new reads, and recheck source permission.
   await service.enqueue({ id: 'child', tenantId: 't', agentId: 'b', sessionId: 'child-session', principalId: 'u',
     kind: 'turn', lane: 'interactive', triggerRef: 'm', meta: { text: 'Check the recorded value',
-      attachments: session.request!.attachments, delegation: { parentWorkId: work.id, rootWorkId: work.id,
+      delegation: { parentWorkId: work.id, rootWorkId: work.id,
         parentRequestVersion: 1, instructionAuthorId: 'a', parentRequest: structuredClone(session.request), assignment: 'Check the recorded value' } } })
   const child = (await service.claim('child-worker'))!
   const inherited: SessionRecord = { key: sessionKeyOf(child), tenantId: 't', agentId: 'b', sessionId: 'child-session',

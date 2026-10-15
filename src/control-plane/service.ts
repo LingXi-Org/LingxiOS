@@ -976,9 +976,9 @@ export class ControlPlaneService {
         if (!isDeepStrictEqual(contract, expected)) throw new Error('contract provenance mismatch')
       } catch { throw new ControlPlaneError(400, 'invalid request task contract') }
     }
+    const delegation = work.meta?.['delegation'] as { parentRequest?: import('../context/request.js').RequestSnapshot } | undefined
+    const parent = delegation?.parentRequest
     if (session.request) {
-      const delegation = work.meta?.['delegation'] as { parentRequest?: import('../context/request.js').RequestSnapshot } | undefined
-      const parent = delegation?.parentRequest
       if (parent ? session.request.originalText !== parent.originalText
         || !isDeepStrictEqual(session.request.inheritedRevisions ?? [], [...(parent.inheritedRevisions ?? []), ...parent.revisions])
         : Boolean(session.request.inheritedRevisions?.length)) {
@@ -1002,7 +1002,7 @@ export class ControlPlaneService {
     }
     if (session.request) {
       try {
-        if (!isDeepStrictEqual(snapshotAttachments(session.request.attachments), snapshotAttachments(work.meta?.['attachments'] ?? []))) throw new Error('attachment mismatch')
+        if (!isDeepStrictEqual(snapshotAttachments(session.request.attachments), snapshotAttachments(parent?.attachments ?? work.meta?.['attachments'] ?? []))) throw new Error('attachment mismatch')
         const attachmentCount = session.request.revisions.reduce((count, revision) => count + snapshotAttachments(revision.attachments ?? []).length,
           session.request.attachments.length)
         if (attachmentCount > 20) throw new Error('request attachment limit reached')
@@ -1061,8 +1061,7 @@ export class ControlPlaneService {
       }
     }
     if ((previous?.workId !== work.id || !previous.evidence) && session.request?.evidence?.items.some(item => item.actionKey !== undefined)) {
-      const delegation = work.meta?.['delegation'] as { parentRequest?: import('../context/request.js').RequestSnapshot } | undefined
-      if (!isDeepStrictEqual(session.request.evidence, delegation?.parentRequest?.evidence)) {
+      if (!isDeepStrictEqual(session.request.evidence, parent?.evidence)) {
         throw new ControlPlaneError(409, 'research evidence requires a saved initial snapshot')
       }
       await this.deps.contextProvider.authorizeRequest?.(work, session.request)
