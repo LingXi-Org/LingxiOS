@@ -517,11 +517,6 @@ export class AgentRuntime {
         if (recovered.compacted) compacted = recovered
       }
       if (signals.hasSteer()) continue
-      if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
-        && estimateTokens(session.history, model) + overheadTokens >= this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8) {
-        sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
-          { ...this.compaction, softRatio: this.compaction.softRatio * 0.8 }, signals.generationSignal(), overheadTokens))
-      }
       if (compacted.compacted) {
         session.promptContext.epoch = session.compactionEpoch
         await this.hostFor(work).saveSession(work, session)
@@ -577,6 +572,12 @@ export class AgentRuntime {
           codeExecution,
           signal: signals.generationSignal(),
           onAttempt: callId => {
+            // Reserve the reply first; optional compaction must not consume its budget.
+            if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
+              && estimateTokens(session.history, model) + overheadTokens >= this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8) {
+              sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
+                { ...this.compaction, softRatio: this.compaction.softRatio * 0.8 }, signals.generationSignal(), overheadTokens))
+            }
             providerBegan = performance.now()
             parser = new CandidateBodyParser()
             firstBody = false
@@ -598,6 +599,10 @@ export class AgentRuntime {
       } catch (error) {
         preview?.discard()
         if (signals.hasSteer() && !signals.lifecycle.signal.aborted) continue
+        if (error instanceof ModelBudgetExceededError && pendingCompaction) {
+          await pendingCompaction.settled
+          continue
+        }
         await this.event(work, runId, {
           kind: 'model.failed', stage: 'failed', visibility: 'internal',
           data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: errorMessage(error) },
@@ -822,11 +827,6 @@ export class AgentRuntime {
       executedSteps.push(...calls.map(call => ({ id: call.stepId!, kind: call.name, requestVersion: session.request!.revisions.length + 1, input: {}, artifacts: [] })))
       session.history.push(...turn.output)
       await this.hostFor(work).saveSession(work, session)
-      if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
-        && estimateTokens(session.history, model) + overheadTokens >= this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8) {
-        sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model, { ...this.compaction, softRatio: this.compaction.softRatio * 0.8 },
-          signals.generationSignal(), overheadTokens))
-      }
       const onlyReads = model.profile?.parallelTools !== false
         && calls.every(call => liveContext.tools?.some(tool => tool.name === call.name && tool.effect === 'read'))
       let terminal = false
@@ -906,6 +906,12 @@ export class AgentRuntime {
       envelope: finalEnvelope,
     }
     this.previews.get(runId)?.buffer.close()
+    const completedCompaction = pendingCompaction?.ready ? pendingCompaction.install(session) : undefined
+    if (completedCompaction?.compacted) {
+      session.promptContext.epoch = session.compactionEpoch
+      await this.event(work, runId, { kind: 'session.compacted', stage: 'completed', visibility: 'internal',
+        data: { epoch: session.compactionEpoch, ...(completedCompaction.usage ? { usage: completedCompaction.usage } : {}) } })
+    }
     pendingCompaction?.cancel()
     pendingCompaction = undefined
     await this.hostFor(work).saveSession(work, session)

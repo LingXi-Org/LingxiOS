@@ -16,6 +16,32 @@ import { ApprovalPendingError, ModelDriverError } from '../src/errors.js'
 import type { ModelCallObservation } from '../src/runtime/runtime.js'
 import { modelPricing, DEFAULT_MODEL_BUDGET } from '../src/model/execution.js'
 
+// Background reservations must not consume a foreground reply's budget; completed
+// summaries must survive the final reply instead of being discarded at shutdown.
+for (const maxTokens of [110_000, 1_000_000]) it(`prioritizes replies and saves ready summaries (budget=${maxTokens})`, async () => {
+  const work: TurnContext['work'] = { id: 'early-summary', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn',
+    lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }
+  let saved: SessionRecord = { key: '["t","a","s",null]', tenantId: 't', agentId: 'a', sessionId: 's', revision: 1,
+    compactionEpoch: 0, appliedWorkIds: [], history: [{ role: 'user', content: 'x'.repeat(80000) }] }
+  let body = ''
+  const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
+    loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: [],
+      messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Continue.', createdAt: 'now' }] }),
+    loadSession: async () => structuredClone(saved), saveSession: async (_work, value) => { saved = structuredClone(value) },
+    emitEvent: async () => {}, executeAction: async () => ({ ok: true, value: { requestVersion: 1, pending: [], truncated: false } }),
+    commitResult: async (_work, message) => { body = message.body }, completeWork: async () => {}, yieldWork: async () => {} }
+  const usage = { available: true, inputTokens: 100, outputTokens: 20 }
+  const model: ModelDriver = { contextWindowTokens: 128_000, maxOutputTokens: 8192,
+    compact: async () => ({ model: 'test', usage,
+      value: JSON.stringify({ observedResults: 'Earlier observations.', decisions: '', remainingWork: 'Continue.', uncertainties: '' }) }),
+    structured: async () => ({ model: 'test', usage, value: { missing: [] } }),
+    run: async () => { await new Promise<void>(resolve => setImmediate(resolve))
+      return { text: 'Continued.', usage, output: [{ role: 'assistant', content: 'Continued.' }] } } }
+  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected') } }, { rootModelBudget: { maxTokens } }).runWork(work)
+  assert.equal(body, 'Continued.')
+  assert.equal(saved.compactionEpoch, maxTokens > 110_000 ? 1 : 0)
+})
+
 // A completed background summary may still leave the newly appended turn above
 // the hard limit; it must be compacted again before the next provider request.
 it('rechecks the hard budget after installing a background summary with new output', async () => {
