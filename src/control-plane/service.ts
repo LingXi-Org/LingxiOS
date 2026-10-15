@@ -1060,11 +1060,12 @@ export class ControlPlaneService {
         throw new ControlPlaneError(409, 'acquired request and evidence snapshots cannot be rewritten')
       }
     }
-    if ((previous?.workId !== work.id || !previous.evidence) && session.request?.evidence?.items.some(item => item.actionKey !== undefined)) {
-      if (!isDeepStrictEqual(session.request.evidence, parent?.evidence)) {
+    if ((previous?.workId !== work.id || !previous.evidence) && session.request) {
+      if (parent ? !isDeepStrictEqual(session.request.evidence, parent.evidence)
+        : session.request.evidence.items.some(item => item.actionKey !== undefined)) {
         throw new ControlPlaneError(409, 'research evidence requires a saved initial snapshot')
       }
-      await this.deps.contextProvider.authorizeRequest?.(work, session.request)
+      if (parent) await this.deps.contextProvider.authorizeRequest?.(work, session.request)
     }
     if (previous?.workId === work.id && previous.evidence && !isDeepStrictEqual(previous.evidence, session.request?.evidence)) {
       const next = session.request?.evidence

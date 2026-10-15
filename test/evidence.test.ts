@@ -90,7 +90,7 @@ it('records attachment range citations and reauthorizes snapshots before reads, 
   const child = (await service.claim('child-worker'))!
   const inherited: SessionRecord = { key: sessionKeyOf(child), tenantId: 't', agentId: 'b', sessionId: 'child-session',
     history: [], appliedWorkIds: [child.id], revision: 0, compactionEpoch: 0, request: snapshotRequest(await service.loadContext(child)) }
-  for (const mutation of [{ excerpt: 'Value: 99' }, { actionKey: 'forged-read' }]) {
+  for (const mutation of [{ excerpt: 'Value: 99' }, { actionKey: 'forged-read' }, { actionKey: undefined }]) {
     const forged = structuredClone(inherited)
     Object.assign(forged.request!.evidence.items[0]!, mutation)
     await assert.rejects(service.saveSession(child, forged), /saved initial snapshot/)
@@ -107,8 +107,16 @@ it('records attachment range citations and reauthorizes snapshots before reads, 
   inherited.request!.evidence = appendReadEvidence(inherited.request!.evidence, childRead.idempotencyKey, childReceipt, childRead.action)
   inherited.revision = (await service.saveSession(child, inherited)).revision
   assert.equal(inherited.request!.evidence.items.length, 2)
+  await service.enqueue({ id: 'unread-child', tenantId: 't', agentId: 'c', sessionId: 'unread-session', principalId: 'u',
+    kind: 'turn', lane: 'interactive', triggerRef: 'm', meta: { text: 'Read the original file',
+      delegation: { parentWorkId: work.id, rootWorkId: work.id, parentRequestVersion: 1, instructionAuthorId: 'a',
+        parentRequest: { ...structuredClone(session.request), evidence: snapshotEvidence('unread', []) }, assignment: 'Read the original file' } } })
+  const unreadWork = (await service.claim('unread-worker'))!
+  const unread = { ...inherited, key: sessionKeyOf(unreadWork), agentId: 'c', sessionId: 'unread-session', revision: 0,
+    appliedWorkIds: [unreadWork.id], request: snapshotRequest(await service.loadContext(unreadWork)) }
   const body = '[Value: 47](#cite-S1)', envelope = createResponseEnvelope(body,{ status: 'partial',verification: 'inconclusive',requestVersion: 1 },session.request!.evidence)
   revoked = true
+  await assert.rejects(service.saveSession(unreadWork, unread), /source permission revoked/)
   await assert.rejects(service.getSession(child, inherited.key), /source permission revoked/)
   await assert.rejects(service.getSession(work,key),/source permission revoked/)
   await assert.rejects(service.loadContext(work),/source permission revoked/)
