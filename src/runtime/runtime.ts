@@ -502,6 +502,8 @@ export class AgentRuntime {
       }
       // A soft threshold schedules work, not a foreground wait. Hard-budget compaction is mandatory.
       const hardLimit = this.compaction.contextWindowTokens * this.compaction.hardRatio
+      const backgroundLimit = Math.min(this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8,
+        this.rootModelBudget.maxTokens * 0.4)
       if (pendingCompaction && estimateTokens(session.history, model) + overheadTokens >= hardLimit) {
         await pendingCompaction.settled
       }
@@ -574,9 +576,9 @@ export class AgentRuntime {
           onAttempt: callId => {
             // Reserve the reply first; optional compaction must not consume its budget.
             if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
-              && estimateTokens(session.history, model) + overheadTokens >= this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8) {
+              && estimateTokens(session.history, model) + overheadTokens >= backgroundLimit) {
               sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
-                { ...this.compaction, softRatio: this.compaction.softRatio * 0.8 }, signals.generationSignal(), overheadTokens))
+                { ...this.compaction, softRatio: backgroundLimit / this.compaction.contextWindowTokens }, signals.generationSignal(), overheadTokens))
             }
             providerBegan = performance.now()
             parser = new CandidateBodyParser()
