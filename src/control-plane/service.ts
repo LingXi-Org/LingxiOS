@@ -3,6 +3,7 @@ import { responseProfile, type ResponsePolicy } from '../runtime/response-policy
 import { candidateHash, type Candidate, type CandidateVerification } from '../outcome/verification.js'
 import { grantedTools, TASK_TOOLS, parseTaskArgs, type ToolDefinition } from '../tools/catalog.js'
 import { readRequestAttachment } from '../context/request.js'
+import { readEvidence } from '../context/evidence.js'
 import { NoEffectError } from '../tools/definition.js'
 import { permitsTool, executionMode } from '../runtime/execution-policy.js'
 import { canonicalJson } from '../context/compiler.js'
@@ -606,6 +607,10 @@ export class ControlPlaneService {
         const sideEffects = (this.deps.tools ?? TASK_TOOLS).filter(candidate => !candidate.action.startsWith('task.') && !candidate.action.startsWith('graph.') && candidate.effect !== 'read').map(candidate => candidate.action)
         const completedBusinessAction = await this.deps.actions.hasSuccessfulAction(work.id, requestVersion, sideEffects)
         result = { ok: true, value: { requestVersion, pending: pending.slice(0, 64), truncated: pending.length > 64, completedBusinessAction } }
+      } else if (action.action === 'task.read_evidence') {
+        const request = (await this.getSession(proof, sessionKeyOf(work)))?.request
+        if (!request || request.workId !== work.id) throw new Error('evidence read requires the current request snapshot')
+        result = { ok: true, value: readEvidence(request.evidence, action.args) }
       } else if (action.action === 'task.read_attachment') {
         const request = (await this.getSession(proof, sessionKeyOf(work)))?.request
         if (!request || request.workId !== work.id) throw new Error('attachment read requires the current request snapshot')

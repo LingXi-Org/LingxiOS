@@ -16,6 +16,38 @@ import { ApprovalPendingError, ModelDriverError } from '../src/errors.js'
 import type { ModelCallObservation } from '../src/runtime/runtime.js'
 import { modelPricing, DEFAULT_MODEL_BUDGET } from '../src/model/execution.js'
 
+// A completed background summary may still leave the newly appended turn above
+// the hard limit; it must be compacted again before the next provider request.
+it('rechecks the hard budget after installing a background summary with new output', async () => {
+  const work: TurnContext['work'] = { id: 'append-recovery', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn',
+    lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }
+  let saved: SessionRecord = { key: '["t","a","s",null]', tenantId: 't', agentId: 'a', sessionId: 's', revision: 1,
+    compactionEpoch: 0, appliedWorkIds: [], history: Array.from({ length: 50 }, () => ({ role: 'user', content: 'x'.repeat(2000) })) }
+  let body = '', turns = 0, summaries = 0
+  const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
+    loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: [],
+      messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Continue.', createdAt: 'now' }] }),
+    loadSession: async () => structuredClone(saved), saveSession: async (_work, value) => { saved = structuredClone(value) },
+    emitEvent: async () => {}, executeAction: async () => ({ ok: true, value: { requestVersion: 1, pending: [], truncated: false } }),
+    commitResult: async (_work, message) => { body = message.body }, completeWork: async () => {}, yieldWork: async () => {} }
+  const usage = { available: true, inputTokens: 100, outputTokens: 20 }
+  const model: ModelDriver = { contextWindowTokens: 128_000, maxOutputTokens: 8192,
+    compact: async () => { summaries++; return { model: 'test', usage,
+      value: JSON.stringify({ observedResults: 'Earlier observations.', decisions: '', remainingWork: 'Continue.', uncertainties: '' }) } },
+    structured: async () => ({ model: 'test', usage, value: { missing: [] } }),
+    run: async () => {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      if (++turns === 1) return { text: '', usage, output: [{ role: 'assistant', content: 'y'.repeat(80000) },
+        { type: 'function_call', callId: 'read', name: 'ipython', arguments: '{"code":"print(1)"}' }] }
+      return { text: 'Continued.', usage, output: [{ role: 'assistant', content: 'Continued.' }] }
+    } }
+  await new AgentRuntime(host, model, { execute: async () => ({ executionId: 'e', stdout: '1', stderr: '', result: null,
+    artifacts: [], hostActions: [], directives: [], durationMs: 1, truncated: false }) }).runWork(work)
+  assert.equal(body, 'Continued.')
+  assert.ok(summaries >= 2)
+  assert.ok(saved.compactionEpoch >= 2)
+})
+
 for (const tail of [1, 20]) for (const failure of [false, true]) it(`restores an oversized session with atomic compaction (tail=${tail}, failure=${failure})`, async () => {
   const work: TurnContext['work'] = { id: 'recover', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn',
     lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }

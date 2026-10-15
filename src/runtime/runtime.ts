@@ -482,7 +482,7 @@ export class AgentRuntime {
       const dynamicItems = [...preferenceItems, ...this.policy.dynamicContextItems(liveContext)]
       const instructions = session.promptContext.systemInstructions
       if (budget.rediagnose && protocolCorrection && 'role' in protocolCorrection) protocolCorrection = { role: 'user', content: 'Repeated failure without new observations: diagnose the cause and change the approach before another attempt. ' + protocolCorrection.content }
-      const supplementalItems = [...dynamicItems, ...evidenceItems(evidence()), ...(session.request ? requestItems(session.request,
+      const supplementalItems = [...dynamicItems, ...evidenceItems(evidence(), modelTools.some(tool => tool.action === 'task.read_evidence')), ...(session.request ? requestItems(session.request,
         this.onDemandAttachments && modelTools.some(tool => tool.action === 'task.read_attachment')) : []), ...(protocolCorrection ? [protocolCorrection] : [])]
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
@@ -507,14 +507,17 @@ export class AgentRuntime {
       }
       const prepared = pendingCompaction?.ready ? pendingCompaction.install(session) : { compacted: false }
       if (pendingCompaction?.ready) pendingCompaction = undefined
-      const compacted = prepared.compacted ? prepared : this.asyncCompaction && estimateTokens(session.history, model) + overheadTokens < hardLimit
-        ? { compacted: false } : await compactIfNeeded(session, instructions, model, this.compaction, signals.generationSignal(), overheadTokens)
+      let compacted = prepared
+      if (!this.asyncCompaction || estimateTokens(session.history, model) + overheadTokens >= hardLimit) {
+        const recovered = await compactIfNeeded(session, instructions, model, this.compaction, signals.generationSignal(), overheadTokens)
           .catch((error): CompactionOutcome => {
             if (!signals.hasSteer() && (!memoryForModel || !(error instanceof HardLimitExceededError))) throw error
             return { compacted: false }
           })
+        if (recovered.compacted) compacted = recovered
+      }
       if (signals.hasSteer()) continue
-      if (this.asyncCompaction && !pendingCompaction && session.history.length > this.compaction.keepTailItems
+      if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
         && estimateTokens(session.history, model) + overheadTokens >= this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8) {
         sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
           { ...this.compaction, softRatio: this.compaction.softRatio * 0.8 }, signals.generationSignal(), overheadTokens))
@@ -819,7 +822,7 @@ export class AgentRuntime {
       executedSteps.push(...calls.map(call => ({ id: call.stepId!, kind: call.name, requestVersion: session.request!.revisions.length + 1, input: {}, artifacts: [] })))
       session.history.push(...turn.output)
       await this.hostFor(work).saveSession(work, session)
-      if (this.asyncCompaction && !pendingCompaction && session.history.length > this.compaction.keepTailItems
+      if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
         && estimateTokens(session.history, model) + overheadTokens >= this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8) {
         sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model, { ...this.compaction, softRatio: this.compaction.softRatio * 0.8 },
           signals.generationSignal(), overheadTokens))

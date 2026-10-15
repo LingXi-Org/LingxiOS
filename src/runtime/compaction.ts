@@ -29,7 +29,7 @@ export interface CompactionOptions {
   softRatio: number
   /** If compaction itself fails, tolerate up to `hard * window` before failing the run. */
   hardRatio: number
-  /** Preferred verbatim tail; a hard-limit recovery may fold completed tail items too. */
+  /** Preferred verbatim tail; budget pressure may fold completed tail items too. */
   keepTailItems: number
   /** Rolling-summary character bound before the summary is re-summarized. */
   maxSummaryChars: number
@@ -98,6 +98,7 @@ export async function compactIfNeeded(
   const hardLimit = Math.floor(options.contextWindowTokens * options.hardRatio)
   if (estimated < softLimit) return { compacted: false }
   let keepTailItems = Math.min(session.history.length, options.keepTailItems)
+  const targetLimit = background ? softLimit : hardLimit
   let boundary: number
   const completedCalls = new Set(session.history.flatMap(item =>
     'type' in item && item.type === 'function_call_output' ? [item.callId] : []))
@@ -123,8 +124,8 @@ export async function compactIfNeeded(
     }
     // Item count is only a preference: short histories can already exhaust the budget.
     // Halve the tail until a paired suffix leaves room for the bounded summary.
-    if (background || estimated < hardLimit || keepTailItems === 0
-      || estimateTokens(session.history.slice(boundary), model) + overheadTokens + options.maxSummaryChars <= hardLimit) break
+    if (estimated < targetLimit || keepTailItems === 0
+      || estimateTokens(session.history.slice(boundary), model) + overheadTokens + options.maxSummaryChars <= targetLimit) break
     keepTailItems = Math.floor(keepTailItems / 2)
   } while (true)
   if (boundary === 0) return { compacted: false }

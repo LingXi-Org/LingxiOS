@@ -46,6 +46,30 @@ function longHistory(count: number): ModelItem[] {
   }))
 }
 
+// Failures: a few large messages never compact; repeated summaries lose continuity;
+// background work mutates live history; unfinished tool calls lose their future outputs.
+it('keeps multilingual history bounded through repeated early compaction with fewer than twenty items', async () => {
+  const current = session([{ role: 'user', content: 'Continuity key: sapphire-47.' }])
+  const options = { ...DEFAULT_COMPACTION, softRatio: 0.6, maxSummaryChars: 4096 }
+  const model = fakeDriver({ contextWindowTokens: 128_000, compact: async request => {
+    assert.match(JSON.stringify(request.items), /sapphire-47/)
+    assert.equal(fitsModel(model, request), true)
+    return { model: 'test', usage: { available: true, inputTokens: 100, outputTokens: 20 },
+      value: JSON.stringify({ observedResults: 'Continuity key: sapphire-47.', decisions: '', remainingWork: '', uncertainties: '' }) }
+  } })
+  for (let turn = 0; turn < 100; turn++) {
+    current.history.push({ role: 'user', content: `Turn ${turn}: ` + '长期对话😀'.repeat(4000) })
+    const before = structuredClone(current)
+    const pending = prepareCompaction(current, model, options, undefined, 35_000)
+    await pending.settled
+    assert.deepEqual(current, before)
+    assert.equal(pending.install(current).compacted, true)
+    assert.ok(estimateTokens(current.history, model) + 35_000 < 128_000 * 0.6)
+  }
+  assert.equal(current.compactionEpoch, 100)
+  assert.match(current.summary!, /sapphire-47/)
+})
+
 it('installs async compaction only on unchanged history and requirements, preserving appended tool outputs', async () => {
   const options = { ...DEFAULT_COMPACTION, contextWindowTokens: 1000, keepTailItems: 2, maxSummaryChars: 640 }
   const original = session([...longHistory(8), { type: 'function_call', callId: 'pending', name: 'tool', arguments: '{}' }, ...longHistory(4)])

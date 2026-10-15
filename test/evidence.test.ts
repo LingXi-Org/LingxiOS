@@ -19,6 +19,21 @@ import type { SessionRecord } from '../src/protocol/types.js'
 import { DefaultRuntimePolicy } from '../src/runtime/policy.js'
 import type { TurnContext } from '../src/protocol/types.js'
 
+// Large evidence must not fill fixed context, disappear from durable state, or
+// become readable after authorization is revoked; catalogue entries are not citations.
+it('bounds the on-demand evidence catalogue without rewriting original source text', () => {
+  const snapshot = snapshotEvidence('large', Array.from({ length: 200 }, (_, index) => ({
+    marker: `S${index + 1}`, sourceId: `source-${index}`, sourceVersion: 'v1', chunkId: `chunk-${index}`,
+    title: '来源😀'.repeat(200), excerpt: '原始资料😀'.repeat(5000) })))
+  const before = structuredClone(snapshot)
+  const items = evidenceItems(snapshot, true)
+  assert.ok(Buffer.byteLength(JSON.stringify(items)) < 40_000)
+  assert.match(JSON.stringify(items), /task.read_evidence/)
+  assert.ok('role' in items[0]!)
+  assert.match(items[0].content, /"index":199/)
+  assert.deepEqual(snapshot, before)
+})
+
 it('keeps read evidence identities stable across JSONB key ordering and multiple reads', () => {
   const first = { sourceId: 'attachment:a',sourceVersion: 'v1',title: 'A',chunkId: 'a:0:8',excerpt: 'Value: 7',truncated: true }
   const second = { ...first,sourceId: 'attachment:b',title: 'B',chunkId: 'b:0:8',excerpt: 'Value: 9' }
@@ -55,11 +70,23 @@ it('records attachment range citations and reauthorizes snapshots before reads, 
   assert.deepEqual(receipt.evidence,[{ sourceId: 'attachment:file',sourceVersion: 'v1',title: 'facts.txt',chunkId: 'file:8:18',excerpt: 'Value: 47.',truncated: true }])
   session.request!.evidence = appendReadEvidence(session.request!.evidence,action.idempotencyKey,receipt,action.action)
   session.revision = (await service.saveSession(work,session)).revision
+  const evidenceRead = { ...action, cellId: 'evidence', idempotencyKey: JSON.stringify([work.id,'evidence',0]),
+    action: 'task.read_evidence', args: { index: 0, offset: 0, limit: 16000 } }
+  const read = await service.executeAction(work, evidenceRead)
+  assert.equal(read.ok, true)
+  assert.deepEqual(read.value, { index: 0, marker: 'S1', sourceId: 'attachment:file', sourceVersion: 'v1',
+    chunkId: 'file:8:18', title: 'facts.txt', text: 'Value: 47.', textLength: 10, offset: 0, nextOffset: 10, truncated: true })
+  for (const index of [-1, 1, 0.5]) {
+    const denied = await service.executeAction(work, { ...evidenceRead, cellId: `bad-${index}`,
+      idempotencyKey: JSON.stringify([work.id,`bad-${index}`,0]), args: { ...evidenceRead.args, index } })
+    assert.equal(denied.ok, false)
+  }
   const body = '[Value: 47](#cite-S1)', envelope = createResponseEnvelope(body,{ status: 'partial',verification: 'inconclusive',requestVersion: 1 },session.request!.evidence)
   revoked = true
   await assert.rejects(service.getSession(work,key),/source permission revoked/)
   await assert.rejects(service.loadContext(work),/source permission revoked/)
   await assert.rejects(service.executeAction(work,action),/source permission revoked/)
+  await assert.rejects(service.executeAction(work,evidenceRead),/source permission revoked/)
   await assert.rejects(service.commitResult(work,{ version: 2,runId: work.id,agentId: 'a',sessionId: 's',body,envelope }),/source permission revoked/)
 })
 
