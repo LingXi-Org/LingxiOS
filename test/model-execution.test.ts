@@ -67,3 +67,35 @@ it('preserves rejection metadata without retrying or logging provider bodies', a
   assert.equal(failure.requestId, 'request-402')
   assert.doesNotMatch(JSON.stringify(observations), /PRIVATE_|private-key/)
 })
+
+// Failure inventory: outer deadline loses provider classification, budget expiry
+// looks like a generic failure, or cancellation is rewritten and triggers retry.
+it('retains typed total-model and root-budget deadlines after settling the one issued attempt', async () => {
+  const { ModelDriverError, ModelBudgetExceededError } = await import('../src/errors.js')
+  for (const reason of ['provider', 'root', 'caller'] as const) {
+    const observations: ModelCallObservation[] = []
+    let calls = 0, settled = 0
+    const caller = new AbortController(), cancellation = new Error('caller stopped')
+    const execution = modelExecution({
+      reserveModelCall: async () => ({ allowed: true, deadlineAt: new Date(Date.now() + (reason === 'root' ? 30 : 5000)).toISOString(),
+        remainingCalls: 10, remainingTokens: 100000, remainingCostMicros: 1000000 }),
+      recordModelUsage: async (_work, _id, _usage, observation) => { settled++; observations.push(observation!) },
+    }, { modelId: 'deadline-fixture', recovery: { maxAttempts: 3, totalTimeoutMs: reason === 'provider' ? 30 : 1000 } },
+    { id: 'deadline', fence: 1, tenantId: 'tenant', agentId: 'agent', sessionId: 'session' } as WorkItem, DEFAULT_MODEL_BUDGET)
+    const alive = setTimeout(() => {}, 2000)
+    try {
+      await assert.rejects(execution.invoke('structured', { signal: caller.signal }, async signal => {
+        calls++
+        if (reason === 'caller') caller.abort(cancellation)
+        return new Promise<never>((_resolve, reject) => {
+          if (signal.aborted) reject(signal.reason)
+          else signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+      }), error => reason === 'caller' ? error === cancellation : reason === 'root'
+        ? error instanceof ModelBudgetExceededError && error.diagnostics.dimension === 'deadline'
+        : error instanceof ModelDriverError && error.diagnostics.category === 'timeout')
+      assert.equal(calls, 1); assert.equal(settled, 1)
+      assert.equal(observations[0]?.failure?.category, reason === 'caller' ? 'cancelled' : 'timeout')
+    } finally { clearTimeout(alive) }
+  }
+})
