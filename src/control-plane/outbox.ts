@@ -40,9 +40,16 @@ export interface OutboxOptions {
   metrics?: MetricsRegistry
 }
 
+/** Scan observations only; durable SQL remains authoritative for delivery state. */
+export interface OutboxScan {
+  claimed: number
+  errors: number
+  active: number
+}
+
 /** Independent lanes claim just before sending. Slow lanes never hold unstarted rows or healthy lanes. */
 export async function flushOutbox(database: SqlQueryable, table: Table, deliver: Deliver,
-  options: OutboxOptions = {}) {
+  options: OutboxOptions = {}): Promise<OutboxScan> {
   const concurrency = options.concurrency ?? 4, budgetMs = options.budgetMs ?? 1000, maxRows = options.maxRows ?? 256
   const timeoutMs = options.timeoutMs ?? 10_000, maxAttempts = options.maxAttempts ?? 12
   if (!Object.hasOwn(definitions, table)) throw new Error('unsupported outbox')
@@ -55,8 +62,9 @@ export async function flushOutbox(database: SqlQueryable, table: Table, deliver:
   if (!commands) { commands = new Map(); pending.set(database, commands) }
   let lanes = commands.get(table)
   if (!lanes) { lanes = new Set(); commands.set(table, lanes) }
+  const scan: OutboxScan = { claimed: 0, errors: 0, active: lanes.size }
   const free = concurrency - lanes.size
-  if (free <= 0 || options.signal?.aborted) return
+  if (free <= 0 || options.signal?.aborted) return scan
   const until = performance.now() + budgetMs
   let admitted = 0
   const started = Array.from({ length: free }, () => {
@@ -65,15 +73,18 @@ export async function flushOutbox(database: SqlQueryable, table: Table, deliver:
         last_error=COALESCE(last_error,'delivery lease expired at the attempt limit')
         WHERE delivered_at IS NULL AND failed_at IS NULL AND available_at<=NOW() AND attempts>=$1`, [maxAttempts])
       while (!options.signal?.aborted && performance.now() < until && admitted++ < maxRows) {
-        if (!await deliverBatch(database, table, deliver, options)) return
+        if (!await deliverBatch(database, table, deliver, options, scan)) return
       }
     })().catch(() => {
+      scan.errors++
       createLogger().warn('outbox acknowledgement failed; durable rows retain the delivery intent', { table })
     }).finally(() => lanes!.delete(operation))
     lanes!.add(operation)
     return operation
   })
   await Promise.all(started)
+  scan.active = lanes.size
+  return scan
 }
 
 export async function drainOutboxes(database: SqlQueryable): Promise<void> {
@@ -81,7 +92,7 @@ export async function drainOutboxes(database: SqlQueryable): Promise<void> {
 }
 
 async function deliverBatch(database: SqlQueryable, table: Table, deliver: Deliver,
-  options: OutboxOptions): Promise<boolean> {
+  options: OutboxOptions, scan: OutboxScan): Promise<boolean> {
   const timeoutMs = options.timeoutMs ?? 10_000, maxAttempts = options.maxAttempts ?? 12
   const spec: { keys: string[]; join?: string; where?: string; select?: string; returning?: string } = definitions[table]
   const token = randomUUID()
@@ -93,6 +104,7 @@ async function deliverBatch(database: SqlQueryable, table: Table, deliver: Deliv
     UPDATE lingxios.${table} outbox SET claim_token=$1,available_at=NOW()+INTERVAL '60 seconds',attempts=LEAST(attempts+1,30)
     FROM candidate WHERE ${spec.keys.map(key => `outbox.${key}=candidate.${key}`).join(' AND ')}
     RETURNING outbox.*${spec.returning ?? ''}`, [token, maxAttempts])
+  scan.claimed += rows.length
   for (const row of rows) {
     const params = [...spec.keys.map(key => row[key]), token]
     const where = `${spec.keys.map((key, index) => `${key}=$${index + 1}`).join(' AND ')} AND claim_token=$${params.length}`
@@ -109,6 +121,7 @@ async function deliverBatch(database: SqlQueryable, table: Table, deliver: Deliv
           .observe(Math.max(0, (Date.now() - new Date(row['committed_at'] as string | Date).getTime()) / 1000))
       }
     } catch (error) {
+      scan.errors++
       await database.query(`UPDATE lingxios.${table} SET claim_token=NULL,
         last_error=$${params.length + 1},failed_at=CASE WHEN attempts>=$${params.length + 2} THEN NOW() ELSE NULL END,
         available_at=NOW()+LEAST(300,5*power(2,LEAST(attempts-1,6)))*INTERVAL '1 second' WHERE ${where}`,
