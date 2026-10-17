@@ -120,3 +120,23 @@ it('admits a five-specialist team with sufficient budget while bounding pending 
     assert.equal((await f.admit('replacement')).allowed,true)
   } finally { await f.db.close() }
 })
+
+// Exercise settled usage, not just a reservation ceiling. Failed/replayed costs
+// must not disappear or double-charge, and denial must not allocate a child.
+it('uses settled near-limit cost exactly once before child startup plus closing admission', async () => {
+  const f = await fixture()
+  try {
+    const limits = { ...f.limits, maxCostMicros: 25 }
+    await f.budgets.reserve('root', 'charged-call', limits)
+    await f.budgets.record('root', 'charged-call', 90, 10, 10)
+    await f.budgets.record('root', 'charged-call', 90, 10, 10)
+    const before = (await f.db.query<{ cost_micros: number }>('SELECT cost_micros FROM lingxios.agent_model_budgets WHERE root_work_id=$1', ['root'])).rows[0]!
+    assert.equal(Number(before.cost_micros), 10)
+    const rejected = await f.admit('near-cost-limit')
+    assert.equal(rejected.allowed, false); assert.equal(rejected.dimension, 'cost')
+    assert.equal((await f.db.query("SELECT 1 FROM lingxios.agent_work_items WHERE id='near-cost-limit'")).rows.length, 0)
+    assert.equal((await f.db.query('SELECT 1 FROM lingxios.agent_model_budget_holds')).rows.length, 0)
+    assert.equal(Number((await f.db.query<{ cost_micros: number }>('SELECT cost_micros FROM lingxios.agent_model_budgets')).rows[0]!.cost_micros), 10)
+    assert.equal((await f.db.query('SELECT 1 FROM lingxios.agent_terminal_outbox')).rows.length, 1)
+  } finally { await f.db.close() }
+})

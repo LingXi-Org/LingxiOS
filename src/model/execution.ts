@@ -86,11 +86,16 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
     const recovery = recoveryPolicy(callModel.recovery), logicalBegan = performance.now()
     const totalTimeout = AbortSignal.timeout(Math.min(recovery.totalTimeoutMs, limits.wallClockMs))
     const logicalSignal = AbortSignal.any([...(request.signal ? [request.signal] : []), totalTimeout])
+    const deadlineFailure = (rootTimeout?: AbortSignal) => request.signal?.aborted ? request.signal.reason
+      : rootTimeout?.aborted ? new ModelBudgetExceededError('Root work execution time exhausted', 'deadline')
+      : new ModelDriverError('Model request exceeded its total deadline', { kind: 'provider', category: 'timeout', finishReasons: [] })
     const { prompt: _prompt, ...providerRequest } = request
     let routed = false
     for (let attempt = 1; ; attempt++) {
-      logicalSignal.throwIfAborted()
-      if (routed) await abortable(fallback!.authorize(logicalSignal),logicalSignal)
+      if (logicalSignal.aborted) throw deadlineFailure()
+      if (routed) await abortable(fallback!.authorize(logicalSignal),logicalSignal).catch(error => {
+        throw logicalSignal.aborted ? deadlineFailure() : error
+      })
       const input = estimateInputTokens(callModel, providerRequest) + (callModel.toolDefinitionTokens ?? 0)
       const output = (callModel.maxOutputTokens ?? 8192) + (callModel.maxThinkingTokens ?? 0)
       const reservedCost = Math.ceil((input * limits.inputCostMicrosPerMillion + output * limits.outputCostMicrosPerMillion) / 1_000_000)
@@ -112,7 +117,8 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       const remaining = Date.parse(reservation.deadlineAt) - Date.now()
       if (remaining <= 0) throw new ModelBudgetExceededError('Root work execution time exhausted', 'deadline')
       calls++; tokens += input + output; cost += reservedCost
-      const signal = AbortSignal.any([logicalSignal, AbortSignal.timeout(Math.min(2_147_483_647, remaining))])
+      const rootTimeout = AbortSignal.timeout(Math.min(2_147_483_647, remaining))
+      const signal = AbortSignal.any([logicalSignal, rootTimeout])
       const began = performance.now()
       await emit?.({
         kind: 'model.request.started', stage: 'started', visibility: 'internal',
@@ -147,7 +153,8 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       if (result) return { ...result, callId, logicalCallId, ...(Object.keys(diagnostics).length ? {
         diagnostics: { ...('diagnostics' in result ? result.diagnostics as Record<string, unknown> : {}), ...diagnostics },
       } : {}) }
-      if (attempt >= recovery.maxAttempts || signal.aborted) throw failure
+      if (signal.aborted) throw deadlineFailure(rootTimeout)
+      if (attempt >= recovery.maxAttempts) throw failure
       if (fallback && !routed && classifiedFailure && ['authorization','quota','circuit_open','network','timeout','unavailable','rate_limit'].includes(classifiedFailure.category)) {
         callModel = fallback.model
         routed = true
@@ -157,7 +164,9 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       const backoff = Math.max(classifiedFailure.retryAfterMs ?? 0, Math.floor(Math.random() * Math.min(2000, 250 * 2 ** (attempt - 1))))
       // Retry-After is a minimum; if it cannot fit, stop rather than retry early.
       if (backoff >= Math.min(remaining, recovery.totalTimeoutMs - (performance.now() - logicalBegan))) throw failure
-      await delay(backoff, undefined, { signal: logicalSignal })
+      await delay(backoff, undefined, { signal: logicalSignal }).catch(error => {
+        throw logicalSignal.aborted ? deadlineFailure() : error
+      })
     }
   }
   return { invoke, nextCallId: () => `${work.id}:${work.fence}:${namespace}:${sequence + 1}` }

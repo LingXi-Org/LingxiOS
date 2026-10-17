@@ -47,7 +47,7 @@ it('bounds embedding requests, aligns response indices and rejects corrupt vecto
     payload = { error: 'secret user input must not appear in the error' }
     await assert.rejects(driver.embed(['text']), error => error instanceof Error && error.message === 'embedding provider returned HTTP 401')
     slow = true
-    await assert.rejects(new OpenAIEmbeddingDriver({ ...options, requestTimeoutMs: 30 }).embed(['text']), /timeout|aborted/i)
+    await assert.rejects(new OpenAIEmbeddingDriver({ ...options, apiKey: 'timeout-fixture', requestTimeoutMs: 30 }).embed(['text']), /timeout|aborted/i)
     const controller = new AbortController()
     controller.abort(new Error('caller cancelled'))
     await assert.rejects(driver.embed(['text'], controller.signal), /caller cancelled/)
@@ -55,4 +55,38 @@ it('bounds embedding requests, aligns response indices and rejects corrupt vecto
     server.closeAllConnections()
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
+})
+
+// Failure inventory: rejected embedding jobs hot-loop across work IDs; metadata
+// leaks error bodies; credential rotation shares the wrong circuit or vector cache.
+for (const status of [402, 429]) it(`classifies embedding quota ${status} and shares only credential-scoped provider circuits`, async () => {
+  const { ModelDriverError } = await import('../src/errors.js')
+  let requests = 0
+  const server = http.createServer((req, res) => {
+    req.resume(); requests++
+    res.writeHead(status, { 'content-type': 'application/json', 'x-request-id': 'embedding-safe-id' })
+    res.end(JSON.stringify({ error: { code: 'insufficient_quota', message: 'PRIVATE_BODY' } }))
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address(); assert.ok(address && typeof address === 'object')
+  const options = { id: 'quota-embedding', apiKey: 'PRIVATE_KEY', baseUrl: `http://127.0.0.1:${address.port}/v1` }
+  try {
+    const first = new OpenAIEmbeddingDriver(options)
+    await assert.rejects(first.embed(['PRIVATE_INPUT']), error => {
+      assert.ok(error instanceof ModelDriverError)
+      assert.equal(error.diagnostics.status, status)
+      assert.equal(error.diagnostics.providerCode, 'insufficient_quota')
+      assert.equal(error.diagnostics.category, 'quota')
+      assert.equal(error.diagnostics.requestId, 'embedding-safe-id')
+      assert.doesNotMatch(JSON.stringify(error.diagnostics), /PRIVATE_/)
+      return true
+    })
+    await assert.rejects(new OpenAIEmbeddingDriver(options).embed(['another job']), error =>
+      error instanceof ModelDriverError && error.diagnostics.category === 'circuit_open')
+    assert.equal(requests, 1)
+    const rotated = new OpenAIEmbeddingDriver({ ...options, apiKey: 'rotated-fixture-key' })
+    assert.equal(first.cacheKey, rotated.cacheKey, 'credential rotation must not change the embedding vector space')
+    await assert.rejects(rotated.embed(['new scope']))
+    assert.equal(requests, 2)
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })

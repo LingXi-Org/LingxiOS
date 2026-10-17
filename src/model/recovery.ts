@@ -1,3 +1,4 @@
+import { abortable } from '../deadline.js'
 import { ModelDriverError, type ModelDiagnostics } from '../errors.js'
 
 export interface ModelRecoveryPolicy {
@@ -124,4 +125,26 @@ export function acquireCircuit(key: string, resetMs: number): (failure?: ModelFa
       current.until = Date.now() + Math.max(resetMs, failure.retryAfterMs ?? 0)
     }
   }
+}
+
+/** Parse at most 4 KiB for an allowlisted code; never retain or report provider text. */
+export async function readProviderErrorCode(response: Response, signal: AbortSignal): Promise<string | undefined> {
+  if (!response.body) return undefined
+  const reader = response.body.getReader(), chunks: Uint8Array[] = []
+  const bounded = AbortSignal.any([signal,AbortSignal.timeout(250)])
+  let length = 0
+  try {
+    while (true) {
+      const chunk = await abortable(reader.read(),bounded)
+      if (chunk.done) break
+      length += chunk.value.byteLength
+      if (length > 4096) return undefined
+      chunks.push(chunk.value)
+    }
+    const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    if (!value || typeof value !== 'object') return undefined
+    const error = (value as { error?: unknown }).error
+    return error && typeof error === 'object' ? providerCode((error as { code?: unknown }).code) : undefined
+  } catch { return undefined }
+  finally { void reader.cancel().catch(() => {}).finally(() => reader.releaseLock()) }
 }
