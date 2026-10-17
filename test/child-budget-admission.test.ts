@@ -107,3 +107,16 @@ it('rolls back graph creation on admission failure and separately persists one a
     assert.equal(feedback.length,1); assert.equal(feedback[0]!['not_started_count'],2)
   } finally { await f.db.close() }
 })
+
+it('admits a five-specialist team with sufficient budget while bounding pending fanout at eight', async () => {
+  const f = await fixture()
+  try {
+    await f.budgets.reserve('root','first',{ ...f.limits,maxModelCalls: 50,maxTokens: 5000,maxCostMicros: 1000 })
+    for (let index = 0; index < 8; index++) assert.equal((await f.admit(`specialist-${index}`)).allowed,true)
+    assert.deepEqual(await f.admit('overflow'),{ allowed: false,dimension: 'reservation' })
+    assert.equal((await f.db.query('SELECT 1 FROM lingxios.agent_model_budget_holds')).rows.length,9,'eight starts plus one closing hold')
+    assert.equal((await f.db.query<{ not_started_count: number }>('SELECT not_started_count FROM lingxios.agent_terminal_outbox')).rows[0]?.not_started_count,1)
+    await f.db.exec("UPDATE lingxios.agent_work_items SET status='cancelled' WHERE id='specialist-0'")
+    assert.equal((await f.admit('replacement')).allowed,true)
+  } finally { await f.db.close() }
+})
