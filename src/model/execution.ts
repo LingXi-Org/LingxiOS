@@ -87,7 +87,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
     const totalTimeout = AbortSignal.timeout(Math.min(recovery.totalTimeoutMs, limits.wallClockMs))
     const logicalSignal = AbortSignal.any([...(request.signal ? [request.signal] : []), totalTimeout])
     const deadlineFailure = (rootTimeout?: AbortSignal, first?: AbortSignal) => request.signal?.aborted ? request.signal.reason
-      : rootTimeout?.aborted && first?.reason === rootTimeout.reason ? new ModelBudgetExceededError('Root work execution time exhausted', 'deadline')
+      : (rootTimeout?.aborted && first?.reason === rootTimeout.reason) || (totalTimeout.aborted && limits.wallClockMs <= recovery.totalTimeoutMs) ? new ModelBudgetExceededError('Root work execution time exhausted', 'deadline')
       : new ModelDriverError('Model request exceeded its total deadline', { kind: 'provider', category: 'timeout', finishReasons: [] })
     const { prompt: _prompt, ...providerRequest } = request
     let routed = false
