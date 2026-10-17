@@ -3,6 +3,9 @@ import type { SqlQueryable } from '../control-plane/pg-store.js'
 import type { VerificationRecord } from '../outcome/verification.js'
 import type { ToolDefinition as ToolSpecification } from './catalog.js'
 import type { KernelArtifact } from '../protocol/types.js'
+import { sanitizeToolFailureDiagnostics, type ToolFailureDiagnostics } from './failure.js'
+
+export type { ToolFailureDiagnostics } from './failure.js'
 
 export interface ArtifactInput {
   path: string
@@ -59,8 +62,10 @@ export interface ToolDefinition<Input extends Record<string, unknown> = Record<s
 
 /** Only throw this when the native service can prove that nothing was committed. */
 export class NoEffectError extends Error {
-  constructor(message: string, readonly code = 'native_rejected') {
+  readonly diagnostics?: ToolFailureDiagnostics
+  constructor(message: string, readonly code = 'native_rejected', diagnostics?: ToolFailureDiagnostics) {
     super(message)
     this.name = 'NoEffectError'
+    if (diagnostics) this.diagnostics = sanitizeToolFailureDiagnostics(diagnostics)
   }
 }

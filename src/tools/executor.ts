@@ -1,6 +1,6 @@
 import { ResourceQuota } from '../resource-quota.js'
+import { setTimeout as delay } from 'node:timers/promises'
 import { abortable } from '../deadline.js'
-import { errorMessage } from '../errors.js'
 import { lockAction } from '../control-plane/action-transaction.js'
 import type { ActionExecutor, ActionExecutionOptions } from '../control-plane/stores.js'
 import type { SqlPool, SqlQueryable } from '../control-plane/pg-store.js'
@@ -19,6 +19,7 @@ import { assertObservation, assertToolContract, observeResult } from './contract
 import { enqueueGraph, readGraph, waitForChildren } from '../collaboration/graphs.js'
 import { createSharedState, readSharedState, updateSharedState } from '../collaboration/state.js'
 import { authorizeConversationWork } from '../collaboration/access.js'
+import { classifyToolFailure, isSerializationFailure } from './failure.js'
 
 export function toolExecutor(database: SqlPool, definitions: readonly ToolDefinition[],
   createArtifact?: (work: Omit<WorkItem, 'leaseToken'>, input: ArtifactInput, signal?: AbortSignal) => Promise<KernelArtifact>, memory?: MemoryOptions): ActionExecutor {
@@ -39,6 +40,42 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
     if (tool.preconditions) {
       const source = tools.get(tool.preconditions.readAction)
       if (!tool.observationRequirement || !source?.observation || source.effect !== 'read' || source.observation.resourceType !== tool.preconditions.resourceType) throw new Error('invalid tool observation precondition')
+    }
+  }
+  function rejected(error: unknown, phase: 'authorization' | 'input' | 'execution' | 'transaction', options: ActionExecutionOptions) {
+    const failure = classifyToolFailure(error, phase, options.signal.aborted || Date.now() >= Date.parse(options.deadlineAt))
+    return new NoEffectError(failure.message, failure.code, failure.diagnostics)
+  }
+  function uncertain(error: unknown, options: ActionExecutionOptions) {
+    const failure = classifyToolFailure(error, 'execution', options.signal.aborted)
+    // An unknown effect can only be reconciled. Diagnostics never authorize a retry.
+    return Object.assign(new Error(failure.message), { code: failure.code,
+      diagnostics: { ...failure.diagnostics, retryable: false, recovery: 'none' as const } })
+  }
+  function parse(tool: ToolDefinition, action: HostAction, options: ActionExecutionOptions) {
+    try { return tool.parse(action.args) }
+    catch (error) { throw rejected(error, 'input', options) }
+  }
+  async function retryPause(options: ActionExecutionOptions) {
+    try {
+      const remaining = Date.parse(options.deadlineAt) - Date.now()
+      if (remaining <= 0) throw { code: 'tool_cancelled' }
+      await delay(Math.min(25, remaining), undefined, { signal: options.signal })
+    } catch (error) { throw rejected(error, 'execution', options) }
+  }
+  async function authorize(operation: () => Promise<void>, options: ActionExecutionOptions, retry = true) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        options.signal.throwIfAborted()
+        if (Date.now() >= Date.parse(options.deadlineAt)) throw { code: 'tool_cancelled' }
+        await abortable(operation(), options.signal)
+        options.signal.throwIfAborted()
+        return
+      } catch (error) {
+        const failure = rejected(error, 'authorization', options)
+        if (retry && attempt === 0 && failure.diagnostics?.retryable) { await retryPause(options); continue }
+        throw failure
+      }
     }
   }
   function definition(action: HostAction) {
@@ -86,47 +123,48 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
   }
   return {
     async reconcile(work, action, options) {
-      await authorizeConversationWork(database, work)
+      await authorize(async () => { await authorizeConversationWork(database, work) }, options)
       const tool = definition(action)
       if (!tool.reconcile) return null
-      const input = tool.parse(action.args), ctx = context(work, action, options)
+      const input = parse(tool, action, options), ctx = context(work, action, options)
       await assertToolContract(tool, ctx)
-      await abortable(tool.authorize(ctx, input), options.signal)
+      await authorize(() => tool.authorize(ctx, input), options)
       return abortable(tool.reconcile(ctx, input), options.signal)
     },
     async prepare(work, action, options) {
-      await authorizeConversationWork(database, work)
       const tool = definition(action)
-      let input: Record<string, unknown>
-      try { input = tool.parse(action.args) }
-      catch (error) { throw new NoEffectError(errorMessage(error), 'invalid_arguments') }
-      try { await abortable(tool.authorize(context(work, action, options), input), options.signal) }
-      catch (error) { throw error instanceof NoEffectError ? error : new NoEffectError('Native authorization was unavailable', 'authorization_unavailable') }
+      const input = parse(tool, action, options)
+      await authorize(async () => {
+        await authorizeConversationWork(database, work)
+        await tool.authorize(context(work, action, options), input)
+      }, options)
     },
     async execute(work, action, options) {
       const tool = definition(action)
-      const input = tool.parse(action.args)
+      const input = parse(tool, action, options)
       const run = async (db: SqlQueryable) => {
-        await authorizeConversationWork(db, work, 'execute', true)
+        await authorize(async () => { await authorizeConversationWork(db, work, 'execute', true) }, options, false)
         const ctx = context(work, action, options, db)
         await assertToolContract(tool, ctx)
-        await tool.authorize(ctx, input)
+        await authorize(() => tool.authorize(ctx, input), options, false)
         await assertObservation(tool, ctx, input, tools)
         options.signal.throwIfAborted()
         const pending = await approvalGate(tool, ctx, input)
         return pending ?? tool.execute(ctx, input)
       }
       if (tool.effect !== 'transaction') {
-        await authorizeConversationWork(database, work)
         const ctx = context(work, action, options)
         await assertToolContract(tool, ctx)
-        await abortable(tool.authorize(ctx, input), options.signal)
+        await authorize(async () => {
+          await authorizeConversationWork(database, work)
+          await tool.authorize(ctx, input)
+        }, options)
         await abortable(assertObservation(tool, ctx, input, tools), options.signal)
         if (tool.approval) {
           const pending = await withTransaction(deadlinePool(database,options.signal), async db => {
             await lockAction(db, work, action)
             const approvedContext = context(work, action, options, db)
-            await tool.authorize(approvedContext, input)
+            await authorize(() => tool.authorize(approvedContext, input), options, false)
             const pending = await approvalGate(tool, approvedContext, input)
             if (approvedContext.approvedPreview) ctx.approvedPreview = approvedContext.approvedPreview
             // The external call may outlive this process. Persist uncertainty before sending it.
@@ -143,69 +181,85 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
           result = await abortable(quotas.get(tool.action)?.run(execute, options.signal) ?? execute(), options.signal)
         }
         catch (error) {
-          if (!(error instanceof NoEffectError)) throw error
-          result = { ok: false, executionState: 'no_effect', code: error.code, error: error.message }
+          if (!(error instanceof NoEffectError)) throw uncertain(error, options)
+          const failure = rejected(error, 'execution', options)
+          const noEffect = { ok: false, executionState: 'no_effect' as const, code: failure.code, error: failure.message,
+            diagnostics: failure.diagnostics }
+          result = noEffect
         }
         if (tool.approval) await database.query(`UPDATE lingxios.agent_action_ledger SET result=$2::jsonb
           WHERE idempotency_key=$1 AND result->>'code'='external_in_flight'`, [action.idempotencyKey,JSON.stringify(result)])
         return result
       }
-      const client = await deadlinePool(database,options.signal,Math.max(1,Date.parse(options.deadlineAt)-Date.now())).connect()
-      let active = true
-      let committing = false
-      // A late callback cannot use a released connection after cancellation.
-      const scoped: SqlQueryable = { async query(sql, params) {
-        options.signal.throwIfAborted()
-        if (!active) throw new NoEffectError('action transaction is closed')
-        return client.query(sql, params)
-      } }
-      try {
-        await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE')
-        await client.query("SELECT set_config('statement_timeout',$1,true),set_config('lock_timeout',$1,true)",
-          [String(Math.max(1, Math.min(30_000, Date.parse(options.deadlineAt) - Date.now())))])
-        await lockAction(scoped, work, action)
-        const prior = await scoped.query('SELECT result FROM lingxios.agent_action_ledger WHERE idempotency_key=$1', [action.idempotencyKey])
-        const previous = prior.rows[0]?.['result'] as HostActionResult | undefined
-        const result = previous && !previous.approval ? previous : await abortable(run(scoped), options.signal)
-        options.signal.throwIfAborted()
-        if (result.executionState === 'unknown') throw new NoEffectError('transactional tool must return a settled result')
-        if (!result.ok && !result.approval) {
+      const transaction = async (attempt: number): Promise<HostActionResult> => {
+        const client = await deadlinePool(database,options.signal,Math.max(1,Date.parse(options.deadlineAt)-Date.now())).connect()
+        let active = true
+        let committing = false
+        let rollingBack = false
+        // A late callback cannot use a released connection after cancellation.
+        const scoped: SqlQueryable = { async query(sql, params) {
+          options.signal.throwIfAborted()
+          if (!active) throw new NoEffectError('action transaction is closed')
+          return client.query(sql, params)
+        } }
+        try {
+          await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE')
+          await client.query("SELECT set_config('statement_timeout',$1,true),set_config('lock_timeout',$1,true)",
+            [String(Math.max(1, Math.min(30_000, Date.parse(options.deadlineAt) - Date.now())))])
+          await lockAction(scoped, work, action)
+          const prior = await scoped.query('SELECT result FROM lingxios.agent_action_ledger WHERE idempotency_key=$1', [action.idempotencyKey])
+          const previous = prior.rows[0]?.['result'] as HostActionResult | undefined
+          const result = previous && !previous.approval ? previous : await abortable(run(scoped), options.signal)
+          options.signal.throwIfAborted()
+          if (result.executionState === 'unknown') throw new NoEffectError('transactional tool must return a settled result')
+          if (!result.ok && !result.approval) {
+            active = false
+            rollingBack = true
+            await client.query('ROLLBACK')
+            rollingBack = false
+            return { ...result, executionState: 'no_effect' }
+          }
+          await scoped.query(`INSERT INTO lingxios.agent_action_ledger(idempotency_key,result) VALUES($1,$2::jsonb)
+            ON CONFLICT(idempotency_key) DO UPDATE SET result=EXCLUDED.result,recorded_at=NOW()
+            WHERE lingxios.agent_action_ledger.result->'approval'->>'status'='PENDING'`,
+            [action.idempotencyKey, JSON.stringify(result)])
           active = false
-          await client.query('ROLLBACK')
-          return { ...result, executionState: 'no_effect' }
-        }
-        await scoped.query(`INSERT INTO lingxios.agent_action_ledger(idempotency_key,result) VALUES($1,$2::jsonb)
-          ON CONFLICT(idempotency_key) DO UPDATE SET result=EXCLUDED.result,recorded_at=NOW()
-          WHERE lingxios.agent_action_ledger.result->'approval'->>'status'='PENDING'`,
-          [action.idempotencyKey, JSON.stringify(result)])
-        active = false
-        committing = true
-        await client.query('COMMIT')
-        return result
-      } catch (error) {
-        active = false
-        // A lost COMMIT acknowledgement cannot establish rollback.
-        if (committing) throw error
-        await client.query('ROLLBACK')
-        throw error instanceof NoEffectError ? error : new NoEffectError(errorMessage(error), 'transaction_rolled_back')
-      } finally { active = false; client.release() }
+          committing = true
+          await client.query('COMMIT')
+          return result
+        } catch (error) {
+          active = false
+          // A lost COMMIT acknowledgement cannot establish rollback.
+          if (committing || rollingBack) throw uncertain(error, options)
+          try { await client.query('ROLLBACK') }
+          catch (rollbackError) { throw uncertain(rollbackError, options) }
+          if (attempt === 0 && !options.signal.aborted && Date.now() < Date.parse(options.deadlineAt) && isSerializationFailure(error)) {
+            // Release before reacquiring, including pools with only one connection.
+            client.release()
+            await retryPause(options)
+            return transaction(attempt + 1)
+          }
+          throw rejected(error, 'transaction', options)
+        } finally { active = false; client.release() }
+      }
+      return transaction(0)
     },
     async readResource(work, action, options) {
-      await authorizeConversationWork(database, work, 'read')
+      await authorize(async () => { await authorizeConversationWork(database, work, 'read') }, options)
       const tool = definition(action)
       if (tool.effect !== 'read') throw new NoEffectError('resource check requires a read tool')
-      const input = tool.parse(action.args)
+      const input = parse(tool, action, options)
       const ctx = context(work, action, options)
-      await tool.authorize(ctx, input)
+      await authorize(() => tool.authorize(ctx, input), options)
       const result = await abortable(tool.execute(ctx, input), options.signal)
       if (!result.ok) throw new NoEffectError(result.error ?? 'resource read failed')
       return result.value
     },
     async verifyResult(work, action, value, options) {
-      await authorizeConversationWork(database, work, 'read')
+      await authorize(async () => { await authorizeConversationWork(database, work, 'read') }, options)
       const tool = definition(action)
       if (!tool.verify) return { status: 'inconclusive', evidence: { reason: 'Native tool has no independent resource check' } }
-      const input = tool.parse(action.args)
+      const input = parse(tool, action, options)
       const ctx = context(work, action, options)
       // The independent verifier authorizes its own read scope, including deleted resources.
       await assertToolContract(tool, ctx)
