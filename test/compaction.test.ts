@@ -370,3 +370,23 @@ describe('compactIfNeeded', () => {
     )
   })
 })
+
+for (const history of [[], [{ role: 'user' as const, content: 'Small immutable history' }]]) {
+  it(`rejects irreducible fixed context before compaction with ${history.length} history items`, async () => {
+    let calls = 0
+    const model = fakeDriver({ compact: async () => { calls++; throw new Error('must not compact') } })
+    const current = session(history), before = structuredClone(current)
+    for (const contextWindowTokens of [8000, 1_000_000]) {
+      await assert.rejects(compactIfNeeded(current, '', model, { ...DEFAULT_COMPACTION,contextWindowTokens },
+        undefined, contextWindowTokens), error => {
+        assert.ok(error instanceof HardLimitExceededError)
+        assert.equal(error.diagnostics?.reason, 'irreducible_context')
+        assert.equal(error.diagnostics?.completedChunks, 0)
+        assert.equal(error.diagnostics?.overheadTokens, contextWindowTokens)
+        return true
+      })
+    }
+    assert.equal(calls, 0)
+    assert.deepEqual(current, before)
+  })
+}
