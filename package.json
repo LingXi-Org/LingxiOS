@@ -14,6 +14,7 @@
   "files": [
     "dist/src",
     "db/schema.sql",
+    "db/schema-011.sql",
     "db/migrations",
     "kernel/runner.py"
   ],

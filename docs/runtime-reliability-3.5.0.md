@@ -2,6 +2,8 @@
 
 This release requires schema 12. Drain old workers before the consuming application's explicit transactional migration applies `packageResources().migration014` to schema 11. Existing requests, results, action receipts and business tables remain intact. Historical terminal work is not replayed. Fresh installations apply `packageResources().schema`. Startup performs validation only; it never migrates storage.
 
+Hosts replaying immutable historical migration checks can install `packageResources().schema011` at that historical step, then apply `migration014` in their new migration. The schema-11 asset retains SHA-256 `5d77d0140de93d5c9fc205942c77b850b799d257ef49c056da2af84e15f4bb9f`. Strip the packaged outer transaction only when the host migration runner already owns that transaction; never allow a nested asset `COMMIT` to commit the host migration early.
+
 ## Ownership and recovery
 
 `createLingxiOS({ background: { role: 'active' } })` owns adaptive maintenance and separate result, event, usage and terminal delivery lanes. Worker-local control objects used only for context must select `role: 'passive'`. Polling backs off from one to thirty seconds, notifications wake eligible lanes, database scan admission is bounded, and slow deliveries do not block healthy lanes. Metrics distinguish idle scans, queue age and delivery channels. These deterministic checks do not establish a production throughput or 24-hour soak result.
