@@ -44,15 +44,17 @@ it('does not reset repeated failures for timestamps or wording in observations a
 async function fixture(original: string, model: ModelDriver, tools?: TurnContext['tools']) {
   let message: AssistantMessage | undefined, session: SessionRecord | undefined
   const steps: import('../src/control-plane/steps.js').ExecutionStep[] = []
+  const events: import('../src/protocol/types.js').RunEvent[] = []
+  let completion: Parameters<HostPort['completeWork']>[1] | undefined
   const context: TurnContext = { work, persona: { name: 'A', role: 'assistant', instructions: 'Default preference.' }, capabilities: (tools ?? []).map(tool => tool.action.split('.')[0]!),
     messages: [{ ref: work.triggerRef, authorId: 'u', authorName: 'U', authorKind: 'human', body: original, createdAt: 'now' }], ...(tools ? { tools } : {}) }
   const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }), loadContext: async () => ({ ...context, executionSteps: steps }),
     loadSession: async () => null, saveSession: async (_work, value) => { session = structuredClone(value) },
     executeAction: async () => ({ ok: true, value: { requestVersion: 1, pending: [], truncated: false } }),
-    saveStep: async (_work, step) => { steps.push(structuredClone(step)) }, emitEvent: async () => {},
-    commitResult: async (_work, value) => { message = value }, completeWork: async () => {}, yieldWork: async () => {} }
+    saveStep: async (_work, step) => { steps.push(structuredClone(step)) }, emitEvent: async (_work, event) => { events.push(event) },
+    commitResult: async (_work, value) => { message = value }, completeWork: async (_work, value) => { completion = value }, yieldWork: async () => {} }
   await new AgentRuntime(host, model, { execute: unexpected }).runWork(work)
-  return { message, session, steps }
+  return { message, session, steps, events, completion }
 }
 
 it('answers ordinary JSON verbatim with one model call and injects the current request exactly once', async () => {
@@ -134,4 +136,23 @@ it('reviews an omitted file even when the model executes no tool', async () => {
     } })
   assert.equal(reviews, 3)
   assert.notEqual(result.message?.envelope.goalOutcome.status, 'satisfied')
+})
+
+it('rejects oversized mandatory request with numeric context diagnostics and no model recovery calls', async () => {
+  const original = 'private-request-sentinel '.repeat(4000)
+  let calls = 0
+  const result = await fixture(original, { contextWindowTokens: 16000, maxOutputTokens: 100,
+    compact: async () => { calls++; throw new Error('must not compact') }, structured: unexpected,
+    run: async () => { calls++; throw new Error('must not run') } })
+  assert.equal(calls, 0)
+  assert.equal(result.completion?.status, 'failed')
+  assert.equal(result.session?.request?.originalText, original)
+  const failed = result.events.find(event => event.kind === 'run.failed')!
+  const diagnostics = failed.data['compactionDiagnostics'] as { reason: string; components: Record<string, number> }
+  assert.equal(diagnostics.reason, 'irreducible_context')
+  assert.ok(diagnostics.components['requestTokens']! > 16000)
+  assert.ok(diagnostics.components['instructionsTokens']! > 0)
+  assert.equal(diagnostics.components['reservedTokens'], 612)
+  assert.ok(Object.values(diagnostics.components).every(value => Number.isSafeInteger(value) && value >= 0))
+  assert.ok(!JSON.stringify(failed.data).includes('private-request-sentinel'))
 })

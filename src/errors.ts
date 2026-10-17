@@ -12,8 +12,13 @@ export class AgentOSError extends Error {
   }
 }
 
+export type BudgetDimension = 'calls' | 'tokens' | 'cost' | 'deadline' | 'reservation'
 export class ModelBudgetExceededError extends AgentOSError {
-  constructor(message: string) { super('model_budget_exhausted', message) }
+  readonly diagnostics: { code: 'budget_limit'; dimension: BudgetDimension }
+  constructor(message: string, dimension: BudgetDimension = 'reservation') {
+    super('budget_limit', message)
+    this.diagnostics = Object.freeze({ code: 'budget_limit', dimension })
+  }
 }
 
 export class ModelContextBudgetError extends AgentOSError {
@@ -92,6 +97,9 @@ export interface ModelDiagnostics {
   finishReasons: string[]
   requestId?: string
   attempts?: number
+  retryAfterMs?: number
+  providerCode?: string
+  category?: 'authorization' | 'quota' | 'rate_limit' | 'timeout' | 'network' | 'unavailable' | 'protocol' | 'cancelled' | 'circuit_open' | 'unknown'
 }
 
 /** The model provider failed or returned a protocol-violating response. */

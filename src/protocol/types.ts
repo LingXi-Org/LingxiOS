@@ -87,6 +87,7 @@ export interface WorkItem {
 }
 
 export interface WorkCompletion {
+  terminalReason?: import('../app/terminal.js').TerminalReason
   goalOutcome?: import('./outcome.js').GoalOutcome
   status: 'completed' | 'failed' | 'cancelled'
   error?: string
@@ -138,6 +139,8 @@ export function actionKeyOf(action: Pick<HostAction, 'runId' | 'cellId' | 'callI
 }
 
 export interface HostActionResult {
+  /** Sanitized failure metadata; never authorization to replay an unknown effect. */
+  diagnostics?: import('../tools/failure.js').ToolFailureDiagnostics
   /** Source excerpts returned by an authorized read; the runtime assigns citation markers. */
   evidence?: Array<Omit<import('../context/evidence.js').EvidenceItem, 'marker' | 'actionKey'>>
   observations?: Array<{ resourceType: string; resourceId: string; version: string; completeness: 'full' | 'summary' }>

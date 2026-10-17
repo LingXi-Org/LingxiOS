@@ -571,7 +571,10 @@ export class MemoryModelBudgetStore implements ModelBudgetStore {
       budget.tokens += limits.reservedTokens ?? 0
       budget.costMicros += limits.reservedCostMicros ?? 0
     }
-    return { allowed, remainingCalls: Math.max(0, budget.maxModelCalls - budget.calls.size),
+    const dimension = Date.now() >= Date.parse(budget.deadlineAt) ? 'deadline' : budget.calls.size >= budget.maxModelCalls ? 'calls'
+      : budget.tokens + (limits.reservedTokens ?? 0) > budget.maxTokens ? 'tokens'
+      : budget.costMicros + (limits.reservedCostMicros ?? 0) > budget.maxCostMicros ? 'cost' : 'reservation'
+    return { allowed, ...(!allowed ? { dimension: dimension as import('../errors.js').BudgetDimension } : {}), remainingCalls: Math.max(0, budget.maxModelCalls - budget.calls.size),
       remainingTokens: Math.max(0, budget.maxTokens - budget.tokens),
       remainingCostMicros: Math.max(0, budget.maxCostMicros - budget.costMicros), deadlineAt: budget.deadlineAt }
   }

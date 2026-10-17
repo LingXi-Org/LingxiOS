@@ -6,6 +6,7 @@ export async function checkStorage(database: SqlQueryable): Promise<void> {
     .catch((cause: unknown) => { throw new Error('LingxiOS schema is missing or unavailable; explicitly install the packaged schema before startup', { cause }) })
   if (rows[0]?.['version'] !== releaseVersions.schema) throw new Error(`LingxiOS requires the initial schema version ${releaseVersions.schema}`)
   const probes = {
+    agent_terminal_outbox: 'id,root_work_id,request_version,status,reason,failed_count,cancelled_count,not_started_count,not_started_agents,delivery_snapshot,created_at,delivered_at,failed_at,available_at,claim_token,attempts',
     agent_workspace_checkpoints: 'session_key,generation,entries,work_id,fence,request_version,step_id,updated_at',
     agent_conversations: 'tenant_id,id,version,policy',
     agent_conversation_threads: 'tenant_id,conversation_id,id',

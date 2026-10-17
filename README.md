@@ -11,7 +11,7 @@ The package has four public entries: `@lyyzka/lingxios`, `@lyyzka/lingxios/worke
 ## Install
 
 ```sh
-npm install @lyyzka/lingxios@3.4.3
+npm install @lyyzka/lingxios@3.5.0
 ```
 
 Configure the GitHub Packages registry for the `@lyyzka` scope before installing:
@@ -23,6 +23,8 @@ Configure the GitHub Packages registry for the `@lyyzka` scope before installing
 Requires Node.js 22.13+, PostgreSQL, and Python 3. Install `packageResources().schema` through the product's explicit migration process before an application starts. LingxiOS performs read-only schema checks at startup and never applies DDL itself.
 
 See [performance configuration and measured framework results](docs/performance.md) for authenticated SSE drafts, notification wakeups, resource limits, and the required schema-10 additive migrations.
+
+See [3.5.0 reliability and migration notes](docs/runtime-reliability-3.5.0.md) for schema 12, bounded recovery, child admission and terminal feedback.
 
 ## Control plane and Worker
 

@@ -139,6 +139,12 @@ try {
     messageId: 'graph', version: 1, author: { id: 'human', kind: 'human' }, text: 'Collaborate to confirm the answer 4.' })).runs[0]
   const host = app.connectWorker({ workerId: 'graph-coordinator', workKinds: ['turn'] }), parent = await host.claimWork()
   const context = await host.loadContext(parent)
+  // The coordinator fixture saves a scripted model turn directly, so establish its
+  // ordinary budget reservation before it asks the public API to admit children.
+  await host.reserveModelCall(parent,'fixture-graph-coordinator',{ maxModelCalls: 128,maxTokens: 1000000,maxCostMicros: 10000000,
+    deadlineAt: new Date(Date.now()+1800000).toISOString(),reservedTokens: 120,reservedInputTokens: 100,reservedOutputTokens: 20,
+    childAdmission: { inputTokens: 100,outputTokens: 20,executionMs: 1000 } })
+  await host.recordModelUsage(parent,'fixture-graph-coordinator',{ inputTokens: 100,outputTokens: 20,costMicros: 0 })
   await host.saveSession(parent, { key: sessionKeyOf(parent), tenantId: parent.tenantId, agentId: parent.agentId,
     sessionId: parent.sessionId, revision: 0, compactionEpoch: 0, history: [], appliedWorkIds: [parent.id], request: snapshotRequest(context) })
   const graph = await app.graphs.enqueue(root, { id: 'recover', nodes: [

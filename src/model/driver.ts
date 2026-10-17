@@ -77,6 +77,7 @@ export interface CompactionResult {
 }
 
 export interface ModelDriver {
+  readonly recovery?: import('./recovery.js').ModelRecoveryPolicy
   /** Only declare an independent user channel, or a JSON candidate with a top-level body string. */
   readonly previewFormat?: 'candidate-json' | 'user-text'
   readonly profile?: ModelProfile

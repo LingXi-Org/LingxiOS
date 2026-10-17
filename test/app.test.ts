@@ -132,6 +132,7 @@ it('assembles the public app through HTTP model and Python, persisting results a
     const downloaded = await app.readArtifact(artifactIdentity, 'answer.txt')
     assert.equal(downloaded?.bytes.toString('utf8'), '4')
     assert.equal(downloaded?.artifact.path, 'answer.txt')
+    assert.deepEqual(evaluation.message?.envelope.artifacts.map(item => item.path), ['answer.txt'], 'internal Python history must never become a deliverable')
     for (const scope of [{ principalId: 'other' }, { tenantId: 'other' }, { threadId: 'other' }, { runId: 'other' }]) {
       assert.equal(await app.readArtifact({ ...artifactIdentity, ...scope }, 'answer.txt'), null)
     }

@@ -1,4 +1,7 @@
 import { DEFAULT_MODEL_BUDGET } from '../model/execution.js'
+import { readTerminalFeedback, terminalFeedback } from './terminal.js'
+import { classifyToolFailure } from '../tools/failure.js'
+import { snapshotMemories } from '../memory/context.js'
 import { abortable } from '../deadline.js'
 import type { VerificationRecord } from '../outcome/verification.js'
 import { flushOutbox, drainOutboxes } from '../control-plane/outbox.js'
@@ -67,8 +70,12 @@ import { collaborationTools } from '../collaboration/tools.js'
 import { authorizeRunRead, createCollaborationAPI } from '../collaboration/api.js'
 import { verifyGraphResults } from '../collaboration/graphs.js'
 import { enqueueChild, requestSnapshot } from './jobs.js'
+import { ChildAdmissionRejectedError, recordChildBudgetDenials } from '../model/child-admission.js'
+import { BackgroundScheduler, backgroundOptions, backgroundPool, type BackgroundOptions } from './background-scheduler.js'
 
 export interface LingxiOSOptions {
+  /** Declare background ownership explicitly for context-only worker clients. Defaults to active. */
+  background?: BackgroundOptions
   responsePolicy?: import('../runtime/response-policy.js').ResponsePolicy
   performance?: { notifications?: boolean; outboxConcurrency?: number; contextSnapshot?: boolean }
   realtime?: RealtimeOptions
@@ -175,6 +182,7 @@ function requestPolicyMeta(input: Pick<RequestInput, 'codeExecution' | 'delivery
 /** Trusted server entry point. Product ingress authenticates the principal; workers execute separately. */
 export async function createLingxiOS(options: LingxiOSOptions) {
   if (!options.database?.query || !options.database.connect) throw new ConfigError('a PostgreSQL pool is required')
+  const backgroundConfig = backgroundOptions(options.background)
   const outboxConcurrency = options.performance?.outboxConcurrency ?? 4
   if (!Number.isSafeInteger(outboxConcurrency) || outboxConcurrency < 1 || outboxConcurrency > 32) throw new ConfigError('outbox concurrency must be 1-32')
   const shutdown = new AbortController()
@@ -192,9 +200,11 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   await checkStorage(options.database)
   const realtime = createRealtime(options.database, runWakeup, shutdown.signal, options.realtime)
   const logger = options.logger ?? createLogger()
+  const backgroundDatabase = backgroundPool(options.database, backgroundConfig.databaseConcurrency, shutdown.signal)
   const homesRoot = resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes')
   if (options.workspace && !options.objects) throw new ConfigError('workspace checkpoints require shared object storage')
   const workspace = options.workspace ? createWorkspaceStore(options.database, options.objects!, options.workspace) : undefined
+  const backgroundWorkspace = options.workspace ? createWorkspaceStore(backgroundDatabase, options.objects!, options.workspace) : undefined
   const modelBudget = { ...DEFAULT_MODEL_BUDGET, ...loadModelBudget(), ...options.modelBudget }
   if ((process.env['NODE_ENV'] === 'production' || options.modelBudget?.maxCostMicros !== undefined || process.env['AGENT_OS_MAX_COST_MICROS'] !== undefined)
     && !(modelBudget.inputCostMicrosPerMillion > 0 || modelBudget.outputCostMicrosPerMillion > 0)) {
@@ -213,6 +223,19 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       }
     } }
   const memory = options.memory ? createMemoryRuntime(options.database, options.memory, options.modelBudget) : undefined
+  async function optionalMemoryContext(work: Omit<WorkItem,'leaseToken'>, signal?: AbortSignal, profile?: 'fast' | 'deep') {
+    try { return await memory!.context(work,signal,profile) }
+    catch (error) {
+      signal?.throwIfAborted()
+      const failure = classifyToolFailure(error,'authorization')
+      if (failure.diagnostics.category !== 'authorization'
+        && !(failure.diagnostics.category === 'dependency' && failure.diagnostics.retryable)) throw error
+      metrics.counter('agentos_memory_context_unavailable_total','Optional memory context omitted after dependency or scope authorization failure').inc()
+      return snapshotMemories({ status: 'unavailable',core: [],directory: [],recalled: [],strategies: [],retrieval: [],
+        omitted: { core: 0,directory: 0,recalled: 0,strategies: 0 },
+        budget: { ratio: options.memory?.contextBudget?.ratio ?? 0.08,maxTokens: options.memory?.contextBudget?.maxTokens ?? 8000 } })
+    }
+  }
   const harness = options.harness ? assembleHarness(options.harness) : undefined
   const nativeCollaboration = collaborationTools()
   const businessTools = [...options.tools ?? [], ...harness?.tools ?? []]
@@ -297,21 +320,21 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       const previewVersion = options.realtime?.allowDraft ? Number((await options.database.query(
         'SELECT jsonb_array_length(steer_inputs)+1 AS version FROM lingxios.agent_work_items WHERE id=$1', [work.id])).rows[0]?.['version']) : 1
       return { ...context, previewAllowed: await realtime.allowed(work, previewVersion), ...(discoveredTools ? { discoveredTools } : {}),
-        ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await memory.context(work, signal, context.responseProfile) } : {}) }
+        ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await optionalMemoryContext(work, signal, context.responseProfile) } : {}) }
     } },
     ...(options.delivery ? { delivery: options.delivery } : {}),
   }
   const sessions = new PgSessionStore(options.database)
   async function flushDeliveries() {
     if (!integration?.delivery) return
-    await flushOutbox(options.database, 'agent_delivery_outbox', async (row, context) => {
+    return flushOutbox(backgroundDatabase, 'agent_delivery_outbox', async (row, context) => {
       const { leaseToken: _token, ...work } = workItemFromRow(row['delivery_work'] as Record<string, unknown>, '', Number(row['home_epoch']))
-      const resultId = String(row['result_id']), im = await imDeliveryContext(options.database, work, resultId)
+      const resultId = String(row['result_id']), im = await imDeliveryContext(backgroundDatabase, work, resultId)
       const receipt = await integration.delivery!.deliverMessage(work, row['message'] as AssistantMessage,
         { ...context, ...(im ? { im } : {}), commit: { resultId, fence: Number(row['result_fence']) } })
       if (im) {
         identifier(receipt?.messageId)
-        const recorded = await options.database.query(`UPDATE lingxios.agent_delivery_outbox SET receipt=$3::jsonb
+        const recorded = await backgroundDatabase.query(`UPDATE lingxios.agent_delivery_outbox SET receipt=$3::jsonb
           WHERE result_id=$1 AND claim_token=$2 AND (receipt IS NULL OR receipt=$3::jsonb) RETURNING result_id`,
         [resultId, row['claim_token'], JSON.stringify({ ...receipt, messageKey: im.messageKey, replyKey: im.replyKey })])
         if (!recorded.rows.length) throw new Error('IM delivery receipt changed or delivery lease was lost')
@@ -320,14 +343,14 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   }
   async function flushEvents() {
     if (!integration?.delivery) return
-    await flushOutbox(options.database, 'agent_run_events', async (row, context) => {
+    return flushOutbox(backgroundDatabase, 'agent_run_events', async (row, context) => {
       const work = row['delivery_work'] as Omit<WorkItem, 'leaseToken'>
       if (work.conversation) {
         if (work.conversation.internal || row['visibility'] !== 'user') return
-        const current = await options.database.query(`SELECT 1 FROM lingxios.agent_work_items
+        const current = await backgroundDatabase.query(`SELECT 1 FROM lingxios.agent_work_items
           WHERE id=$1 AND fence=$2 AND cancel_requested_at IS NULL`, [work.id, work.fence])
         if (!current.rows.length) return
-        await authorizeConversationWork(options.database, work, 'speak')
+        await authorizeConversationWork(backgroundDatabase, work, 'speak')
       }
       await integration.delivery!.onEvent(work, { runId: String(row['run_id']), seq: Number(row['seq']),
         kind: String(row['kind']), stage: row['stage'] as RunEvent['stage'], visibility: row['visibility'] as RunEvent['visibility'],
@@ -336,8 +359,20 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   }
   async function flushModelUsage() {
     if (!options.onModelCall) return
-    await flushOutbox(options.database, 'agent_model_budget_calls', (row, context) => options.onModelCall!(
+    return flushOutbox(backgroundDatabase, 'agent_model_budget_calls', (row, context) => options.onModelCall!(
       row['observation'] as import('../model/execution.js').ModelCallObservation, context), { signal: shutdown.signal, metrics, concurrency: outboxConcurrency })
+  }
+  async function flushTerminalFeedback() {
+    if (!integration.delivery?.deliverTerminal) return
+    return flushOutbox(backgroundDatabase, 'agent_terminal_outbox', async (row, context) => {
+      const { leaseToken: _token, ...work } = workItemFromRow(row['delivery_work'] as Record<string, unknown>, '', 1)
+      if (work.conversation) await authorizeConversationWork(backgroundDatabase, work, 'speak')
+      const current = await backgroundDatabase.query(`SELECT 1 FROM lingxios.agent_work_items
+        WHERE id=$1 AND tenant_id=$2 AND principal_id IS NOT DISTINCT FROM $3
+          AND jsonb_array_length(steer_inputs)+1=$4`,[work.id,work.tenantId,work.principalId ?? null,row['request_version']])
+      if (!current.rows.length) return
+      await integration.delivery!.deliverTerminal!(work, terminalFeedback(row), context)
+    }, { signal: shutdown.signal, metrics, concurrency: outboxConcurrency })
   }
 
   async function verifyNative(work: Omit<WorkItem, 'leaseToken'>, candidate: import('../outcome/verification.js').Candidate, database: SqlQueryable) {
@@ -402,7 +437,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
           [work.id, work.tenantId, work.agentId, work.sessionId])
         return (result.rows[0]?.['message'] as AssistantMessage | undefined) ?? null
       },
-      onEvent: async () => { if (options.performance?.notifications !== false) runWakeup.notify(); background('events', flushEvents) },
+      onEvent: async () => { if (options.performance?.notifications !== false) runWakeup.notify(); background('events') },
       deliverMessage: async (work, message) => {
         const recordMemory = options.memory && !work.conversation?.internal && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind)
         await persistArtifacts(resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), work, message, options.objects)
@@ -483,10 +518,10 @@ export async function createLingxiOS(options: LingxiOSOptions) {
             integration.delivery ? JSON.stringify(work) : null])
         })
         if (options.performance?.notifications !== false) { runWakeup.notify(); workWakeup.notify() }
-        if (memory) background('memory capture', () => drainMemoryCapture(options.database, options.memory!, shutdown.signal))
-        background(`dependencies:${work.id}`, () => resumeDependents(options.database, work.id))
-        background('deliveries', flushDeliveries)
-        background('events', flushEvents)
+        if (memory) background('memory capture')
+        background('dependencies')
+        background('deliveries')
+        background('events')
       },
     },
   })
@@ -535,61 +570,52 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     waitWork: (work, outcome) => service.waitWork(work, outcome),
     yieldWork: (work) => service.yieldWork(work),
   }
-  const jobs = new Map<string, Promise<unknown>>()
-  const dirtyJobs = new Set<string>()
-  const background = (name: string, operation: () => Promise<unknown>) => {
-    if (stopped) return
-    if (jobs.has(name)) { dirtyJobs.add(name); return }
-    const running = (async () => {
-      do {
-        dirtyJobs.delete(name)
-        await operation().catch(error => logger.warn(`${name} failed`, { error: error instanceof Error ? error.message : String(error) }))
-      } while (!stopped && dirtyJobs.has(name))
-    })().finally(() => { jobs.delete(name); dirtyJobs.delete(name) })
-    jobs.set(name, running)
+  let stopped = false
+  const scheduler = new BackgroundScheduler({ signal: shutdown.signal, minPollMs: backgroundConfig.minPollMs,
+    maxPollMs: backgroundConfig.maxPollMs,
+    onError: (name, error) => logger.warn(`${name} failed`, { error: error instanceof Error ? error.message : String(error) }) })
+  const background = (name: string) => {
+    if (backgroundConfig.role === 'active') scheduler.wake(name)
   }
   const flushDeliveryChannels = () => {
-    if (stopped) return
-    // Each outbox owns its bounded active lanes. Healthy lanes can restart while another transport is slow.
-    for (const flush of [flushDeliveries, flushEvents, flushModelUsage]) {
-      void flush().catch(error => logger.warn('outbox flush failed', { error: String(error) }))
-    }
+    for (const name of ['deliveries', 'events', 'model usage', 'terminal feedback']) background(name)
   }
-  let nextMemorySynthesis = 0, memorySynthesisFailures = 0
-  const deliveryTimer = setInterval(() => {
-    flushDeliveryChannels()
-    background('dependencies', () => resumeDependents(options.database))
-    background('approvals', () => resumeDecidedApprovals(options.database))
-    background('queue fairness', () => sweepQueuedWork(options.database))
-    if (memory) background('memory capture', () => drainMemoryCapture(options.database, options.memory!, shutdown.signal))
-    if (memory && performance.now() >= nextMemorySynthesis) background('memory synthesis', async () => {
-      try {
-        await retryMemorySynthesis(options.database)
-        await scheduleMemoryReflection(options.database,options.memory!)
-        memorySynthesisFailures = 0
-      } catch (error) {
-        memorySynthesisFailures = Math.min(6, memorySynthesisFailures + 1)
-        nextMemorySynthesis = performance.now() + Math.min(60_000, 1000 * 2 ** memorySynthesisFailures)
-        throw error
-      }
-    })
-  }, 1_000)
-  const maintenanceTimer = setInterval(() => {
-    background('storage maintenance', () => maintainStorage(options.database, homesRoot))
-    if (workspace) background('workspace maintenance', () => workspace.maintenance(shutdown.signal))
-    background('metrics', () => refreshMetrics(options.database, metrics))
-  }, 60_000)
-  deliveryTimer.unref(); maintenanceTimer.unref()
-  let stopped = false
-  const notificationListener = options.performance?.notifications === false ? Promise.resolve() : listenWakeups(notificationPool, channel => {
-    if (channel === 'work') {
-      workWakeup.notify()
-      background('dependencies', () => resumeDependents(options.database))
-      background('approvals', () => resumeDecidedApprovals(options.database))
+  if (backgroundConfig.role === 'active') {
+    for (const [name, flush] of [['deliveries', flushDeliveries], ['events', flushEvents], ['model usage', flushModelUsage], ['terminal feedback', flushTerminalFeedback]] as const) {
+      if (name === 'terminal feedback' && !integration.delivery?.deliverTerminal) continue
+      if (name === 'model usage' ? !options.onModelCall : !integration.delivery) continue
+      scheduler.add(name, async () => {
+        const scan = await flush()
+        if (scan?.errors) throw new Error('outbox scan or delivery failed; durable intent retained')
+        return !!scan && (scan.claimed > 0 || scan.active > 0)
+      }, { concurrency: outboxConcurrency })
     }
-    runWakeup.notify()
-    if (channel === 'outbox') flushDeliveryChannels()
-  }, shutdown.signal, logger)
+    scheduler.add('dependencies', async () => (await resumeDependents(backgroundDatabase)).rowCount! > 0)
+    scheduler.add('approvals', async () => { await resumeDecidedApprovals(backgroundDatabase) })
+    scheduler.add('queue fairness', async () => {
+      const result = await sweepQueuedWork(backgroundDatabase)
+      return result.tripped + result.fenced > 0
+    })
+    if (memory) {
+      scheduler.add('memory capture', async () => { await drainMemoryCapture(backgroundDatabase, options.memory!, shutdown.signal) })
+      scheduler.add('memory synthesis', async () => {
+        await retryMemorySynthesis(backgroundDatabase)
+        return (await scheduleMemoryReflection(backgroundDatabase, options.memory!)).jobIds.length > 0
+      })
+    }
+    scheduler.add('storage maintenance', async () => { await maintainStorage(backgroundDatabase, homesRoot) }, { intervalMs: backgroundConfig.sweepIntervalMs })
+    if (backgroundWorkspace) scheduler.add('workspace maintenance', async () => { await backgroundWorkspace.maintenance(shutdown.signal) }, { intervalMs: backgroundConfig.sweepIntervalMs })
+    scheduler.add('metrics', async () => { await refreshMetrics(backgroundDatabase, metrics) }, { intervalMs: backgroundConfig.sweepIntervalMs })
+  }
+  const notificationListener = backgroundConfig.role === 'passive' || options.performance?.notifications === false
+    ? Promise.resolve() : listenWakeups(notificationPool, channel => {
+      if (channel === 'work') {
+        workWakeup.notify()
+        for (const name of ['dependencies', 'approvals', 'queue fairness', 'memory capture', 'memory synthesis']) background(name)
+      }
+      runWakeup.notify()
+      if (channel === 'outbox') flushDeliveryChannels()
+    }, shutdown.signal, logger)
   let stopPromise: Promise<void> | undefined
   let listening: Promise<number> | undefined
   let controlPlane: ControlPlaneServer | undefined
@@ -727,6 +753,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     async enqueueDelegated(input: DelegatedRequestInput) {
       const delegation = input.delegation
       if (!delegation) throw new Error('invalid delegated request')
+      let admissionParent: WorkItem | undefined
       return withTransaction(options.database, async db => {
         const parentRow = (await db.query(`SELECT * FROM lingxios.agent_work_items WHERE id=$1 AND tenant_id=$2 AND principal_id=$3 FOR UPDATE`,
           [delegation.parentWorkId, input.tenantId, input.principalId])).rows[0]
@@ -734,9 +761,19 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         const parent = workItemFromRow(parentRow, '', 1), request = await requestSnapshot(db, parent.id, delegation.parentRequestVersion)
         if (canonicalJson(request) !== canonicalJson(delegation.parentRequest) || delegation.rootWorkId !== (parent.meta?.['rootWorkId'] ?? parent.id)
           || delegation.instructionAuthorId !== parent.agentId) throw new Error('delegation differs from its durable parent')
+        admissionParent = parent
         return enqueueChild(db, parent, delegation.parentRequestVersion, { id: input.id ?? randomUUID(), agentId: input.agentId, text: input.text,
           sessionId: input.sessionId, ...(input.executionClass ? { executionClass: input.executionClass } : {}),
           ...(input.threadId === undefined ? {} : { threadId: input.threadId }), meta: policyMeta(input) })
+      }).catch(async error => {
+        if (error instanceof ChildAdmissionRejectedError && admissionParent) {
+          const parent = admissionParent
+          await withTransaction(options.database,async db => {
+            await authorizeConversationWork(db,parent,'execute',true)
+            await recordChildBudgetDenials(db,parent,delegation.parentRequestVersion,error.children,error.diagnostics.dimension)
+          })
+        }
+        throw error
       })
     },
     async readMessage(identity: MessageIdentity): Promise<AssistantMessage | null> {
@@ -795,7 +832,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         resultReadParams(identity))
       return rows[0]?.['state'] as 'pending' | 'delivered' | 'failed' | 'not_observed' | undefined ?? null
     },
-    retryDelivery: (identity: RunIdentity, channel: 'message' | 'events' | 'usage' = 'message') => retryDelivery(options.database,identity,channel),
+    readTerminal: (identity: RunIdentity) => readTerminalFeedback(options.database, identity),
+    retryDelivery: (identity: RunIdentity, channel: 'message' | 'events' | 'usage' | 'terminal' = 'message') => retryDelivery(options.database,identity,channel),
     async listenControlPlane(input: { serviceToken: string; port: number; host?: string }) {
       if (stopped) throw new Error('application has stopped')
       if (controlPlane) throw new Error('control plane is already listening or starting')
@@ -825,11 +863,10 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     stop() {
       stopped = true
       shutdown.abort(new Error('control plane stopped'))
-      clearInterval(deliveryTimer); clearInterval(maintenanceTimer)
       stopPromise ??= (async () => {
         await notificationListener
-        await drainOutboxes(options.database)
-        await Promise.race([Promise.allSettled([...jobs.values()]), new Promise(resolve => { const timer = setTimeout(resolve, 5_000); timer.unref() })])
+        await scheduler.stop()
+        await drainOutboxes(backgroundDatabase)
         // The listen caller receives startup errors; shutdown still releases any listener.
         await listening?.catch(() => {})
         if (controlPlane) {

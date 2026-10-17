@@ -56,7 +56,7 @@ export interface CompactionOutcome {
 
 export class HardLimitExceededError extends Error {
   constructor(cause: unknown, readonly diagnostics?: {
-    reason: 'context_budget' | 'model_budget' | 'model_driver' | 'invalid_summary' | 'cancelled' | 'unknown'
+    reason: 'irreducible_context' | 'context_budget' | 'model_budget' | 'model_driver' | 'invalid_summary' | 'cancelled' | 'unknown'
     estimatedTokens: number
     hardLimitTokens: number
     contextWindowTokens: number
@@ -65,6 +65,8 @@ export class HardLimitExceededError extends Error {
     completedChunks?: number
     historyItems?: number
     overheadTokens?: number
+    /** Independent numeric estimates; serialization framing can prevent exact additivity. */
+    components?: Record<string, number>
   }) {
     super('context compaction failed at the hard context limit', { cause })
     this.name = 'HardLimitExceededError'
@@ -96,6 +98,17 @@ export async function compactIfNeeded(
   const estimated = estimateTokens(session.history, model) + overheadTokens
   const softLimit = Math.floor(options.contextWindowTokens * options.softRatio)
   const hardLimit = Math.floor(options.contextWindowTokens * options.hardRatio)
+  // History compaction cannot shrink fixed instructions, tools or the current request.
+  // Reject before spending a call, including the empty-history case.
+  if (overheadTokens >= hardLimit) {
+    const profile = modelProfile(model)
+    const reservedTokens = profile.maxOutputTokens + profile.maxThinkingTokens + 512
+    throw new HardLimitExceededError('mandatory context exceeds the context budget', {
+      reason: 'irreducible_context', estimatedTokens: estimated, hardLimitTokens: hardLimit,
+      contextWindowTokens: options.contextWindowTokens, requestInputTokens: Math.max(0, overheadTokens - reservedTokens),
+      reservedTokens, overheadTokens, historyItems: session.history.length, completedChunks: 0,
+    })
+  }
   if (estimated < softLimit) return { compacted: false }
   let keepTailItems = Math.min(session.history.length, options.keepTailItems)
   const targetLimit = background ? softLimit : hardLimit

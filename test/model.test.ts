@@ -13,7 +13,7 @@ for (const mode of ['tool', 'empty', 'truncated', 'structured', 'compact'] as co
     const observations: ModelCallObservation[] = [], settlements: unknown[] = []
     let calls = 0
     const usage = { prompt_tokens: 31, completion_tokens: 17 }
-    const source = new OpenAIChatDriver('fixture', { apiKey: 'test', maxOutputTokens: 100, maxAttempts: 1,
+    const source = new OpenAIChatDriver(`fixture-${mode}`, { apiKey: 'test', maxOutputTokens: 100, maxAttempts: 1,
       fetchImpl: async () => {
         calls++
         if (mode === 'structured' || mode === 'compact') return Response.json({ model: 'fixture', usage,
@@ -209,5 +209,56 @@ it('bounds streaming and auxiliary response bodies and cancels oversized readers
     await assert.rejects(call, /exceeds 16 MiB/)
     assert.equal(cancelled, true)
     assert.ok(chunks <= 18)
+  }
+})
+
+// Recovery failure inventory: rejection hot loops; credential/model cross-talk; concurrent half-open probes;
+// no-first-byte and stalled streams outlive deadlines; cancellation leaks a reader or triggers retries.
+it('opens a credential-scoped rejection circuit and admits one half-open probe', async () => {
+  let calls = 0
+  let release: (() => void) | undefined
+  const options = { apiKey: 'circuit-key', maxAttempts: 1, circuitResetMs: 30,
+    fetchImpl: async () => {
+      calls++
+      if (calls === 1) return new Response('', { status: 402 })
+      await new Promise<void>(resolve => { release = resolve })
+      return Response.json({ choices: [{ finish_reason: 'stop', message: { content: '{}' } }] })
+    } }
+  const source = new OpenAIChatDriver('circuit-quota', options)
+  const request = { instructions: '', input: {} }
+  await assert.rejects(source.structured(request), error => error instanceof ModelDriverError && error.diagnostics.status === 402)
+  await assert.rejects(source.singleAttempt().structured(request), error => error instanceof ModelDriverError && error.diagnostics.category === 'circuit_open')
+  assert.equal(calls, 1)
+  const unrelated = new OpenAIChatDriver('circuit-quota', { ...options, apiKey: 'other-key', fetchImpl: async () =>
+    Response.json({ choices: [{ finish_reason: 'stop', message: { content: '{}' } }] }) })
+  await unrelated.structured(request)
+  await new Promise(resolve => setTimeout(resolve, 45))
+  const probe = source.structured(request)
+  await new Promise(resolve => setTimeout(resolve, 5))
+  await assert.rejects(source.singleAttempt().structured(request), error => error instanceof ModelDriverError && error.diagnostics.category === 'circuit_open')
+  assert.equal(calls, 2)
+  release!()
+  await probe
+})
+
+it('bounds first-byte waiting and stream idle time and cancels the source reader', async () => {
+  for (const firstByte of [true, false]) {
+    let cancelled = 0
+    const options = { apiKey: 'timeout-key', maxAttempts: 1, requestTimeoutMs: 1000, firstByteTimeoutMs: 20, streamIdleTimeoutMs: 20,
+      fetchImpl: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (!firstByte) controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'))
+        },
+        cancel() { cancelled++ },
+      })) }
+    const source = new OpenAIChatDriver(`stream-timeout-${firstByte}`, options)
+    const began = performance.now()
+    const keepAlive = setTimeout(() => {}, 500)
+    try {
+      await assert.rejects(source.run({ instructions: '', items: [], codeExecution: 'disabled' }), error =>
+        error instanceof ModelDriverError && error.diagnostics.category === 'timeout')
+    } finally { clearTimeout(keepAlive) }
+    assert.ok(performance.now() - began < 500)
+    assert.equal(cancelled, 1)
   }
 })

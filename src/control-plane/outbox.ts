@@ -2,10 +2,18 @@ import { randomUUID } from 'node:crypto'
 import type { SqlQueryable } from './pg-store.js'
 import { createLogger } from '../logging.js'
 import { abortable } from '../deadline.js'
-import { errorMessage } from '../errors.js'
+import { classifyToolFailure } from '../tools/failure.js'
 import { LATENCY_BUCKETS, type MetricsRegistry } from '../metrics.js'
 
 const definitions = {
+  agent_terminal_outbox: { keys: ['id'],
+    join: 'JOIN lingxios.agent_work_items work ON work.id=outbox.root_work_id',
+    where: `AND outbox.request_version=jsonb_array_length(work.steer_inputs)+1`,
+    select: ',to_jsonb(work) AS delivery_work', returning: ',candidate.delivery_work',
+    claimSet: `,delivery_snapshot=COALESCE(outbox.delivery_snapshot,jsonb_build_object(
+      'id',outbox.id,'root_work_id',outbox.root_work_id,'request_version',outbox.request_version,
+      'status',outbox.status,'reason',outbox.reason,'failed_count',outbox.failed_count,'cancelled_count',outbox.cancelled_count,
+      'not_started_count',outbox.not_started_count,'not_started_agents',outbox.not_started_agents,'created_at',outbox.created_at))` },
   agent_run_events: { keys: ['run_id','seq'], where: `AND outbox.delivery_work IS NOT NULL
     AND NOT EXISTS(SELECT 1 FROM lingxios.agent_run_events prior WHERE prior.run_id=outbox.run_id
       AND prior.seq<outbox.seq AND prior.delivery_work IS NOT NULL AND prior.delivered_at IS NULL)` },
@@ -20,7 +28,7 @@ const definitions = {
     select: ',result.message,result.fence AS result_fence,result.home_epoch,result.committed_at,to_jsonb(work) AS delivery_work',
     returning: ',candidate.message,candidate.result_fence,candidate.home_epoch,candidate.committed_at,candidate.delivery_work' },
   agent_model_budget_calls: { keys: ['root_work_id','call_id'], where: 'AND outbox.observation IS NOT NULL' },
-} satisfies Record<string, { keys: string[]; join?: string; where?: string; select?: string; returning?: string }>
+} satisfies Record<string, { keys: string[]; join?: string; where?: string; select?: string; returning?: string; claimSet?: string }>
 type Table = keyof typeof definitions
 const pending = new WeakMap<SqlQueryable, Map<Table, Set<Promise<void>>>>()
 export interface DeliveryContext {
@@ -40,9 +48,16 @@ export interface OutboxOptions {
   metrics?: MetricsRegistry
 }
 
+/** Scan observations only; durable SQL remains authoritative for delivery state. */
+export interface OutboxScan {
+  claimed: number
+  errors: number
+  active: number
+}
+
 /** Independent lanes claim just before sending. Slow lanes never hold unstarted rows or healthy lanes. */
 export async function flushOutbox(database: SqlQueryable, table: Table, deliver: Deliver,
-  options: OutboxOptions = {}) {
+  options: OutboxOptions = {}): Promise<OutboxScan> {
   const concurrency = options.concurrency ?? 4, budgetMs = options.budgetMs ?? 1000, maxRows = options.maxRows ?? 256
   const timeoutMs = options.timeoutMs ?? 10_000, maxAttempts = options.maxAttempts ?? 12
   if (!Object.hasOwn(definitions, table)) throw new Error('unsupported outbox')
@@ -55,8 +70,9 @@ export async function flushOutbox(database: SqlQueryable, table: Table, deliver:
   if (!commands) { commands = new Map(); pending.set(database, commands) }
   let lanes = commands.get(table)
   if (!lanes) { lanes = new Set(); commands.set(table, lanes) }
+  const scan: OutboxScan = { claimed: 0, errors: 0, active: lanes.size }
   const free = concurrency - lanes.size
-  if (free <= 0 || options.signal?.aborted) return
+  if (free <= 0 || options.signal?.aborted) return scan
   const until = performance.now() + budgetMs
   let admitted = 0
   const started = Array.from({ length: free }, () => {
@@ -65,15 +81,18 @@ export async function flushOutbox(database: SqlQueryable, table: Table, deliver:
         last_error=COALESCE(last_error,'delivery lease expired at the attempt limit')
         WHERE delivered_at IS NULL AND failed_at IS NULL AND available_at<=NOW() AND attempts>=$1`, [maxAttempts])
       while (!options.signal?.aborted && performance.now() < until && admitted++ < maxRows) {
-        if (!await deliverBatch(database, table, deliver, options)) return
+        if (!await deliverBatch(database, table, deliver, options, scan)) return
       }
     })().catch(() => {
+      scan.errors++
       createLogger().warn('outbox acknowledgement failed; durable rows retain the delivery intent', { table })
     }).finally(() => lanes!.delete(operation))
     lanes!.add(operation)
     return operation
   })
   await Promise.all(started)
+  scan.active = lanes.size
+  return scan
 }
 
 export async function drainOutboxes(database: SqlQueryable): Promise<void> {
@@ -81,18 +100,19 @@ export async function drainOutboxes(database: SqlQueryable): Promise<void> {
 }
 
 async function deliverBatch(database: SqlQueryable, table: Table, deliver: Deliver,
-  options: OutboxOptions): Promise<boolean> {
+  options: OutboxOptions, scan: OutboxScan): Promise<boolean> {
   const timeoutMs = options.timeoutMs ?? 10_000, maxAttempts = options.maxAttempts ?? 12
-  const spec: { keys: string[]; join?: string; where?: string; select?: string; returning?: string } = definitions[table]
+  const spec: { keys: string[]; join?: string; where?: string; select?: string; returning?: string; claimSet?: string } = definitions[table]
   const token = randomUUID()
   // Identifiers are from this package-owned table, never input from a model or resource.
   const { rows } = await database.query(`WITH candidate AS (
     SELECT ${spec.keys.map(key => `outbox.${key}`).join(',')}${spec.select ?? ''} FROM lingxios.${table} outbox ${spec.join ?? ''}
     WHERE outbox.delivered_at IS NULL AND outbox.failed_at IS NULL AND outbox.available_at<=NOW() AND outbox.attempts<$2 ${spec.where ?? ''}
     ORDER BY outbox.available_at,${spec.keys.map(key => `outbox.${key}`).join(',')} LIMIT 1 FOR UPDATE OF outbox SKIP LOCKED)
-    UPDATE lingxios.${table} outbox SET claim_token=$1,available_at=NOW()+INTERVAL '60 seconds',attempts=LEAST(attempts+1,30)
+    UPDATE lingxios.${table} outbox SET claim_token=$1,available_at=NOW()+INTERVAL '60 seconds',attempts=LEAST(attempts+1,30)${spec.claimSet ?? ''}
     FROM candidate WHERE ${spec.keys.map(key => `outbox.${key}=candidate.${key}`).join(' AND ')}
     RETURNING outbox.*${spec.returning ?? ''}`, [token, maxAttempts])
+  scan.claimed += rows.length
   for (const row of rows) {
     const params = [...spec.keys.map(key => row[key]), token]
     const where = `${spec.keys.map((key, index) => `${key}=$${index + 1}`).join(' AND ')} AND claim_token=$${params.length}`
@@ -109,10 +129,14 @@ async function deliverBatch(database: SqlQueryable, table: Table, deliver: Deliv
           .observe(Math.max(0, (Date.now() - new Date(row['committed_at'] as string | Date).getTime()) / 1000))
       }
     } catch (error) {
+      scan.errors++
+      const failure = classifyToolFailure(error,'authorization')
+      const denied = failure.diagnostics.category === 'authorization'
+      const safeError = timeout.signal.aborted ? 'delivery deadline exceeded' : `Delivery failed (${failure.diagnostics.category})`
       await database.query(`UPDATE lingxios.${table} SET claim_token=NULL,
-        last_error=$${params.length + 1},failed_at=CASE WHEN attempts>=$${params.length + 2} THEN NOW() ELSE NULL END,
+        last_error=$${params.length + 1},failed_at=CASE WHEN attempts>=$${params.length + 2} OR $${params.length + 3} THEN NOW() ELSE NULL END,
         available_at=NOW()+LEAST(300,5*power(2,LEAST(attempts-1,6)))*INTERVAL '1 second' WHERE ${where}`,
-      [...params, errorMessage(error).slice(0, 1000), maxAttempts])
+      [...params, safeError, maxAttempts, denied])
         .catch(() => { throw new Error('outbox failure could not be persisted') })
     } finally {
       clearTimeout(timer)

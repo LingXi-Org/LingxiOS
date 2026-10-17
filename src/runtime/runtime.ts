@@ -29,7 +29,7 @@ import type { MemorySnapshot } from '../memory/types.js'
  */
 import {
   AgentOSError, ApprovalPendingError, KernelCancelledError, KernelExecutionError, KernelTimeoutError,
-  LeaseLostError, ModelDriverError, RunCancelledError, errorMessage,
+  LeaseLostError, ModelContextBudgetError, ModelDriverError, RunCancelledError, errorMessage,
 } from '../errors.js'
 import type { HostPort } from '../host/port.js'
 import { requestItems, snapshotRequest } from '../context/request.js'
@@ -80,6 +80,8 @@ export interface WorkProcessor {
 }
 
 export interface AgentRuntimeOptions {
+  /** Explicit, currently authorized route; never inferred from provider availability. */
+  fallbackModel?: import('../model/execution.js').ApprovedModelFallback
   /** Optional non-reasoning configuration for host-authorized automatic response routing. */
   fastModel?: ModelDriver
   performance?: { checkpointDedup?: boolean; promptCache?: boolean; asyncCompaction?: boolean; onDemandAttachments?: boolean }
@@ -118,6 +120,7 @@ interface AttemptSignals {
 }
 
 export class AgentRuntime {
+  private readonly fallbackModel: import('../model/execution.js').ApprovedModelFallback | undefined
   private readonly fastModel: ModelDriver | undefined
   private readonly checkpointDedup: boolean
   private readonly promptCache: boolean
@@ -179,6 +182,7 @@ export class AgentRuntime {
     options: AgentRuntimeOptions = {},
   ) {
     this.fastModel = options.fastModel
+    this.fallbackModel = options.fallbackModel
     this.metrics = options.metrics
     this.checkpointDedup = options.performance?.checkpointDedup ?? true
     this.promptCache = options.performance?.promptCache ?? true
@@ -288,7 +292,7 @@ export class AgentRuntime {
       signals.lifecycle.signal,30_000,this.metrics))
     let activeSession: SessionRecord | null = null
     const log = this.logger.child({ runId, workId: work.id, agentId: work.agentId, fence: work.fence })
-    const model = executionModel(this.hostFor(work), this.model, work, this.rootModelBudget, event => this.event(work, runId, event))
+    const model = executionModel(this.hostFor(work), this.model, work, this.rootModelBudget, event => this.event(work, runId, event),'model',this.fallbackModel)
 
     try {
       const recoveryStarted = performance.now()
@@ -482,8 +486,10 @@ export class AgentRuntime {
       const dynamicItems = [...preferenceItems, ...this.policy.dynamicContextItems(liveContext)]
       const instructions = session.promptContext.systemInstructions
       if (budget.rediagnose && protocolCorrection && 'role' in protocolCorrection) protocolCorrection = { role: 'user', content: 'Repeated failure without new observations: diagnose the cause and change the approach before another attempt. ' + protocolCorrection.content }
-      const supplementalItems = [...dynamicItems, ...evidenceItems(evidence(), modelTools.some(tool => tool.action === 'task.read_evidence')), ...(session.request ? requestItems(session.request,
-        this.onDemandAttachments && modelTools.some(tool => tool.action === 'task.read_attachment')) : []), ...(protocolCorrection ? [protocolCorrection] : [])]
+      const currentEvidenceItems = evidenceItems(evidence(), modelTools.some(tool => tool.action === 'task.read_evidence'))
+      const currentRequestItems = session.request ? requestItems(session.request,
+        this.onDemandAttachments && modelTools.some(tool => tool.action === 'task.read_attachment')) : []
+      const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...(protocolCorrection ? [protocolCorrection] : [])]
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
       const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
@@ -501,7 +507,33 @@ export class AgentRuntime {
         memoryForModel=snapshot; overheadTokens=estimateOverhead()
       }
       // A soft threshold schedules work, not a foreground wait. Hard-budget compaction is mandatory.
-      const hardLimit = this.compaction.contextWindowTokens * this.compaction.hardRatio
+      const hardLimit = Math.floor(this.compaction.contextWindowTokens * this.compaction.hardRatio)
+      // Optional memory must not turn a feasible request into a fixed-context rejection.
+      if (memoryForModel && overheadTokens >= hardLimit) {
+        const original = memoryForModel
+        renderMemory(undefined)
+        const available = hardLimit - overheadTokens - 512
+        if (available > 512) renderMemory(fitMemorySnapshot(original, this.compaction.contextWindowTokens, available))
+        if (overheadTokens >= hardLimit) renderMemory(undefined)
+      }
+      const contextComponents = () => {
+        const { memory: _memory, ...withoutMemory } = liveContext
+        const withoutMemoryItems = [...preferenceItems, ...this.policy.dynamicContextItems(withoutMemory)]
+        const dynamicTokens = inputTokens(model, withoutMemoryItems)
+        return { instructionsTokens: inputTokens(model, instructions), toolSchemaTokens: inputTokens(model, modelTools),
+          requestTokens: inputTokens(model, currentRequestItems), evidenceTokens: inputTokens(model, currentEvidenceItems),
+          dynamicContextTokens: dynamicTokens,
+          memoryTokens: memoryForModel ? Math.max(0, inputTokens(model, supplementalItems.slice(0, dynamicCount)) - dynamicTokens) : 0,
+          historyTokens: estimateTokens(session.history, model), reservedTokens }
+      }
+      if (overheadTokens >= hardLimit) {
+        throw new HardLimitExceededError('mandatory context exceeds the context budget; original request was preserved', {
+          reason: 'irreducible_context', estimatedTokens: estimateTokens(session.history, model) + overheadTokens,
+          hardLimitTokens: hardLimit, contextWindowTokens: profile.contextWindowTokens,
+          requestInputTokens: overheadTokens - reservedTokens, reservedTokens, overheadTokens,
+          historyItems: session.history.length, completedChunks: 0, components: contextComponents(),
+        })
+      }
       const backgroundLimit = Math.min(this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8,
         this.rootModelBudget.maxTokens * 0.4)
       if (pendingCompaction && estimateTokens(session.history, model) + overheadTokens >= hardLimit) {
@@ -539,7 +571,7 @@ export class AgentRuntime {
         throw new HardLimitExceededError('input and reserved output exceed the context budget; original request was preserved', {
           reason: 'context_budget', estimatedTokens: requestInputTokens + reservedTokens, hardLimitTokens: Math.floor(hardLimit),
           contextWindowTokens: profile.contextWindowTokens, requestInputTokens, reservedTokens,
-          historyItems: session.history.length, overheadTokens,
+          historyItems: session.history.length, overheadTokens, components: contextComponents(),
         })
       }
 
@@ -1363,12 +1395,15 @@ export class AgentRuntime {
       data: {
         error: publicFailure(error),
         ...(error instanceof ModelDriverError ? { modelDiagnostics: error.diagnostics } : {}),
+        ...(error instanceof ModelBudgetExceededError ? { budgetLimit: error.diagnostics } : {}),
         ...(error instanceof HardLimitExceededError && error.diagnostics ? { compactionDiagnostics: error.diagnostics } : {}),
       },
     }).catch((eventError: unknown) => {
       log.error('terminal event emission failed', { error: eventError })
     })
-    await this.hostFor(work).completeWork(work, { status, error: publicFailure(error), goalOutcome: {
+    const terminalReason = cancelled ? 'cancelled' : error instanceof HardLimitExceededError || error instanceof ModelContextBudgetError ? 'context_limit'
+      : error instanceof ModelBudgetExceededError ? 'budget_limit' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
+    await this.hostFor(work).completeWork(work, { status, terminalReason, error: publicFailure(error), goalOutcome: {
       status: 'blocked', verification: 'inconclusive', requestVersion: (session?.request?.revisions.length ?? 0) + 1,
       gaps: [cancelled ? 'Execution was cancelled' : publicFailure(error)],
     } }).catch((completeError: unknown) => {
@@ -1378,11 +1413,14 @@ export class AgentRuntime {
 }
 
 function publicFailure(error: unknown): string {
+  if (error instanceof HardLimitExceededError) return error.diagnostics?.reason === 'irreducible_context'
+    ? 'Required input exceeds the model context limit. Reduce the request or attached material before retrying.'
+    : 'The request and conversation exceed the model context limit after bounded recovery.'
   if (error instanceof ModelDriverError) return error.diagnostics.kind === 'protocol'
     ? 'Model returned an invalid response format' : `Model provider request failed${error.diagnostics.status ? ` (HTTP ${error.diagnostics.status})` : ''}`
   if (error instanceof AgentOSError) {
     switch (error.code) {
-      case 'model_budget_exhausted': return 'Model call, token, cost or execution-time budget exhausted'
+      case 'budget_limit': return 'Model call, token, cost or execution-time budget exhausted'
       case 'content_acceptance_exhausted': return 'Content acceptance correction budget exhausted'
       case 'response_protocol_exhausted': return 'Final assessment protocol correction exhausted'
       case 'tool_protocol_exhausted': return 'Tool protocol correction exhausted'

@@ -5,7 +5,9 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { listenWakeups } from '../dist/src/control-plane/wakeup.js'
 import { nullLogger } from '../dist/src/logging.js'
 import { Pool } from 'pg'
-import { PgActionLedger, PgSessionStore, PgWorkStore, withTransaction } from '../dist/src/control-plane/pg-store.js'
+import { PgActionLedger, PgSessionStore, PgWorkStore, PgModelBudgetStore, withTransaction } from '../dist/src/control-plane/pg-store.js'
+import { admitChildBudget } from '../dist/src/model/child-admission.js'
+import { enqueueWork } from '../dist/src/app/jobs.js'
 import { hashToken } from '../dist/src/control-plane/memory-store.js'
 import { checkStorage } from '../dist/src/app/storage.js'
 import { forgetMemoryScope } from '../dist/src/memory/forget.js'
@@ -39,7 +41,30 @@ try {
   await pool.query(await readFile(new URL('../db/migrations/012-async-admission.sql', import.meta.url), 'utf8'))
   await pool.query(await readFile(new URL('../db/migrations/013-distributed-workspaces.sql', import.meta.url), 'utf8'))
   await pool.query(await readFile(new URL('../db/migrations/013-distributed-workspaces.sql', import.meta.url), 'utf8'))
+  await pool.query(await readFile(new URL('../db/migrations/014-terminal-feedback.sql', import.meta.url), 'utf8'))
   await checkStorage(pool)
+  const budgetParent = { id: 'budget-root',tenantId: 'budget',principalId: 'human',agentId: 'agent',sessionId: 'budget-root',
+    kind: 'turn',lane: 'interactive',triggerRef: 'budget-test',fence: 1,homeEpoch: 1 }
+  await enqueueWork(pool,budgetParent)
+  const budgets = new PgModelBudgetStore(pool)
+  await budgets.reserve(budgetParent.id,'initial',{ maxModelCalls: 10,maxTokens: 350,maxCostMicros: 100,
+    deadlineAt: new Date(Date.now()+60000).toISOString(),reservedTokens: 20,reservedCostMicros: 2,
+    pricing: { version: 'fixture',currency: 'USD',inputMicrosPerMillion: 100000,outputMicrosPerMillion: 100000 },
+    childAdmission: { inputTokens: 90,outputTokens: 10,executionMs: 1000 } })
+  const admitted = await Promise.all(Array.from({ length: 8 },(_,i) => withTransaction(pool,async db => {
+    const id = `budget-child-${i}`, result = await admitChildBudget(db,budgetParent,1,id)
+    if (result.allowed) await enqueueWork(db,{ ...budgetParent,id,sessionId: id,meta: { rootWorkId: budgetParent.id,rootRequestVersion: 1 } })
+    return result
+  })))
+  assert.equal(admitted.filter(result => result.allowed).length,2,'concurrent startup holds must leave one closing call')
+  assert.ok(admitted.filter(result => !result.allowed).every(result => result.dimension === 'tokens'))
+  const notification = (await pool.query('SELECT * FROM lingxios.agent_terminal_outbox WHERE root_work_id=$1',[budgetParent.id])).rows
+  assert.equal(notification.length,1); assert.equal(notification[0].not_started_count,6)
+  assert.equal((await pool.query('SELECT 1 FROM lingxios.agent_results WHERE work_id=$1',[budgetParent.id])).rowCount,0)
+  const held = (await pool.query('SELECT SUM(tokens)::integer AS tokens FROM lingxios.agent_model_budget_holds WHERE root_work_id=$1',[budgetParent.id])).rows[0]
+  assert.equal(held.tokens,300)
+  await pool.query("UPDATE lingxios.agent_work_items SET status='cancelled' WHERE tenant_id='budget'")
+  assert.equal((await pool.query('SELECT 1 FROM lingxios.agent_model_budget_holds WHERE root_work_id=$1',[budgetParent.id])).rowCount,0)
   const stopListener = new AbortController()
   let listenerPid, workNotifications = 0
   const listening = listenWakeups({ connect: async () => {
@@ -223,5 +248,5 @@ try {
   const independent = await Promise.all([workStore.claim('thread-worker-a'), workStore.claim('thread-worker-b')])
   assert.deepEqual(independent.map(item => item.id).sort(), ['thread-a', 'thread-b'])
   assert.deepEqual((await pool.query('SELECT * FROM public.agent_work_items')).rows, [{ company_id: 'untouched' }])
-  console.log('Real PostgreSQL stores passed: schema 7→8→9→10→11 + repeatable 013, cross-process LISTEN/NOTIFY and reconnect, document CAS/restore races, reflection deduplication, atomic memory forgetting, competing claims, session exclusion, concurrent intent reservation/CAS, separate-process recovery, stale fencing, cancellation and product-table isolation.')
+  console.log('Real PostgreSQL stores passed: schema 7→8→9→10→11→12 + repeatable 013, atomic concurrent child admission/closing holds/terminal deduplication, cross-process LISTEN/NOTIFY and reconnect, document CAS/restore races, reflection deduplication, atomic memory forgetting, competing claims, session exclusion, concurrent intent reservation/CAS, separate-process recovery, stale fencing, cancellation and product-table isolation.')
 } finally { await pool?.end() }

@@ -1,0 +1,61 @@
+{"ts":"2026-10-17T03:01:10.565Z","level":"info","msg":"worker stopped","workerId":"lingxios-f5197aa8-7a78-4215-bd65-ef9f470e19dd","timedOut":false}
+✖ assembles the public app through HTTP model and Python, persisting results across reopen (4100.926684ms)
+✔ discards late acquisitions and unfinished database transactions instead of returning them to the pool (37.941564ms)
+✔ cancels every host read while allowing bounded billing settlement after attempt cancellation (1.269814ms)
+✔ publishes empty wake hints after commit only, with no idle-claim notification loop (2318.095816ms)
+✔ 你好: streams body over worker HTTP and local SSE before completion, then replays the committed result (2853.237068ms)
+ℹ SSE stub provider first content → UI draft: 37.3ms; preview arrived before usage settlement
+✔ 你好: streams body over worker HTTP and another control plane SSE before completion, then replays the committed result (2643.371146ms)
+ℹ SSE stub provider first content → UI draft: 13.7ms; preview arrived before usage settlement
+✔ 你知道我学习了什么吗: streams body over worker HTTP and local SSE before completion, then replays the committed result (1575.251019ms)
+ℹ SSE stub provider first content → UI draft: 9.0ms; preview arrived before usage settlement
+✔ 你知道我学习了什么吗: streams body over worker HTTP and another control plane SSE before completion, then replays the committed result (2301.318167ms)
+ℹ SSE stub provider first content → UI draft: 9.7ms; preview arrived before usage settlement
+✔ 原样输出 JSON: streams body over worker HTTP and local SSE before completion, then replays the committed result (1600.544195ms)
+ℹ SSE stub provider first content → UI draft: 9.3ms; preview arrived before usage settlement
+✔ 原样输出 JSON: streams body over worker HTTP and another control plane SSE before completion, then replays the committed result (2328.476248ms)
+ℹ SSE stub provider first content → UI draft: 9.1ms; preview arrived before usage settlement
+✔ 读取学习记录后回答: streams body over worker HTTP and local SSE before completion, then replays the committed result (2120.545325ms)
+ℹ SSE stub provider first content → UI draft: 9.0ms; preview arrived before usage settlement
+✔ 读取学习记录后回答: streams body over worker HTTP and another control plane SSE before completion, then replays the committed result (2635.118799ms)
+ℹ SSE stub provider first content → UI draft: 7.9ms; preview arrived before usage settlement
+✔ uses the same primary model for execution, review, synthesis, compaction and approval resumes (6.92127ms)
+✔ continues beyond twelve steps, bounds concurrent reads, and stops an unstarted write at approval (372.831707ms)
+✔ reserves each provider attempt and settles an issued call after cancellation (252.688925ms)
+✔ preempts a healthy lower-priority lease and fences it after the grace period using real SQL (2173.343891ms)
+ℹ tests 16
+ℹ suites 0
+ℹ pass 15
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 28206.614465
+
+✖ failing tests:
+
+test at dist/test/app.test.js:14:1
+✖ assembles the public app through HTTP model and Python, persisting results across reopen (4100.926684ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+
+    {
+  +   gaps: [
+  +     'artifact:tmpxd164ztb/profile_default/history.sqlite: inconclusive; Bytes and hash verified; no content parser is available for this format'
+  +   ],
+      requestVersion: 1,
+  +   status: 'partial',
+  -   status: 'satisfied',
+      verification: 'inconclusive'
+    }
+
+      at TestContext.<anonymous> (file:///workspace/LingxiOS-scheduler/dist/test/app.test.js:150:16)
+      at async Test.run (node:internal/test_runner/test:1389:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { gaps: [ 'artifact:tmpxd164ztb/profile_default/history.sqlite: inconclusive; Bytes and hash verified; no content parser is available for this format' ], status: 'partial', verification: 'inconclusive', requestVersion: 1 },
+    expected: { status: 'satisfied', verification: 'inconclusive', requestVersion: 1 },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

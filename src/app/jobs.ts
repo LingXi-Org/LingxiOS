@@ -8,6 +8,7 @@ import type { RequestInput, MessageIdentity } from './index.js'
 import { executionMode } from '../runtime/execution-policy.js'
 import { authorizeConversationWork, digest, participant, requireAudience } from '../collaboration/access.js'
 import { authorizeRunRead } from '../collaboration/api.js'
+import { admitChildBudget, ChildAdmissionRejectedError } from '../model/child-admission.js'
 
 export interface JobInput extends RequestInput {
   kind: string
@@ -136,6 +137,7 @@ export async function enqueueChild(database: SqlQueryable, parent: Omit<WorkItem
   const meta = { ...childMeta, executionClass, ...(parent.meta?.['harnessHash'] ? { harnessHash: parent.meta['harnessHash'] } : {}),
     ...(parent.meta?.['mode'] === undefined ? {} : { mode: executionMode(parent) }), ...(codeExecution ? { codeExecution } : {}), text: input.text, authorName: parent.agentId, attachments: request.attachments,
     parentWorkId: parent.id, rootWorkId: parent.meta?.['rootWorkId'] ?? parent.id, parentRequestVersion: version,
+    rootRequestVersion: parent.meta?.['rootRequestVersion'] ?? version,
     ...(graphId ? { graphId } : {}), dependsOn: input.dependsOn ?? [], delegation: { parentWorkId: parent.id, rootWorkId: parent.meta?.['rootWorkId'] ?? parent.id,
       parentRequestVersion: version, instructionAuthorId: parent.agentId, parentRequest: request, assignment: input.text } }
   if (input.dependsOn?.length) {
@@ -145,6 +147,8 @@ export async function enqueueChild(database: SqlQueryable, parent: Omit<WorkItem
     [input.dependsOn, parent.tenantId, parent.principalId ?? null, parent.id, JSON.stringify(version), graphId ?? null])
     if (dependencies.rows.length !== input.dependsOn.length) throw new Error('dependencies must be existing siblings of this graph and request')
   }
+  const admission = await admitChildBudget(database,parent,version,input.id,input.agentId,input.text)
+  if (!admission.allowed) throw new ChildAdmissionRejectedError(admission.dimension!,[{ id: input.id,agentId: input.agentId }])
   const result = await enqueueWork(database, { id: input.id, tenantId: parent.tenantId, agentId: input.agentId,
     sessionId: parent.conversation || input.sessionId === undefined ? 'delegate-session:' + digest([parent.id, version, input.id]) : input.sessionId,
     ...(input.threadId ?? parent.threadId ? { threadId: input.threadId ?? parent.threadId! } : {}),

@@ -25,7 +25,10 @@ it('requires a private reviewer, protects explicit memory, binds reviews to vers
     const changes=[{action:'update',id:saved.id,expectedVersion:1,content:content('Use diagrams.')}]
     const unreviewed=await host.executeAction(work,action(work,0,'apply',{changes}))
     assert.equal(unreviewed.ok,false)
-    assert.match(unreviewed.error!,/review/)
+    assert.equal(unreviewed.code,'forbidden')
+    assert.equal(unreviewed.diagnostics?.category,'authorization')
+    assert.equal(unreviewed.diagnostics?.causeCode,'review_required')
+    assert.equal((await app.memory!.read(identity,scope,saved.id))!.version,1)
     const automatic=action(work,1,'apply',{changes})
     const prepared=(await host.prepareMemoryReview!(work,automatic))!
     assert.equal(prepared.input.request.originalText,'Please change my saved preference to diagrams.')
@@ -149,7 +152,7 @@ it('resets only schema-8 memory, retains product records and frozen benchmarks, 
     assert.deepEqual((await db.query('SELECT id FROM lingxios.agent_work_items')).rows,[{id:'business'}])
     assert.deepEqual((await db.query('SELECT id FROM lingxios.agent_evolution_benchmarks')).rows,[{id:'benchmark'}])
     assert.deepEqual((await db.query('SELECT id FROM lingxios.agent_memories')).rows,[])
-    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission', '013-distributed-workspaces']) {
+    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission', '013-distributed-workspaces', '014-terminal-feedback']) {
       await db.exec(await readFile(new URL(`../../db/migrations/${migration}.sql`, import.meta.url), 'utf8'))
     }
     await checkStorage({query:async(sql,params)=>({rows:(await db.query<Record<string,unknown>>(sql,params)).rows,rowCount:null})})

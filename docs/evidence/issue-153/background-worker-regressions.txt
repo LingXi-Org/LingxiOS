@@ -1,0 +1,20 @@
+✔ Postgres bounds consecutive abandoned leases while preserving intentional yields (1989.541137ms)
+✔ does not lose notifications between the empty scan and subscribing; abort cleans up waiters (1.250727ms)
+✔ scans after LISTEN and reconnect, never releases a listening connection into the pool (1005.110461ms)
+✔ wakes an idle worker without waiting for the poll deadline and preserves a periodic fallback (4.441921ms)
+✔ keeps reserved interactive capacity while background work stalls (lane=false) (1.450509ms)
+✔ keeps reserved interactive capacity while background work stalls (lane=true) (0.74903ms)
+✔ cancels a pending claim without exhausting the shutdown grace period (5.953249ms)
+✔ aborts in-flight model work when graceful shutdown expires (11.02092ms)
+✔ interrupts idle polling delay during shutdown (1.853301ms)
+✔ validates kernel configuration from the explicitly supplied worker environment (2.09076ms)
+✔ refuses the process kernel as an implicit production security boundary (0.47627ms)
+✔ bounds shutdown even if a claim ignores cancellation, including repeated stop calls (0.740066ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3337.205124

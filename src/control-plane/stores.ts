@@ -114,6 +114,8 @@ export interface StoreLeaseProof {
 }
 
 export interface ModelBudgetLimits {
+  /** Conservative configured model-profile bounds for admission before a child has a prompt. */
+  childAdmission?: { inputTokens: number; outputTokens: number; executionMs: number }
   pricing?: import('../model/execution.js').ModelPricing
   maxExecutionMs?: number
   reservedTokens?: number
@@ -128,6 +130,7 @@ export interface ModelBudgetLimits {
 
 export interface ModelBudgetReservation {
   allowed: boolean
+  dimension?: import('../errors.js').BudgetDimension
   remainingCalls: number
   remainingTokens: number
   remainingCostMicros: number
@@ -279,6 +282,9 @@ export interface CapabilityResolver {
 
 /** Streams events and delivers final messages to product surfaces. */
 export interface DeliveryPort {
+  /** Reauthorize current principal/audience before sending. Identity is stable; never wake agents. */
+  deliverTerminal?(work: Omit<WorkItem, 'leaseToken'>, feedback: import('../app/terminal.js').TerminalFeedback,
+    context: import('./outbox.js').DeliveryContext): Promise<void>
   /** Durable final response, used to validate completion and restart recovery. */
   getMessage?(work: Omit<WorkItem, 'leaseToken'>): Promise<import('../protocol/types.js').AssistantMessage | null>
   onEvent(work: Omit<WorkItem, 'leaseToken'>, event: RunEvent, context?: import('./outbox.js').DeliveryContext): Promise<void>

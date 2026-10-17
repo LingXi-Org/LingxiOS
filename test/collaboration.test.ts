@@ -32,11 +32,16 @@ async function setup(options: Partial<LingxiOSOptions> = {}) {
   const pool: SqlPool = { query: async (sql, params) => { const result = await db.query<Record<string, unknown>>(sql, params); return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length } },
     connect: async () => ({ query: pool.query, release() {} }) }
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
-  const control = await createLingxiOS({ ...options, database: pool }), host = control.connectWorker({ workerId: 'collaboration-test', workKinds: ['turn'] })
+  const control = await createLingxiOS({ background: { minPollMs: 10, maxPollMs: 50 }, ...options, database: pool }), host = control.connectWorker({ workerId: 'collaboration-test', workKinds: ['turn'] })
   await control.conversations.sync(structuredClone(policy))
   async function save(work: WorkItem) {
     const existing = await host.loadSession(work, sessionKeyOf(work))
     if (existing) return existing
+    // This fixture commits scripted provider output directly; register its real reservation boundary first.
+    await host.reserveModelCall(work,`fixture-model:${work.id}`,{ maxModelCalls: 128,maxTokens: 1000000,maxCostMicros: 10000000,
+      deadlineAt: new Date(Date.now()+1800000).toISOString(),reservedTokens: 120,reservedInputTokens: 100,reservedOutputTokens: 20,
+      childAdmission: { inputTokens: 100,outputTokens: 20,executionMs: 1000 } })
+    await host.recordModelUsage(work,`fixture-model:${work.id}`,{ inputTokens: 100,outputTokens: 20,costMicros: 0 })
     const context = await host.loadContext(work)
     const session: SessionRecord = { key: sessionKeyOf(work), tenantId: work.tenantId, agentId: work.agentId, sessionId: work.sessionId,
       ...(work.threadId === undefined ? {} : { threadId: work.threadId }), revision: 0, compactionEpoch: 0, history: [], appliedWorkIds: [work.id], request: snapshotRequest(context) }
@@ -156,8 +161,9 @@ it('bounds an all-member mention by the chain budget even in a large supported r
     const input = message('large-room-reply', { policyVersion: 2, author: { id: 'lead', kind: 'agent' },
       text: '@all Please contribute.', mentions: peers.map(peer => peer.id), causedBy: { resultId: result.resultId! } })
     const accepted = await f.control.conversations.ingest(input)
-    assert.equal(accepted.reason, 'mention_limit')
-    assert.equal(accepted.runs.length, 31)
+    assert.equal(accepted.reason, 'budget_limit')
+    assert.equal(accepted.budgetLimit?.dimension, 'reservation')
+    assert.equal(accepted.runs.length, 4, 'live fanout is bounded within the existing 31 remaining chain slots')
     assert.deepEqual(await f.control.conversations.ingest(input), { ...accepted, deduplicated: true })
   } finally { await f.close() }
 })
@@ -274,7 +280,9 @@ it('merges independent state fields, preserves tombstone versions and audits ded
     await f.control.conversations.ingest(message('public'))
     const work = (await f.host.claimWork())!; await f.save(work)
     const denied = await f.action(work, 'private-state', 'shared_state.read', { id: scope.stateId })
-    assert.equal(denied.ok, false); assert.match(denied.error!, /audience/)
+    assert.equal(denied.ok, false); assert.equal(denied.code, 'forbidden')
+    assert.equal(denied.diagnostics?.category, 'authorization')
+    assert.equal(denied.diagnostics?.retryable, false)
   } finally { await f.close() }
 })
 
@@ -413,7 +421,7 @@ it('migrates schema 9 without resetting business data and matches the fresh sche
   try {
     await migrated.exec(await readFile(new URL('../../test/fixtures/schema-9.sql', import.meta.url), 'utf8'))
     await migrated.exec("INSERT INTO lingxios.agent_work_items(id,tenant_id,agent_id,session_id,kind,lane,trigger_ref,status) VALUES('old','t','a','s','turn','interactive','m','succeeded')")
-    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission', '013-distributed-workspaces']) {
+    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission', '013-distributed-workspaces', '014-terminal-feedback']) {
       await migrated.exec(await readFile(new URL(`../../db/migrations/${migration}.sql`, import.meta.url), 'utf8'))
     }
     await fresh.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))

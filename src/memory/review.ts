@@ -1,3 +1,4 @@
+import { NoEffectError } from '../tools/definition.js'
 import type { SqlQueryable } from '../control-plane/pg-store.js'
 import { actionKeyOf, type HostAction, type WorkItem } from '../protocol/types.js'
 import { requestSnapshot } from '../app/jobs.js'
@@ -74,14 +75,14 @@ export async function recordMemoryReview(database: SqlQueryable,options: MemoryO
 
 export async function requireMemoryReview(database: SqlQueryable,options: MemoryOptions,work: Omit<WorkItem,'leaseToken'>,action: HostAction) {
   const prepared = await prepareMemoryReview(database,options,work,action)
-  if (!prepared) throw new Error('memory action cannot be reviewed')
+  if (!prepared) throw new NoEffectError('memory action cannot be reviewed', 'review_required')
   const row = (await database.query(`SELECT review FROM lingxios.agent_memory_reviews WHERE action_id=$1 AND work_id=$2 AND fence=$3
     AND tenant_id=$4 AND epoch=$5 AND request_version=$6 AND preview_hash=$7`,
     [action.idempotencyKey,work.id,work.fence,work.tenantId,prepared.epoch,prepared.requestVersion,prepared.hash])).rows[0]
-  if (!row) throw new Error('memory action requires an independent worker review')
+  if (!row) throw new NoEffectError('memory action requires an independent worker review', 'review_required')
   const review = parseMemoryReview(row['review'])
-  if (!review.approved || review.confidence<0.6) throw new Error('independent memory review rejected the change')
-  if (prepared.input.request.delegated && review.explicit) throw new Error('delegated instructions cannot authorize protected memory changes')
-  if ((action.action==='memory.restore' || action.action==='memory.forget') && !review.explicit) throw new Error('memory restore and forgetting require an explicit human request')
+  if (!review.approved || review.confidence<0.6) throw new NoEffectError('independent memory review rejected the change', 'forbidden')
+  if (prepared.input.request.delegated && review.explicit) throw new NoEffectError('delegated instructions cannot authorize protected memory changes', 'forbidden')
+  if ((action.action==='memory.restore' || action.action==='memory.forget') && !review.explicit) throw new NoEffectError('memory restore and forgetting require an explicit human request', 'forbidden')
   return { ...prepared,review }
 }
