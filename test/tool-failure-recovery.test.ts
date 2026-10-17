@@ -76,6 +76,21 @@ it('bounds transient read-only authorization retries and preserves terminal vers
   await failure(invalid.executor.prepare(work, action, options()), 'invalid_arguments', 'invalid_input')
   assert.equal(invalid.counts().authorizations, 0)
 })
+it('distinguishes dependency timeouts from caller cancellation and terminal missing resources', async () => {
+  for (const error of [Object.assign(new Error(secret), { code: '57014' }),new DOMException(secret, 'TimeoutError')]) {
+    const f = fixture(); f.authorize(async () => { throw new Error('safe wrapper', { cause: error }) })
+    await failure(f.executor.prepare(work, action, options()), 'dependency_unavailable', 'dependency', 'retry')
+    assert.equal(f.counts().authorizations, 2); assert.equal(f.counts().executions, 0)
+    const unsafe = fixture(); unsafe.tool.effect = 'uncertain'; unsafe.execute(async () => { throw error })
+    await assert.rejects(unsafe.executor.execute(work, action, options()))
+    assert.equal(unsafe.counts().executions, 1)
+  }
+  for (const error of [new NoEffectError(secret, 'not_found'), Object.assign(new Error(secret), { status: 404 })]) {
+    const f = fixture(); f.authorize(async () => { throw error })
+    await failure(f.executor.prepare(work, action, options()), 'not_found', 'not_found')
+    assert.equal(f.counts().authorizations, 1); assert.equal(f.counts().executions, 0)
+  }
+})
 it('stops authorization recovery on cancellation and succeeds only after actual authorization', async () => {
   const f = fixture(); f.authorize(async () => { if (f.counts().authorizations === 1) throw { code: 'ECONNRESET' } })
   await f.executor.prepare(work, action, options()); assert.equal(f.counts().authorizations, 2)
