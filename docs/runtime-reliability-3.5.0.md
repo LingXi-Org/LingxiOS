@@ -1,5 +1,13 @@
 # Runtime reliability 3.5.0
 
+Patch 3.5.1 preserves the existing five-specialist team by allowing up to eight
+pending children when the root budget can reserve their starts and its closing
+response. The ninth pending child is rejected. It also forwards the classified
+terminal reason through the HTTP worker completion boundary; invalid reasons
+return HTTP 400 instead of silently becoming an ordinary execution failure.
+Schema 12 and migration014 are unchanged. The same PR gate, exact-main gate,
+tag and existing publish workflow sequence below applies to `v3.5.1`.
+
 This release requires schema 12. Drain old workers before the consuming application's explicit transactional migration applies `packageResources().migration014` to schema 11. Existing requests, results, action receipts and business tables remain intact. Historical terminal work is not replayed. Fresh installations apply `packageResources().schema`. Startup performs validation only; it never migrates storage.
 
 Hosts replaying immutable historical migration checks can install `packageResources().schema011` at that historical step, then apply `migration014` in their new migration. The schema-11 asset retains SHA-256 `5d77d0140de93d5c9fc205942c77b850b799d257ef49c056da2af84e15f4bb9f`. Strip the packaged outer transaction only when the host migration runner already owns that transaction; never allow a nested asset `COMMIT` to commit the host migration early.
@@ -16,7 +24,7 @@ One logical model call defaults to at most three attempts and 120 seconds includ
 
 `WorkerOptions.fallbackModel` is opt-in trusted configuration. It requires a model with verified compatible capabilities/preview format, the same approved price schedule as the root, and an `authorize({ work, purpose, signal })` callback that rechecks the current tenant, data boundary and request. It shares the original deadline, attempt limit, root reservation, resource quota and ledger. It cannot replay tools, bypass context admission, or switch embedding vector spaces. No fallback configuration is enabled by default. Routes with different prices are rejected; configure a separate approved root price policy before using them.
 
-Child work reserves its startup call and one closing call against root call/token/cost/time capacity before enqueue. Reservations use conservative observed prompt and maximum output bounds plus the new assignment; they do not grant extra execution budget. At most four children remain active per root. Actual calls consume their holds; terminal children release unused holds. Structured `budget_limit` diagnostics expose `calls`, `tokens`, `cost`, `deadline` or `reservation`. Missing admission information refuses fanout rather than guessing a cheap cost. A rolled-back graph leaves no child but may record one separately authorized root notification with deduplicated denied targets.
+Child work reserves its startup call and one closing call against root call/token/cost/time capacity before enqueue. Reservations use conservative observed prompt and maximum output bounds plus the new assignment; they do not grant extra execution budget. At most eight children remain active per root. Actual calls consume their holds; terminal children release unused holds. Structured `budget_limit` diagnostics expose `calls`, `tokens`, `cost`, `deadline` or `reservation`. Missing admission information refuses fanout rather than guessing a cheap cost. A rolled-back graph leaves no child but may record one separately authorized root notification with deduplicated denied targets.
 
 Irreducible context admission preserves the current request, instructions and evidence. Optional memory is shed before deciding whether mandatory input fits. It does not repeatedly compact a request that cannot fit even without history.
 

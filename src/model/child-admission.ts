@@ -50,7 +50,7 @@ export async function admitChildBudget(db: SqlQueryable, parent: Omit<WorkItem, 
       : Number(row!['model_calls'])+Number(held['calls'])+count > Number(row!['max_model_calls']) ? 'calls'
       : Number(row!['tokens'])+Number(held['tokens'])+tokens+(count-1)*baseTokens > Number(row!['max_tokens']) ? 'tokens'
       : Number(row!['cost_micros'])+Number(held['cost'])+cost+(count-1)*profile.costMicros > Number(row!['max_cost_micros']) ? 'cost'
-      : Number(active['count']) >= 4 ? 'reservation' : undefined
+      : Number(active['count']) >= 8 ? 'reservation' : undefined
     if (!dimension) {
       for (const [id,kind] of [[rootId,'closing'],[childId,'child']]) {
         await db.query(`INSERT INTO lingxios.agent_model_budget_holds(root_work_id,work_id,kind,tokens,cost_micros,execution_ms)

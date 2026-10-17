@@ -295,6 +295,7 @@ export class ControlPlaneServer {
             await service.complete(proof, {
               status: body['status'] as WorkCompletion['status'],
               ...(typeof body['error'] === 'string' ? { error: body['error'] } : {}),
+              ...(body['terminalReason'] === undefined ? {} : { terminalReason: body['terminalReason'] as NonNullable<WorkCompletion['terminalReason']> }),
               ...(body['goalOutcome'] === undefined ? {} : { goalOutcome: body['goalOutcome'] as NonNullable<WorkCompletion['goalOutcome']> }),
             })
             json(res, 200, { ok: true }); return
