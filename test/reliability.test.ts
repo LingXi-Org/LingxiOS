@@ -11,7 +11,7 @@ import type { AssistantMessage, WorkItem } from '../src/protocol/types.js'
 import type { ToolDefinition } from '../src/tools/catalog.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import { executionModel, DEFAULT_MODEL_BUDGET } from '../src/model/execution.js'
-import { ModelDriverError } from '../src/errors.js'
+import { ModelDriverError, ModelBudgetExceededError } from '../src/errors.js'
 import type { ModelDriver } from '../src/model/driver.js'
 import { DEFAULT_MODEL } from '../src/model/openai.js'
 import { limitModel } from '../src/model/quota.js'
@@ -35,7 +35,8 @@ it('uses the same primary model for execution, review, synthesis, compaction and
     await model.run({ instructions: '', items: [] })
     await model.structured({ instructions: '', input: {} })
     await model.compact({ instructions: '', items: [] })
-    await assert.rejects(model.run({ instructions: '', items: [] }), /model budget exhausted/)
+    await assert.rejects(model.run({ instructions: '', items: [] }), error => error instanceof ModelBudgetExceededError
+      && error.code === 'budget_limit' && error.diagnostics.dimension === 'calls')
     assert.deepEqual(calls, [DEFAULT_MODEL.id + ':run', DEFAULT_MODEL.id + ':review', DEFAULT_MODEL.id + ':compact'])
     assert.deepEqual(reservations, [8192, 8192, 8192])
     assert.deepEqual(settled, [1, 2, 3].map(index => `${kind}:1:model:${index}:${DEFAULT_MODEL.id}`))
