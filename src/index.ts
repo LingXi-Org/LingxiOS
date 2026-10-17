@@ -31,6 +31,8 @@ export type { ResponseEnvelope, CitationAnnotation } from './outcome/envelope.js
 export type { GoalAssessment } from './outcome/assessment.js'
 export { DEFAULT_MODEL } from './model/openai.js'
 export type { ModelProfile, ModelPurpose } from './model/profile.js'
+export type { ModelRecoveryPolicy, ModelFailure } from './model/recovery.js'
+export type { TerminalFeedback, TerminalReason } from './app/terminal.js'
 export type { InputContinuation } from './app/input.js'
 export type { ApprovalDecision, ApprovalIdentity, ApprovalLookup, ApprovalSnapshot } from './control-plane/approvals.js'
 export type { RunSnapshot, RunState, DeliveryState, RunIdentity, JobInput, ChildInput } from './app/jobs.js'

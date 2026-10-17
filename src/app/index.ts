@@ -1,4 +1,5 @@
 import { DEFAULT_MODEL_BUDGET } from '../model/execution.js'
+import { readTerminalFeedback, terminalFeedback } from './terminal.js'
 import { abortable } from '../deadline.js'
 import type { VerificationRecord } from '../outcome/verification.js'
 import { flushOutbox, drainOutboxes } from '../control-plane/outbox.js'
@@ -345,6 +346,14 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     return flushOutbox(backgroundDatabase, 'agent_model_budget_calls', (row, context) => options.onModelCall!(
       row['observation'] as import('../model/execution.js').ModelCallObservation, context), { signal: shutdown.signal, metrics, concurrency: outboxConcurrency })
   }
+  async function flushTerminalFeedback() {
+    if (!integration.delivery?.deliverTerminal) return
+    return flushOutbox(backgroundDatabase, 'agent_terminal_outbox', async (row, context) => {
+      const { leaseToken: _token, ...work } = workItemFromRow(row['delivery_work'] as Record<string, unknown>, '', 1)
+      if (work.conversation) await authorizeConversationWork(backgroundDatabase, work, 'speak')
+      await integration.delivery!.deliverTerminal!(work, terminalFeedback(row), context)
+    }, { signal: shutdown.signal, metrics, concurrency: outboxConcurrency })
+  }
 
   async function verifyNative(work: Omit<WorkItem, 'leaseToken'>, candidate: import('../outcome/verification.js').Candidate, database: SqlQueryable) {
     const graphChecks = await verifyGraphResults(database, work, candidate.requestVersion)
@@ -549,10 +558,11 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     if (backgroundConfig.role === 'active') scheduler.wake(name)
   }
   const flushDeliveryChannels = () => {
-    for (const name of ['deliveries', 'events', 'model usage']) background(name)
+    for (const name of ['deliveries', 'events', 'model usage', 'terminal feedback']) background(name)
   }
   if (backgroundConfig.role === 'active') {
-    for (const [name, flush] of [['deliveries', flushDeliveries], ['events', flushEvents], ['model usage', flushModelUsage]] as const) {
+    for (const [name, flush] of [['deliveries', flushDeliveries], ['events', flushEvents], ['model usage', flushModelUsage], ['terminal feedback', flushTerminalFeedback]] as const) {
+      if (name === 'terminal feedback' && !integration.delivery?.deliverTerminal) continue
       if (name === 'model usage' ? !options.onModelCall : !integration.delivery) continue
       scheduler.add(name, async () => {
         const scan = await flush()
@@ -791,7 +801,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         resultReadParams(identity))
       return rows[0]?.['state'] as 'pending' | 'delivered' | 'failed' | 'not_observed' | undefined ?? null
     },
-    retryDelivery: (identity: RunIdentity, channel: 'message' | 'events' | 'usage' = 'message') => retryDelivery(options.database,identity,channel),
+    readTerminal: (identity: RunIdentity) => readTerminalFeedback(options.database, identity),
+    retryDelivery: (identity: RunIdentity, channel: 'message' | 'events' | 'usage' | 'terminal' = 'message') => retryDelivery(options.database,identity,channel),
     async listenControlPlane(input: { serviceToken: string; port: number; host?: string }) {
       if (stopped) throw new Error('application has stopped')
       if (controlPlane) throw new Error('control plane is already listening or starting')

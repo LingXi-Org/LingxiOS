@@ -164,14 +164,15 @@ it('reports every processor model call to the product ledger with durable work s
   runtime.registerProcessor('memory_synthesis', { process: async (_work, context) => { await context.model.structured({ instructions: 'i', input: {} }) } })
   await runtime.runWork(work)
   assert.equal(completed?.status, 'completed')
-  assert.deepEqual(observations.map(({ latencyMs: _latencyMs, ...value }) => value), [{
+  assert.deepEqual(observations.map(({ latencyMs: _latencyMs, elapsedMs: _elapsedMs, ...value }) => value), [{
     instructionsSha256: textSha256('i'),
-    callId: 'ledger-work:3:model:1', purpose: 'structured', workId: 'ledger-work', tenantId: 'tenant',
+    attempt: 1, callId: 'ledger-work:3:model:1', purpose: 'structured', workId: 'ledger-work', tenantId: 'tenant',
     agentId: 'agent', sessionId: 'room', threadId: 'thread', principalId: 'human', model: 'model-v1',
     usage: { available: true, inputTokens: 11, outputTokens: 7 }, status: 'succeeded',
     cost: { amountMicros: 0, usage: 'measured', pricing: modelPricing(DEFAULT_MODEL_BUDGET) },
   }])
   assert.ok(observations[0]!.latencyMs >= 0)
+  assert.ok(observations[0]!.elapsedMs! >= observations[0]!.latencyMs)
 })
 
 it('blocks a forged ipython call at the runtime boundary when code execution is disabled', async () => {

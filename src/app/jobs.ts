@@ -136,6 +136,7 @@ export async function enqueueChild(database: SqlQueryable, parent: Omit<WorkItem
   const meta = { ...childMeta, executionClass, ...(parent.meta?.['harnessHash'] ? { harnessHash: parent.meta['harnessHash'] } : {}),
     ...(parent.meta?.['mode'] === undefined ? {} : { mode: executionMode(parent) }), ...(codeExecution ? { codeExecution } : {}), text: input.text, authorName: parent.agentId, attachments: request.attachments,
     parentWorkId: parent.id, rootWorkId: parent.meta?.['rootWorkId'] ?? parent.id, parentRequestVersion: version,
+    rootRequestVersion: parent.meta?.['rootRequestVersion'] ?? version,
     ...(graphId ? { graphId } : {}), dependsOn: input.dependsOn ?? [], delegation: { parentWorkId: parent.id, rootWorkId: parent.meta?.['rootWorkId'] ?? parent.id,
       parentRequestVersion: version, instructionAuthorId: parent.agentId, parentRequest: request, assignment: input.text } }
   if (input.dependsOn?.length) {

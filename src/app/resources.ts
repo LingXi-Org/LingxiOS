@@ -10,6 +10,7 @@ export function packageResources() {
     migration011: fileURLToPath(new URL('../../../db/migrations/011-performance-notifications.sql', import.meta.url)),
     migration012: fileURLToPath(new URL('../../../db/migrations/012-async-admission.sql', import.meta.url)),
     migration013: fileURLToPath(new URL('../../../db/migrations/013-distributed-workspaces.sql', import.meta.url)),
+    migration014: fileURLToPath(new URL('../../../db/migrations/014-terminal-feedback.sql', import.meta.url)),
     runner: fileURLToPath(new URL('../../../kernel/runner.py', import.meta.url)),
   }
 }

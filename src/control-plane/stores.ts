@@ -279,6 +279,9 @@ export interface CapabilityResolver {
 
 /** Streams events and delivers final messages to product surfaces. */
 export interface DeliveryPort {
+  /** Reauthorize current principal/audience before sending. Identity is stable; never wake agents. */
+  deliverTerminal?(work: Omit<WorkItem, 'leaseToken'>, feedback: import('../app/terminal.js').TerminalFeedback,
+    context: import('./outbox.js').DeliveryContext): Promise<void>
   /** Durable final response, used to validate completion and restart recovery. */
   getMessage?(work: Omit<WorkItem, 'leaseToken'>): Promise<import('../protocol/types.js').AssistantMessage | null>
   onEvent(work: Omit<WorkItem, 'leaseToken'>, event: RunEvent, context?: import('./outbox.js').DeliveryContext): Promise<void>

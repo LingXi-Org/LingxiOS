@@ -207,7 +207,7 @@ export class PgWorkStore implements WorkStore {
         if (prior.rows.length === 2 && prior.rows.every(attempt => attempt['reason'] === 'lease_expired')) {
           const error = 'Worker recovery limit reached after three abandoned attempts; please retry the request.'
           await client.query(`UPDATE lingxios.agent_work_items SET status='failed',fence=fence+1,
-            error=$2,goal_outcome=jsonb_build_object('status','blocked','verification','inconclusive',
+            error=$2,terminal_reason='interrupted',goal_outcome=jsonb_build_object('status','blocked','verification','inconclusive',
               'requestVersion',jsonb_array_length(steer_inputs)+1,'gaps',jsonb_build_array($2::text)),
             lease_token_hash=NULL,leased_by=NULL,lease_expires_at=NULL,finished_at=NOW(),updated_at=NOW()
             WHERE id=$1`, [row['id'], error])
@@ -331,16 +331,17 @@ export class PgWorkStore implements WorkStore {
     const settled = await withTransaction(this.pool, async (client) => {
       const { rows } = await client.query(
         `UPDATE lingxios.agent_work_items
-            SET status = $4, error = $5, goal_outcome = $6::jsonb, lease_token_hash = NULL,
+            SET status = $4, error = $5, goal_outcome = $6::jsonb, lease_token_hash = NULL, terminal_reason=$8,
                 lease_expires_at = NULL, finished_at = CASE WHEN $4='waiting' THEN NULL ELSE NOW() END, updated_at = NOW()
           WHERE id = $1 AND fence = $2 AND lease_token_hash = $3 AND status = 'leased'
             AND lease_expires_at > NOW()
             AND ($4 IN ('failed','cancelled') OR cancel_requested_at IS NULL)
             AND ($4 IN ('failed','cancelled') OR jsonb_typeof(meta->'text') IS DISTINCT FROM 'string' OR $6::jsonb IS NOT NULL)
-            AND ($4 IN ('failed','cancelled') OR $7::integer IS NULL OR $7::integer = jsonb_array_length(steer_inputs) + 1)
+            AND ($4='cancelled' OR $7::integer IS NULL OR $7::integer = jsonb_array_length(steer_inputs) + 1)
           RETURNING id`,
         [id, fence, leaseTokenHash, status, completion.error ?? null,
-          completion.goalOutcome ? JSON.stringify(completion.goalOutcome) : null, completion.goalOutcome?.requestVersion ?? null],
+          completion.goalOutcome ? JSON.stringify(completion.goalOutcome) : null, completion.goalOutcome?.requestVersion ?? null,
+          completion.terminalReason ?? null],
       )
       if (!rows[0]) return false
       await client.query(`DELETE FROM lingxios.agent_os_session_leases WHERE work_id = $1 AND fence = $2`, [id, fence])

@@ -146,7 +146,8 @@ async function responseJson(response: Response): Promise<unknown> {
   if (!response.body) throw new ModelDriverError('model provider returned no response body', { finishReasons: [] })
   let text = ''
   for await (const chunk of bodyText(response.body)) text += chunk
-  return JSON.parse(text)
+  try { return JSON.parse(text) }
+  catch { throw new ModelDriverError('model response contained invalid JSON', { finishReasons: [], kind: 'provider' }) }
 }
 
 /** Parse bounded `text/event-stream` bodies into `data:` payload strings. */
@@ -322,7 +323,7 @@ export class OpenAIChatDriver implements ModelDriver {
     } catch (error) {
       const failure = modelFailure(error, signal?.aborted)
       settle(failure, error instanceof ModelDriverError ? error.diagnostics.attempts : undefined)
-      if (signal?.aborted || error instanceof ModelDriverError) throw error
+      if (signal?.aborted || error instanceof ModelDriverError || failure.category === 'unknown') throw error
       throw new ModelDriverError('model request failed', { kind: 'provider', category: failure.category, finishReasons: [] }, { cause: error })
     }
   }

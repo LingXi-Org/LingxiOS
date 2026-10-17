@@ -87,6 +87,7 @@ export interface WorkItem {
 }
 
 export interface WorkCompletion {
+  terminalReason?: import('../app/terminal.js').TerminalReason
   goalOutcome?: import('./outcome.js').GoalOutcome
   status: 'completed' | 'failed' | 'cancelled'
   error?: string

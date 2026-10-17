@@ -29,7 +29,7 @@ import type { MemorySnapshot } from '../memory/types.js'
  */
 import {
   AgentOSError, ApprovalPendingError, KernelCancelledError, KernelExecutionError, KernelTimeoutError,
-  LeaseLostError, ModelDriverError, RunCancelledError, errorMessage,
+  LeaseLostError, ModelContextBudgetError, ModelDriverError, RunCancelledError, errorMessage,
 } from '../errors.js'
 import type { HostPort } from '../host/port.js'
 import { requestItems, snapshotRequest } from '../context/request.js'
@@ -1396,7 +1396,9 @@ export class AgentRuntime {
     }).catch((eventError: unknown) => {
       log.error('terminal event emission failed', { error: eventError })
     })
-    await this.hostFor(work).completeWork(work, { status, error: publicFailure(error), goalOutcome: {
+    const terminalReason = cancelled ? 'cancelled' : error instanceof HardLimitExceededError || error instanceof ModelContextBudgetError ? 'context_limit'
+      : error instanceof ModelBudgetExceededError ? 'budget_limit' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
+    await this.hostFor(work).completeWork(work, { status, terminalReason, error: publicFailure(error), goalOutcome: {
       status: 'blocked', verification: 'inconclusive', requestVersion: (session?.request?.revisions.length ?? 0) + 1,
       gaps: [cancelled ? 'Execution was cancelled' : publicFailure(error)],
     } }).catch((completeError: unknown) => {

@@ -6,6 +6,10 @@ import { errorMessage } from '../errors.js'
 import { LATENCY_BUCKETS, type MetricsRegistry } from '../metrics.js'
 
 const definitions = {
+  agent_terminal_outbox: { keys: ['id'],
+    join: 'JOIN lingxios.agent_work_items work ON work.id=outbox.root_work_id',
+    where: `AND outbox.request_version=jsonb_array_length(work.steer_inputs)+1`,
+    select: ',to_jsonb(work) AS delivery_work', returning: ',candidate.delivery_work' },
   agent_run_events: { keys: ['run_id','seq'], where: `AND outbox.delivery_work IS NOT NULL
     AND NOT EXISTS(SELECT 1 FROM lingxios.agent_run_events prior WHERE prior.run_id=outbox.run_id
       AND prior.seq<outbox.seq AND prior.delivery_work IS NOT NULL AND prior.delivered_at IS NULL)` },

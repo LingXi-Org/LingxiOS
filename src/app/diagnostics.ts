@@ -150,11 +150,12 @@ export async function readDiagnostics(database: SqlQueryable, identity: RunIdent
     delivery: delivery.rows[0] ?? null }
 }
 
-export async function retryDelivery(database: SqlQueryable, identity: RunIdentity, channel: 'message' | 'events' | 'usage') {
+export async function retryDelivery(database: SqlQueryable, identity: RunIdentity, channel: 'message' | 'events' | 'usage' | 'terminal') {
   const sources = {
     message: ['agent_delivery_outbox','outbox.result_id=work.result_id AND work.cancel_requested_at IS NULL'],
     events: ['agent_run_events','outbox.run_id=work.id'],
     usage: ['agent_model_budget_calls','outbox.work_id=work.id'],
+    terminal: ['agent_terminal_outbox','outbox.root_work_id=work.id AND outbox.request_version=jsonb_array_length(work.steer_inputs)+1'],
   } as const
   const source = sources[channel]
   if (!source) throw new Error('invalid delivery channel')

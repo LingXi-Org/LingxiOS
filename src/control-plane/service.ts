@@ -366,6 +366,10 @@ export class ControlPlaneService {
   }
 
   async complete(proof: LeaseProof, completion: WorkCompletion): Promise<void> {
+    if (completion.terminalReason !== undefined && !['context_limit','budget_limit','model_unavailable','permission_denied',
+      'dependency_unavailable','cancelled','interrupted','execution_failed'].includes(completion.terminalReason)) {
+      throw new ControlPlaneError(400, 'invalid terminal reason')
+    }
     if (isWaitingOutcome(completion.goalOutcome)) throw new ControlPlaneError(400, 'waiting requires waitWork')
     if (completion.goalOutcome !== undefined && !isGoalOutcome(completion.goalOutcome)) {
       throw new ControlPlaneError(400, 'invalid goal outcome')
