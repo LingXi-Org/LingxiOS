@@ -12,6 +12,10 @@ import { snapshotEvidence } from '../src/context/evidence.js'
 import { readRunReference, countPendingApprovals } from '../src/app/diagnostics.js'
 import { snapshotRequest } from '../src/context/request.js'
 
+const fixtureModelLimits = { maxModelCalls: 128,maxTokens: 1000000,maxCostMicros: 10000000,
+  deadlineAt: '2099-01-01T00:00:00Z',reservedTokens: 120,reservedInputTokens: 100,reservedOutputTokens: 20,
+  childAdmission: { inputTokens: 100,outputTokens: 20,executionMs: 1000 } }
+
 it('commits child lineage atomically, resumes a child that finished before parking, propagates revisions and freezes model prices', async () => {
   const db = new PGlite()
   const pool: SqlPool = { query: async (sql, params) => {
@@ -33,6 +37,8 @@ it('commits child lineage atomically, resumes a child that finished before parki
     await control.enqueue({ ...identity, id: 'parent', text: 'Original request', codeExecution: 'disabled', deliveryMode: 'action' })
     const host = control.connectWorker({ workerId: 'worker', workKinds: ['turn'] })
     let parent = (await host.claimWork())!
+    await host.reserveModelCall(parent,'fixture-initial-model',fixtureModelLimits)
+    await host.recordModelUsage(parent,'fixture-initial-model',{ inputTokens: 100,outputTokens: 20,costMicros: 0 })
     await host.saveSession(parent, { key: sessionKeyOf(parent), tenantId: parent.tenantId, agentId: parent.agentId, sessionId: parent.sessionId,
       revision: 0, compactionEpoch: 0, history: [], appliedWorkIds: ['parent'], request: { version: 1, workId: 'parent', tenantId: 'tenant', sessionId: 'room',
         authorId: 'human', sourceRef: 'parent', originalText: 'Original request', revisions: [], codeExecution: 'disabled', deliveryMode: 'action',
@@ -131,6 +137,8 @@ it('durable operation handoff releases the original conversation, then resumes w
     await control.enqueue({ ...identity, id: 'front', text: 'Delegate work', executionClass: 'conversation' })
     const host = control.connectWorker({ workerId: 'worker', workKinds: ['turn'] })
     const parent = (await host.claimWork())!, context = await host.loadContext(parent)
+    await host.reserveModelCall(parent,'fixture-initial-model',fixtureModelLimits)
+    await host.recordModelUsage(parent,'fixture-initial-model',{ inputTokens: 100,outputTokens: 20,costMicros: 0 })
     await host.saveSession(parent, { key: sessionKeyOf(parent), tenantId: parent.tenantId, agentId: parent.agentId,
       sessionId: parent.sessionId, revision: 0, compactionEpoch: 0, history: [], appliedWorkIds: [parent.id], request: snapshotRequest(context) })
     const scope = { runId: parent.id, cellId: 'delegate', callIndex: 0 }

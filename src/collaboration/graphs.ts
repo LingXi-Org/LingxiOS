@@ -4,6 +4,7 @@ import type { WorkItem } from '../protocol/types.js'
 import { enqueueChild, requestSnapshot } from '../app/jobs.js'
 import { authorizeConversationWork, digest, identifier } from './access.js'
 import type { GraphInput, GraphNode } from './types.js'
+import { ChildAdmissionRejectedError } from '../model/child-admission.js'
 
 /** Deliberately only a bounded DAG of existing agent work, with no expression evaluator. */
 export function graphNodes(input: GraphInput): GraphNode[] {
@@ -50,8 +51,14 @@ export async function enqueueGraph(database: SqlQueryable, parent: Omit<WorkItem
   const result: Array<{ id: string; workId: string }> = []
   for (const node of nodes) {
     const workId = 'graph-node:' + digest([id, node.id])
-    await enqueueChild(database, parent, version, { id: workId, agentId: node.agentId, text: node.text,
-      dependsOn: node.dependsOn!.map(dependency => 'graph-node:' + digest([id, dependency])) }, id)
+    try {
+      await enqueueChild(database, parent, version, { id: workId, agentId: node.agentId, text: node.text,
+        dependsOn: node.dependsOn!.map(dependency => 'graph-node:' + digest([id, dependency])) }, id)
+    } catch (error) {
+      if (error instanceof ChildAdmissionRejectedError) throw new ChildAdmissionRejectedError(error.diagnostics.dimension,
+        nodes.map(item => ({ id: 'graph-node:' + digest([id,item.id]),agentId: item.agentId })))
+      throw error
+    }
     await database.query('INSERT INTO lingxios.agent_graph_nodes(graph_id,node_id,work_id) VALUES($1,$2,$3)', [id, node.id, workId])
     result.push({ id: node.id, workId })
   }

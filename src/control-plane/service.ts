@@ -203,6 +203,10 @@ export class ControlPlaneService {
       || !Number.isFinite(Date.parse(limits.deadlineAt))) throw new ControlPlaneError(400, 'invalid model budget reservation')
     if ([limits.reservedTokens ?? 0, limits.reservedCostMicros ?? 0].some(value => !Number.isSafeInteger(value) || value < 0)) throw new ControlPlaneError(400, 'invalid reserved model resources')
     if (limits.maxExecutionMs !== undefined && (!Number.isSafeInteger(limits.maxExecutionMs) || limits.maxExecutionMs < 1)) throw new ControlPlaneError(400, 'invalid execution budget')
+    if (limits.childAdmission && (!Number.isSafeInteger(limits.childAdmission.inputTokens) || limits.childAdmission.inputTokens < 1
+      || !Number.isSafeInteger(limits.childAdmission.outputTokens) || limits.childAdmission.outputTokens < 0
+      || !Number.isSafeInteger(limits.childAdmission.executionMs) || limits.childAdmission.executionMs < 1
+      || limits.childAdmission.executionMs > 2_147_483_647)) throw new ControlPlaneError(400, 'invalid child admission profile')
     const policy = this.deps.modelBudget
     if (policy) {
       const input = limits.reservedInputTokens, output = limits.reservedOutputTokens

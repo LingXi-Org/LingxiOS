@@ -45,7 +45,8 @@ export interface IMMessageInput extends ConversationIdentity, MessageReference {
 export interface IMIngressResult {
   runs: RunIdentity[]
   deduplicated: boolean
-  reason?: 'agent_message' | 'system_message' | 'outbox_echo' | 'no_speaker' | 'mention_limit'
+  reason?: 'agent_message' | 'system_message' | 'outbox_echo' | 'no_speaker' | 'mention_limit' | 'budget_limit'
+  budgetLimit?: { dimension: import('../errors.js').BudgetDimension }
 }
 export interface IMDeliveryContext extends ConversationIdentity {
   policyVersion: number

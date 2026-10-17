@@ -1391,6 +1391,7 @@ export class AgentRuntime {
       data: {
         error: publicFailure(error),
         ...(error instanceof ModelDriverError ? { modelDiagnostics: error.diagnostics } : {}),
+        ...(error instanceof ModelBudgetExceededError ? { budgetLimit: error.diagnostics } : {}),
         ...(error instanceof HardLimitExceededError && error.diagnostics ? { compactionDiagnostics: error.diagnostics } : {}),
       },
     }).catch((eventError: unknown) => {
@@ -1415,7 +1416,7 @@ function publicFailure(error: unknown): string {
     ? 'Model returned an invalid response format' : `Model provider request failed${error.diagnostics.status ? ` (HTTP ${error.diagnostics.status})` : ''}`
   if (error instanceof AgentOSError) {
     switch (error.code) {
-      case 'model_budget_exhausted': return 'Model call, token, cost or execution-time budget exhausted'
+      case 'budget_limit': return 'Model call, token, cost or execution-time budget exhausted'
       case 'content_acceptance_exhausted': return 'Content acceptance correction budget exhausted'
       case 'response_protocol_exhausted': return 'Final assessment protocol correction exhausted'
       case 'tool_protocol_exhausted': return 'Tool protocol correction exhausted'

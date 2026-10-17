@@ -14,6 +14,8 @@ export interface TerminalFeedback {
   reason: TerminalReason
   failedCount: number
   cancelledCount: number
+  notStartedCount: number
+  notStartedAgentIds: string[]
   createdAt: string
   suppressAgentWake: true
 }
@@ -21,6 +23,7 @@ export function terminalFeedback(row: Record<string, unknown>): TerminalFeedback
   return { id: String(row['id']), rootWorkId: String(row['root_work_id']), requestVersion: Number(row['request_version']),
     status: row['status'] as TerminalFeedback['status'], reason: row['reason'] as TerminalReason,
     failedCount: Number(row['failed_count']), cancelledCount: Number(row['cancelled_count']),
+    notStartedCount: Number(row['not_started_count'] ?? 0), notStartedAgentIds: (row['not_started_agents'] as string[] | undefined) ?? [],
     createdAt: new Date(row['created_at'] as Date | string).toISOString(), suppressAgentWake: true }
 }
 

@@ -68,6 +68,7 @@ import { collaborationTools } from '../collaboration/tools.js'
 import { authorizeRunRead, createCollaborationAPI } from '../collaboration/api.js'
 import { verifyGraphResults } from '../collaboration/graphs.js'
 import { enqueueChild, requestSnapshot } from './jobs.js'
+import { ChildAdmissionRejectedError, recordChildBudgetDenials } from '../model/child-admission.js'
 import { BackgroundScheduler, backgroundOptions, backgroundPool, type BackgroundOptions } from './background-scheduler.js'
 
 export interface LingxiOSOptions {
@@ -733,6 +734,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     async enqueueDelegated(input: DelegatedRequestInput) {
       const delegation = input.delegation
       if (!delegation) throw new Error('invalid delegated request')
+      let admissionParent: WorkItem | undefined
       return withTransaction(options.database, async db => {
         const parentRow = (await db.query(`SELECT * FROM lingxios.agent_work_items WHERE id=$1 AND tenant_id=$2 AND principal_id=$3 FOR UPDATE`,
           [delegation.parentWorkId, input.tenantId, input.principalId])).rows[0]
@@ -740,9 +742,19 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         const parent = workItemFromRow(parentRow, '', 1), request = await requestSnapshot(db, parent.id, delegation.parentRequestVersion)
         if (canonicalJson(request) !== canonicalJson(delegation.parentRequest) || delegation.rootWorkId !== (parent.meta?.['rootWorkId'] ?? parent.id)
           || delegation.instructionAuthorId !== parent.agentId) throw new Error('delegation differs from its durable parent')
+        admissionParent = parent
         return enqueueChild(db, parent, delegation.parentRequestVersion, { id: input.id ?? randomUUID(), agentId: input.agentId, text: input.text,
           sessionId: input.sessionId, ...(input.executionClass ? { executionClass: input.executionClass } : {}),
           ...(input.threadId === undefined ? {} : { threadId: input.threadId }), meta: policyMeta(input) })
+      }).catch(async error => {
+        if (error instanceof ChildAdmissionRejectedError && admissionParent) {
+          const parent = admissionParent
+          await withTransaction(options.database,async db => {
+            await authorizeConversationWork(db,parent,'execute',true)
+            await recordChildBudgetDenials(db,parent,delegation.parentRequestVersion,error.children,error.diagnostics.dimension)
+          })
+        }
+        throw error
       })
     },
     async readMessage(identity: MessageIdentity): Promise<AssistantMessage | null> {

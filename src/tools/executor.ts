@@ -20,6 +20,7 @@ import { enqueueGraph, readGraph, waitForChildren } from '../collaboration/graph
 import { createSharedState, readSharedState, updateSharedState } from '../collaboration/state.js'
 import { authorizeConversationWork } from '../collaboration/access.js'
 import { classifyToolFailure, isSerializationFailure } from './failure.js'
+import { ChildAdmissionRejectedError, recordChildBudgetDenials } from '../model/child-admission.js'
 
 export function toolExecutor(database: SqlPool, definitions: readonly ToolDefinition[],
   createArtifact?: (work: Omit<WorkItem, 'leaseToken'>, input: ArtifactInput, signal?: AbortSignal) => Promise<KernelArtifact>, memory?: MemoryOptions): ActionExecutor {
@@ -233,6 +234,15 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
           if (committing || rollingBack) throw uncertain(error, options)
           try { await client.query('ROLLBACK') }
           catch (rollbackError) { throw uncertain(rollbackError, options) }
+          if (error instanceof ChildAdmissionRejectedError && !options.signal.aborted) {
+            client.release()
+            await withTransaction(deadlinePool(database,options.signal),async db => {
+              await lockAction(db,work,action)
+              await authorizeConversationWork(db,work,'execute',true)
+              await tool.authorize(context(work,action,options,db),input)
+              await recordChildBudgetDenials(db,work,options.requestVersion,error.children,error.diagnostics.dimension)
+            })
+          }
           if (attempt === 0 && !options.signal.aborted && Date.now() < Date.parse(options.deadlineAt) && isSerializationFailure(error)) {
             // Release before reacquiring, including pools with only one connection.
             client.release()

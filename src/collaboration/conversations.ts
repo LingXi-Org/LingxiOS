@@ -6,6 +6,7 @@ import type { WorkItem } from '../protocol/types.js'
 import type { ContextProvider } from '../control-plane/stores.js'
 import { audienceOf, authorizeConversationWork, containsAudience, conversationPolicy, digest, identifier, identity, participant, positiveVersion, requireAudience } from './access.js'
 import type { Audience, ConversationIdentity, ConversationPolicy, IMDeliveryContext, IMIngressResult, IMMessageInput, WorkConversation } from './types.js'
+import { admitChildBudget } from '../model/child-admission.js'
 
 export async function syncConversation(database: SqlPool, policy: ConversationPolicy) {
   identity(policy); positiveVersion(policy.version); identifier(policy.owner?.id)
@@ -142,6 +143,14 @@ export async function ingestMessage(database: SqlPool, input: IMMessageInput, po
     }
     for (const agentId of targets) {
       const runId = 'im:' + digest([input.tenantId, input.conversationId, input.messageId, input.version, agentId])
+      if (sender) {
+        const admission = await admitChildBudget(db,sender,senderVersion!,runId,agentId,input.text)
+        if (!admission.allowed) {
+          outcome.reason = 'budget_limit'
+          outcome.budgetLimit = { dimension: admission.dimension! }
+          continue
+        }
+      }
       const sessionId = 'im-session:' + digest([input.conversationId, input.threadId ?? null, principalId, audience, policy.version, ...(sender ? [input.messageId] : [])])
       const run: RunIdentity = { runId, tenantId: input.tenantId, agentId, sessionId, principalId,
         ...(input.threadId === undefined ? {} : { threadId: input.threadId }) }

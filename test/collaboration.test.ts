@@ -37,6 +37,11 @@ async function setup(options: Partial<LingxiOSOptions> = {}) {
   async function save(work: WorkItem) {
     const existing = await host.loadSession(work, sessionKeyOf(work))
     if (existing) return existing
+    // This fixture commits scripted provider output directly; register its real reservation boundary first.
+    await host.reserveModelCall(work,`fixture-model:${work.id}`,{ maxModelCalls: 128,maxTokens: 1000000,maxCostMicros: 10000000,
+      deadlineAt: new Date(Date.now()+1800000).toISOString(),reservedTokens: 120,reservedInputTokens: 100,reservedOutputTokens: 20,
+      childAdmission: { inputTokens: 100,outputTokens: 20,executionMs: 1000 } })
+    await host.recordModelUsage(work,`fixture-model:${work.id}`,{ inputTokens: 100,outputTokens: 20,costMicros: 0 })
     const context = await host.loadContext(work)
     const session: SessionRecord = { key: sessionKeyOf(work), tenantId: work.tenantId, agentId: work.agentId, sessionId: work.sessionId,
       ...(work.threadId === undefined ? {} : { threadId: work.threadId }), revision: 0, compactionEpoch: 0, history: [], appliedWorkIds: [work.id], request: snapshotRequest(context) }
@@ -156,8 +161,9 @@ it('bounds an all-member mention by the chain budget even in a large supported r
     const input = message('large-room-reply', { policyVersion: 2, author: { id: 'lead', kind: 'agent' },
       text: '@all Please contribute.', mentions: peers.map(peer => peer.id), causedBy: { resultId: result.resultId! } })
     const accepted = await f.control.conversations.ingest(input)
-    assert.equal(accepted.reason, 'mention_limit')
-    assert.equal(accepted.runs.length, 31)
+    assert.equal(accepted.reason, 'budget_limit')
+    assert.equal(accepted.budgetLimit?.dimension, 'reservation')
+    assert.equal(accepted.runs.length, 4, 'live fanout is bounded within the existing 31 remaining chain slots')
     assert.deepEqual(await f.control.conversations.ingest(input), { ...accepted, deduplicated: true })
   } finally { await f.close() }
 })

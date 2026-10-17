@@ -56,5 +56,36 @@ CREATE TRIGGER agent_work_terminal_feedback AFTER INSERT OR UPDATE OF status ON 
 CREATE TRIGGER agent_terminal_wakeup AFTER INSERT ON lingxios.agent_terminal_outbox
   FOR EACH ROW EXECUTE FUNCTION lingxios.notify_runtime('lingxios_outbox');
 
+
+-- Startup holds protect queued children and one root closing call from concurrent fanout.
+ALTER TABLE lingxios.agent_model_budgets ADD COLUMN child_admission JSONB;
+ALTER TABLE lingxios.agent_model_budgets ADD COLUMN cumulative_execution BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE TABLE lingxios.agent_model_budget_holds (
+  root_work_id TEXT NOT NULL REFERENCES lingxios.agent_model_budgets(root_work_id) ON DELETE CASCADE,
+  work_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('child','closing')),
+  tokens BIGINT NOT NULL CHECK(tokens>0), cost_micros BIGINT NOT NULL CHECK(cost_micros>=0),
+  execution_ms BIGINT NOT NULL CHECK(execution_ms>0),
+  PRIMARY KEY(root_work_id,work_id)
+);
+CREATE TABLE lingxios.agent_budget_denials (
+  root_work_id TEXT NOT NULL REFERENCES lingxios.agent_work_items(id) ON DELETE CASCADE,
+  request_version INTEGER NOT NULL CHECK(request_version>0),
+  proposed_work_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+  dimension TEXT NOT NULL CHECK(dimension IN ('calls','tokens','cost','deadline','reservation')),
+  PRIMARY KEY(root_work_id,request_version,proposed_work_id)
+);
+ALTER TABLE lingxios.agent_terminal_outbox ADD COLUMN not_started_count INTEGER NOT NULL DEFAULT 0 CHECK(not_started_count>=0);
+ALTER TABLE lingxios.agent_terminal_outbox ADD COLUMN not_started_agents TEXT[] NOT NULL DEFAULT '{}';
+CREATE FUNCTION lingxios.release_child_budget_hold() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.status IN ('succeeded','failed','cancelled') THEN
+    DELETE FROM lingxios.agent_model_budget_holds WHERE work_id=NEW.id;
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER agent_work_release_budget_hold AFTER UPDATE OF status ON lingxios.agent_work_items
+  FOR EACH ROW EXECUTE FUNCTION lingxios.release_child_budget_hold();
+
 UPDATE lingxios.schema_version SET version=12 WHERE singleton;
 COMMIT;

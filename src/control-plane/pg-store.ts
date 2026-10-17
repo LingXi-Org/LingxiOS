@@ -670,28 +670,49 @@ export class PgModelBudgetStore implements ModelBudgetStore {
       [rootWorkId, limits.maxModelCalls, limits.maxTokens, limits.maxCostMicros, limits.deadlineAt, limits.maxExecutionMs ?? 1_800_000])
       await client.query('SELECT root_work_id FROM lingxios.agent_model_budgets WHERE root_work_id=$1 FOR UPDATE', [rootWorkId])
       if (limits.maxExecutionMs !== undefined) await client.query(`UPDATE lingxios.agent_model_budgets budget
-        SET deadline_at=NOW()+GREATEST(0,budget.max_execution_ms-COALESCE((
+        SET cumulative_execution=TRUE,deadline_at=NOW()+GREATEST(0,budget.max_execution_ms-COALESCE((
           SELECT SUM(GREATEST(0,EXTRACT(EPOCH FROM (COALESCE(attempt.ended_at,LEAST(NOW(),attempt.lease_expires_at))-attempt.started_at))*1000))
           FROM lingxios.agent_attempts attempt JOIN lingxios.agent_work_items work ON work.id=attempt.work_id
           WHERE COALESCE(work.meta->>'rootWorkId',work.id)=budget.root_work_id),0))*INTERVAL '1 millisecond'
         WHERE root_work_id=$1`, [rootWorkId])
-      const prior = await client.query(`SELECT 1 FROM lingxios.agent_model_budget_calls
-        WHERE root_work_id=$1 AND call_id=$2`, [rootWorkId, callId])
-      if (!prior.rows.length) {
-        const inserted = await client.query(`INSERT INTO lingxios.agent_model_budget_calls(root_work_id,call_id,reserved_tokens,reserved_cost_micros,work_id,fence,lease_token_hash,pricing)
-          SELECT root_work_id,$2,$3,$4,$5,$6,$7,$8::jsonb FROM lingxios.agent_model_budgets WHERE root_work_id=$1
-            AND NOW()<deadline_at AND model_calls<max_model_calls AND tokens+$3<=max_tokens AND cost_micros+$4<=max_cost_micros
-          ON CONFLICT DO NOTHING RETURNING call_id`, [rootWorkId, callId, limits.reservedTokens ?? 0, limits.reservedCostMicros ?? 0, proof?.workId ?? rootWorkId, proof?.fence ?? null, proof?.leaseTokenHash ?? null, limits.pricing ? JSON.stringify(limits.pricing) : null])
-        if (inserted.rows.length) await client.query(`UPDATE lingxios.agent_model_budgets
-          SET model_calls=model_calls+1,tokens=tokens+$2,cost_micros=cost_micros+$3,updated_at=NOW() WHERE root_work_id=$1`, [rootWorkId, limits.reservedTokens ?? 0, limits.reservedCostMicros ?? 0])
+      const budget = (await client.query('SELECT *,NOW()>=deadline_at AS expired FROM lingxios.agent_model_budgets WHERE root_work_id=$1', [rootWorkId])).rows[0]!
+      if (limits.childAdmission) {
+        const priorProfile = budget['child_admission'] as import('../model/child-admission.js').AdmissionProfile | null
+        const profile = { inputTokens: Math.max(limits.childAdmission.inputTokens,priorProfile?.inputTokens ?? 0),
+          outputTokens: Math.max(limits.childAdmission.outputTokens,priorProfile?.outputTokens ?? 0),
+          executionMs: Math.max(limits.childAdmission.executionMs,priorProfile?.executionMs ?? 0) }
+        const pricing = limits.pricing
+        const costMicros = pricing ? Math.ceil((profile.inputTokens*pricing.inputMicrosPerMillion+profile.outputTokens*pricing.outputMicrosPerMillion)/1_000_000) : limits.reservedCostMicros ?? 0
+        await client.query('UPDATE lingxios.agent_model_budgets SET child_admission=$2::jsonb WHERE root_work_id=$1',
+          [rootWorkId,JSON.stringify({ ...profile,costMicros: Math.max(costMicros,priorProfile?.costMicros ?? 0),
+            inputMicrosPerMillion: Math.max(pricing?.inputMicrosPerMillion ?? 0,priorProfile?.inputMicrosPerMillion ?? 0) })])
       }
-      const { rows } = await client.query(`SELECT b.*,EXISTS(SELECT 1 FROM lingxios.agent_model_budget_calls c
-        WHERE c.root_work_id=b.root_work_id AND c.call_id=$2) AS allowed
-        FROM lingxios.agent_model_budgets b WHERE root_work_id=$1 FOR UPDATE`, [rootWorkId, callId])
-      const row = rows[0]!
-      return { allowed: Boolean(row['allowed']), remainingCalls: Math.max(0, Number(row['max_model_calls']) - Number(row['model_calls'])),
-        remainingTokens: Math.max(0, Number(row['max_tokens']) - Number(row['tokens'])),
-        remainingCostMicros: Math.max(0, Number(row['max_cost_micros']) - Number(row['cost_micros'])),
+      const workId = proof?.workId ?? rootWorkId
+      const held = (await client.query(`SELECT COALESCE(SUM(tokens),0) AS tokens,COALESCE(SUM(cost_micros),0) AS cost,
+        COUNT(*)::integer AS calls FROM lingxios.agent_model_budget_holds WHERE root_work_id=$1 AND work_id<>$2`,[rootWorkId,workId])).rows[0]!
+      const prior = await client.query(`SELECT 1 FROM lingxios.agent_model_budget_calls WHERE root_work_id=$1 AND call_id=$2`, [rootWorkId,callId])
+      let dimension: import('../errors.js').BudgetDimension | undefined
+      if (!prior.rows.length) {
+        const tokens = limits.reservedTokens ?? 0, cost = limits.reservedCostMicros ?? 0
+        dimension = budget['expired'] ? 'deadline' : Number(budget['model_calls']) >= Number(budget['max_model_calls']) ? 'calls'
+          : Number(budget['tokens'])+tokens > Number(budget['max_tokens']) ? 'tokens'
+          : Number(budget['cost_micros'])+cost > Number(budget['max_cost_micros']) ? 'cost'
+          : Number(budget['model_calls'])+Number(held['calls']) >= Number(budget['max_model_calls'])
+            || Number(budget['tokens'])+tokens+Number(held['tokens']) > Number(budget['max_tokens'])
+            || Number(budget['cost_micros'])+cost+Number(held['cost']) > Number(budget['max_cost_micros']) ? 'reservation' : undefined
+        if (!dimension) {
+          await client.query(`INSERT INTO lingxios.agent_model_budget_calls(root_work_id,call_id,reserved_tokens,reserved_cost_micros,work_id,fence,lease_token_hash,pricing)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,[rootWorkId,callId,tokens,cost,workId,proof?.fence ?? null,proof?.leaseTokenHash ?? null,limits.pricing ? JSON.stringify(limits.pricing) : null])
+          await client.query(`UPDATE lingxios.agent_model_budgets SET model_calls=model_calls+1,tokens=tokens+$2,cost_micros=cost_micros+$3,
+            updated_at=NOW() WHERE root_work_id=$1`,[rootWorkId,tokens,cost])
+          await client.query('DELETE FROM lingxios.agent_model_budget_holds WHERE root_work_id=$1 AND work_id=$2',[rootWorkId,workId])
+        }
+      }
+      const row = (await client.query('SELECT * FROM lingxios.agent_model_budgets WHERE root_work_id=$1',[rootWorkId])).rows[0]!
+      return { allowed: !dimension, ...(dimension ? { dimension } : {}),
+        remainingCalls: Math.max(0, Number(row['max_model_calls'])-Number(row['model_calls'])-Number(held['calls'])),
+        remainingTokens: Math.max(0, Number(row['max_tokens'])-Number(row['tokens'])-Number(held['tokens'])),
+        remainingCostMicros: Math.max(0, Number(row['max_cost_micros'])-Number(row['cost_micros'])-Number(held['cost'])),
         deadlineAt: new Date(row['deadline_at'] as string | Date).toISOString() }
     })
   }

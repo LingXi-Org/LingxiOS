@@ -114,6 +114,8 @@ export interface StoreLeaseProof {
 }
 
 export interface ModelBudgetLimits {
+  /** Conservative configured model-profile bounds for admission before a child has a prompt. */
+  childAdmission?: { inputTokens: number; outputTokens: number; executionMs: number }
   pricing?: import('../model/execution.js').ModelPricing
   maxExecutionMs?: number
   reservedTokens?: number
@@ -128,6 +130,7 @@ export interface ModelBudgetLimits {
 
 export interface ModelBudgetReservation {
   allowed: boolean
+  dimension?: import('../errors.js').BudgetDimension
   remainingCalls: number
   remainingTokens: number
   remainingCostMicros: number

@@ -5,6 +5,7 @@ import { authorizeConversationWork, conversationPolicy, digest, identifier, part
 import { enqueueGraph, readGraph, waitForChildren } from './graphs.js'
 import { createSharedState, readSharedState, sharedStateHistory, updateSharedState } from './state.js'
 import type { Audience, AudienceInput, ConversationIdentity, GraphInput, IMIngressResult, MessageReference, SharedStateIdentity, SharedStateUpdate } from './types.js'
+import { ChildAdmissionRejectedError, recordChildBudgetDenials } from '../model/child-admission.js'
 
 async function parentWork(database: SqlQueryable, identity: RunIdentity, write = false) {
   const { rows } = await database.query(`SELECT * FROM lingxios.agent_work_items WHERE id=$1 AND tenant_id=$2 AND agent_id=$3
@@ -37,10 +38,20 @@ export async function authorizeRunRead(database: SqlQueryable, identity: { runId
 export function createCollaborationAPI(database: SqlPool) {
   return {
     graphs: {
-      enqueue: (identity: RunIdentity, input: GraphInput) => withTransaction(database, async db => {
-        const { work, version } = await parentWork(db, identity, true)
-        return enqueueGraph(db, work, version, input)
-      }),
+      enqueue: async (identity: RunIdentity, input: GraphInput) => {
+        let admittedVersion: number | undefined
+        try { return await withTransaction(database, async db => {
+          const { work, version } = await parentWork(db, identity, true)
+          admittedVersion = version
+          return enqueueGraph(db, work, version, input)
+        }) } catch (error) {
+          if (error instanceof ChildAdmissionRejectedError) await withTransaction(database,async db => {
+            const { work,version } = await parentWork(db,identity,true)
+            if (version === admittedVersion) await recordChildBudgetDenials(db,work,version,error.children,error.diagnostics.dimension)
+          })
+          throw error
+        }
+      },
       read: async (identity: RunIdentity, id: string) => { const { work, version } = await parentWork(database, identity); return readGraph(database, work, version, id) },
       waitForChildren: (identity: RunIdentity, ids: string[]) => withTransaction(database, async db => {
         const { work, version } = await parentWork(db, identity, true)

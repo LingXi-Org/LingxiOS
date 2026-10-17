@@ -12,8 +12,13 @@ export class AgentOSError extends Error {
   }
 }
 
+export type BudgetDimension = 'calls' | 'tokens' | 'cost' | 'deadline' | 'reservation'
 export class ModelBudgetExceededError extends AgentOSError {
-  constructor(message: string) { super('model_budget_exhausted', message) }
+  readonly diagnostics: { code: 'budget_limit'; dimension: BudgetDimension }
+  constructor(message: string, dimension: BudgetDimension = 'reservation') {
+    super('budget_limit', message)
+    this.diagnostics = Object.freeze({ code: 'budget_limit', dimension })
+  }
 }
 
 export class ModelContextBudgetError extends AgentOSError {

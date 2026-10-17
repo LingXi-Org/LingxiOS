@@ -61,7 +61,7 @@ export const DEFAULT_MODEL_BUDGET: Required<RootModelBudgetOptions> = {
 
 /** One provider attempt boundary shared by generation, reviews, compaction and embeddings. */
 export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>,
-  model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'countTokens' | 'configurationFingerprint' | 'recovery'>, work: WorkItem,
+  model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'countTokens' | 'configurationFingerprint' | 'recovery' | 'profile' | 'contextWindowTokens'>, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
   emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model') {
   let sequence = 0, calls = 0, tokens = 0, cost = 0
@@ -80,20 +80,23 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
     const reservedCost = Math.ceil((input * limits.inputCostMicrosPerMillion + output * limits.outputCostMicrosPerMillion) / 1_000_000)
     for (let attempt = 1; ; attempt++) {
       logicalSignal.throwIfAborted()
-      if (calls >= limits.maxModelCalls || tokens + input + output > limits.maxTokens
-        || cost + reservedCost > limits.maxCostMicros || Date.now() - started >= limits.wallClockMs) {
-        throw new ModelBudgetExceededError('root work model budget exhausted')
-      }
+      const dimension = Date.now() - started >= limits.wallClockMs ? 'deadline' : calls >= limits.maxModelCalls ? 'calls'
+        : tokens + input + output > limits.maxTokens ? 'tokens' : cost + reservedCost > limits.maxCostMicros ? 'cost' : undefined
+      if (dimension) throw new ModelBudgetExceededError('Root work budget limit reached', dimension)
       const callId = attempt === 1 ? logicalCallId : `${logicalCallId}:retry:${attempt}`
       const reservation = await host.reserveModelCall(work, callId, {
         ...limits, maxExecutionMs: limits.wallClockMs,
         deadlineAt: new Date(Date.now() + limits.wallClockMs).toISOString(),
         reservedTokens: input + output, reservedInputTokens: input, reservedOutputTokens: output, reservedCostMicros: reservedCost,
         pricing: modelPricing(limits),
+        ...(purpose === 'agent-turn' ? { childAdmission: {
+          inputTokens: input,
+          outputTokens: output, executionMs: recovery.totalTimeoutMs,
+        } } : {}),
       })
-      if (!reservation.allowed) throw new ModelBudgetExceededError('root work model budget exhausted')
+      if (!reservation.allowed) throw new ModelBudgetExceededError('Root work budget limit reached', reservation.dimension)
       const remaining = Date.parse(reservation.deadlineAt) - Date.now()
-      if (remaining <= 0) throw new ModelBudgetExceededError('root work execution time exhausted')
+      if (remaining <= 0) throw new ModelBudgetExceededError('Root work execution time exhausted', 'deadline')
       calls++; tokens += input + output; cost += reservedCost
       const signal = AbortSignal.any([logicalSignal, AbortSignal.timeout(Math.min(2_147_483_647, remaining))])
       const began = performance.now()
