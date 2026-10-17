@@ -10,7 +10,7 @@ export interface ToolFailureDiagnostics {
   causeCode?: string
 }
 
-const denied = new Set(['forbidden', 'unauthorized', 'access_denied', 'permission_denied', 'capability_denied', 'mode_forbidden'])
+const denied = new Set(['forbidden', 'unauthorized', 'access_denied', 'permission_denied', 'capability_denied', 'mode_forbidden', 'review_required'])
 const blocked = new Set(['dns_blocked', 'blocked_dns', 'dependency_blocked', 'ssrf_blocked', 'EACCES', 'EPERM'])
 const version = new Set(['tool_contract_changed', 'approval_stale', 'observation_required', 'version_conflict', 'stale_version'])
 const invalid = new Set(['invalid_arguments', 'invalid_input', 'validation_error'])

@@ -32,7 +32,7 @@ async function setup(options: Partial<LingxiOSOptions> = {}) {
   const pool: SqlPool = { query: async (sql, params) => { const result = await db.query<Record<string, unknown>>(sql, params); return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length } },
     connect: async () => ({ query: pool.query, release() {} }) }
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
-  const control = await createLingxiOS({ ...options, database: pool }), host = control.connectWorker({ workerId: 'collaboration-test', workKinds: ['turn'] })
+  const control = await createLingxiOS({ background: { minPollMs: 10, maxPollMs: 50 }, ...options, database: pool }), host = control.connectWorker({ workerId: 'collaboration-test', workKinds: ['turn'] })
   await control.conversations.sync(structuredClone(policy))
   async function save(work: WorkItem) {
     const existing = await host.loadSession(work, sessionKeyOf(work))
@@ -274,7 +274,9 @@ it('merges independent state fields, preserves tombstone versions and audits ded
     await f.control.conversations.ingest(message('public'))
     const work = (await f.host.claimWork())!; await f.save(work)
     const denied = await f.action(work, 'private-state', 'shared_state.read', { id: scope.stateId })
-    assert.equal(denied.ok, false); assert.match(denied.error!, /audience/)
+    assert.equal(denied.ok, false); assert.equal(denied.code, 'forbidden')
+    assert.equal(denied.diagnostics?.category, 'authorization')
+    assert.equal(denied.diagnostics?.retryable, false)
   } finally { await f.close() }
 })
 

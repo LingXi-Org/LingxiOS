@@ -25,7 +25,10 @@ it('requires a private reviewer, protects explicit memory, binds reviews to vers
     const changes=[{action:'update',id:saved.id,expectedVersion:1,content:content('Use diagrams.')}]
     const unreviewed=await host.executeAction(work,action(work,0,'apply',{changes}))
     assert.equal(unreviewed.ok,false)
-    assert.match(unreviewed.error!,/review/)
+    assert.equal(unreviewed.code,'forbidden')
+    assert.equal(unreviewed.diagnostics?.category,'authorization')
+    assert.equal(unreviewed.diagnostics?.causeCode,'review_required')
+    assert.equal((await app.memory!.read(identity,scope,saved.id))!.version,1)
     const automatic=action(work,1,'apply',{changes})
     const prepared=(await host.prepareMemoryReview!(work,automatic))!
     assert.equal(prepared.input.request.originalText,'Please change my saved preference to diagrams.')

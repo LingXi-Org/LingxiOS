@@ -1,3 +1,4 @@
+import { NoEffectError } from '../tools/definition.js'
 import type { SqlQueryable } from '../control-plane/pg-store.js'
 import type { WorkItem } from '../protocol/types.js'
 import { audienceOf, authorizeConversationWork, containsAudience, conversationPolicy, digest, identifier, participant, requireAudience } from './access.js'
@@ -16,9 +17,9 @@ async function authorize(database: SqlQueryable, scope: SharedStateIdentity, act
   if (actor.work) {
     const work = actor.work
     if (!work.conversation || work.tenantId !== scope.tenantId || work.conversation.conversationId !== scope.conversationId
-      || work.threadId !== scope.threadId || work.principalId !== actor.principalId) throw new Error('shared state is outside this work conversation')
+      || work.threadId !== scope.threadId || work.principalId !== actor.principalId) throw new NoEffectError('shared state is outside this work conversation', 'forbidden')
     await authorizeConversationWork(database, work, write ? 'execute' : 'read', write)
-    if (audience && !containsAudience(audience, work.conversation.audience)) throw new Error('state cannot be disclosed to the work audience')
+    if (audience && !containsAudience(audience, work.conversation.audience)) throw new NoEffectError('state cannot be disclosed to the work audience', 'forbidden')
   }
   return policy
 }
@@ -77,7 +78,7 @@ export async function updateSharedState(database: SqlQueryable, scope: SharedSta
     const source = await database.query(`SELECT 1 FROM lingxios.agent_im_messages WHERE tenant_id=$1 AND conversation_id=$2
       AND thread_id IS NOT DISTINCT FROM $3 AND message_id=$4 AND version=$5 AND input->'author'->>'id'=$6`,
     [scope.tenantId, scope.conversationId, scope.threadId ?? null, actor.source.messageId, actor.source.version, actor.principalId])
-    if (!source.rows.length) throw new Error('state update source is outside this actor and conversation')
+    if (!source.rows.length) throw new NoEffectError('state update source is outside this actor and conversation', 'forbidden')
   }
   const { rows } = await database.query(`SELECT audience,version,fields FROM lingxios.agent_shared_states
     WHERE tenant_id=$1 AND conversation_id=$2 AND thread_key=$3 AND id=$4 FOR UPDATE`, scopeParams(scope))

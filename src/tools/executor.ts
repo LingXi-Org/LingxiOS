@@ -184,7 +184,7 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
           if (!(error instanceof NoEffectError)) throw uncertain(error, options)
           const failure = rejected(error, 'execution', options)
           const noEffect = { ok: false, executionState: 'no_effect' as const, code: failure.code, error: failure.message,
-            diagnostics: failure.diagnostics }
+            ...(failure.diagnostics ? { diagnostics: failure.diagnostics } : {}) }
           result = noEffect
         }
         if (tool.approval) await database.query(`UPDATE lingxios.agent_action_ledger SET result=$2::jsonb

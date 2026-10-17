@@ -506,9 +506,10 @@ export class ControlPlaneService {
       throw new ControlPlaneError(400, 'host action must be <namespace>.<method>')
     }
 
-    const reject = async (code: string, error: string): Promise<HostActionResult> => {
+    const reject = async (code: string, error: string, diagnostics?: HostActionResult['diagnostics']): Promise<HostActionResult> => {
       const prior = await this.deps.actions.find(action.idempotencyKey)
-      const result: HostActionResult = { ok: false, executionState: prior?.approval ? 'no_effect' : 'rejected', code, error }
+      const result: HostActionResult = { ok: false, executionState: prior?.approval ? 'no_effect' : 'rejected', code, error,
+        ...(diagnostics ? { diagnostics } : {}) }
       return prior?.approval ? this.deps.actions.record(action.idempotencyKey, result) : result
     }
     // Authoritative capability check. The kernel-side allowlist only shapes
@@ -562,7 +563,8 @@ export class ControlPlaneService {
     }
     if (namespace !== 'task') {
       try { await this.deps.actionExecutor.prepare(work, action, options) }
-      catch (error) { return reject(error instanceof NoEffectError ? error.code : 'invalid_arguments', errorMessage(error)) }
+      catch (error) { return reject(error instanceof NoEffectError ? error.code : 'invalid_arguments', errorMessage(error),
+        error instanceof NoEffectError ? error.diagnostics : undefined) }
     }
     if (existingIntent && existingIntent.toolContractHash !== contractHash) {
       const prior = await this.deps.actions.find(action.idempotencyKey)
@@ -664,7 +666,7 @@ export class ControlPlaneService {
       } else result = await this.deps.actionExecutor.execute(work, action, options)
     } catch (error) {
       result = { ok: false, executionState: namespace === 'task' || tool?.effect === 'read' || error instanceof NoEffectError ? 'no_effect' : 'unknown',
-        ...(error instanceof NoEffectError ? { code: error.code } : {}), error: errorMessage(error) }
+        ...(error instanceof NoEffectError ? { code: error.code, ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}) } : {}), error: errorMessage(error) }
     }
     const recorded = await this.deps.actions.record(action.idempotencyKey, result)
     this.deps.metrics?.counter('agentos_actions_executed_total', 'Host actions executed').inc({
