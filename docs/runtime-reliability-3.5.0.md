@@ -1,5 +1,13 @@
 # Runtime reliability 3.5.0
 
+Patch 3.5.1 preserves the existing five-specialist team by allowing up to eight
+pending children when the root budget can reserve their starts and its closing
+response. The ninth pending child is rejected. It also forwards the classified
+terminal reason through the HTTP worker completion boundary; invalid reasons
+return HTTP 400 instead of silently becoming an ordinary execution failure.
+Schema 12 and migration014 are unchanged. The same PR gate, exact-main gate,
+tag and existing publish workflow sequence below applies to `v3.5.1`.
+
 This release requires schema 12. Drain old workers before the consuming application's explicit transactional migration applies `packageResources().migration014` to schema 11. Existing requests, results, action receipts and business tables remain intact. Historical terminal work is not replayed. Fresh installations apply `packageResources().schema`. Startup performs validation only; it never migrates storage.
 
 Hosts replaying immutable historical migration checks can install `packageResources().schema011` at that historical step, then apply `migration014` in their new migration. The schema-11 asset retains SHA-256 `5d77d0140de93d5c9fc205942c77b850b799d257ef49c056da2af84e15f4bb9f`. Strip the packaged outer transaction only when the host migration runner already owns that transaction; never allow a nested asset `COMMIT` to commit the host migration early.

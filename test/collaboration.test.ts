@@ -163,7 +163,7 @@ it('bounds an all-member mention by the chain budget even in a large supported r
     const accepted = await f.control.conversations.ingest(input)
     assert.equal(accepted.reason, 'budget_limit')
     assert.equal(accepted.budgetLimit?.dimension, 'reservation')
-    assert.equal(accepted.runs.length, 4, 'live fanout is bounded within the existing 31 remaining chain slots')
+    assert.equal(accepted.runs.length, 8, 'live fanout is bounded within the existing 31 remaining chain slots')
     assert.deepEqual(await f.control.conversations.ingest(input), { ...accepted, deduplicated: true })
   } finally { await f.close() }
 })

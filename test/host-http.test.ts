@@ -1,7 +1,7 @@
 import { MemoryStepStore } from '../src/control-plane/steps.js'
 import { MemoryModelBudgetStore } from '../src/control-plane/memory-store.js'
 import { snapshotEvidence } from '../src/context/evidence.js'
-import type { AssistantMessage, HostActionResult, ModelItem } from '../src/protocol/types.js'
+import type { AssistantMessage, HostActionResult, ModelItem, WorkCompletion } from '../src/protocol/types.js'
 import { createTaskContract } from '../src/context/task-contract.js'
 import { observationRef } from '../src/context/observations.js'
 import type { ActionIntent } from '../src/control-plane/stores.js'
@@ -93,6 +93,12 @@ it('keeps receipt digest checks scoped to settled values and the complete reques
 
 it('preserves goal outcomes and enforces session leases over real HTTP', async () => {
   const workStore = new MemoryWorkStore()
+  const completions: WorkCompletion[] = []
+  const complete = workStore.complete.bind(workStore)
+  workStore.complete = async (id, fence, hash, completion) => {
+    completions.push(structuredClone(completion))
+    return complete(id, fence, hash, completion)
+  }
   let resourceGranted = true
   let resourceVersion = 2
   let readbacks = 0
@@ -324,6 +330,15 @@ it('preserves goal outcomes and enforces session leases over real HTTP', async (
     await assert.rejects(client.commitResult(cancelled, { version: 2, runId: cancelled.id, agentId: 'a', sessionId: 's', body: 'Must not be delivered' } as AssistantMessage), /cancelled/)
     await client.completeWork(cancelled, { status: 'cancelled' })
     assert.equal(workStore.inspect(cancelled.id)?.status, 'cancelled')
+    await service.enqueue({ id: 'provider-failed', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm3' })
+    const failed = (await client.claimWork())!
+    for (const terminalReason of ['provider_private_body', null, 42]) {
+      await assert.rejects(client.completeWork(failed, { status: 'failed', terminalReason } as WorkCompletion),
+        (error: unknown) => error instanceof HostRequestError && error.status === 400 && /invalid terminal reason/.test(error.message))
+      assert.equal(workStore.inspect(failed.id)?.status, 'leased')
+    }
+    await client.completeWork(failed, { status: 'failed', terminalReason: 'model_unavailable', error: 'bounded provider failure' })
+    assert.deepEqual(completions.at(-1), { status: 'failed', terminalReason: 'model_unavailable', error: 'bounded provider failure' })
   } finally {
     await server.close()
   }
