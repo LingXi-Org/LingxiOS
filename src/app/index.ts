@@ -1,5 +1,7 @@
 import { DEFAULT_MODEL_BUDGET } from '../model/execution.js'
 import { readTerminalFeedback, terminalFeedback } from './terminal.js'
+import { classifyToolFailure } from '../tools/failure.js'
+import { snapshotMemories } from '../memory/context.js'
 import { abortable } from '../deadline.js'
 import type { VerificationRecord } from '../outcome/verification.js'
 import { flushOutbox, drainOutboxes } from '../control-plane/outbox.js'
@@ -221,6 +223,19 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       }
     } }
   const memory = options.memory ? createMemoryRuntime(options.database, options.memory, options.modelBudget) : undefined
+  async function optionalMemoryContext(work: Omit<WorkItem,'leaseToken'>, signal?: AbortSignal, profile?: 'fast' | 'deep') {
+    try { return await memory!.context(work,signal,profile) }
+    catch (error) {
+      signal?.throwIfAborted()
+      const failure = classifyToolFailure(error,'authorization')
+      if (failure.diagnostics.category !== 'authorization'
+        && !(failure.diagnostics.category === 'dependency' && failure.diagnostics.retryable)) throw error
+      metrics.counter('agentos_memory_context_unavailable_total','Optional memory context omitted after dependency or scope authorization failure').inc()
+      return snapshotMemories({ status: 'unavailable',core: [],directory: [],recalled: [],strategies: [],retrieval: [],
+        omitted: { core: 0,directory: 0,recalled: 0,strategies: 0 },
+        budget: { ratio: options.memory?.contextBudget?.ratio ?? 0.08,maxTokens: options.memory?.contextBudget?.maxTokens ?? 8000 } })
+    }
+  }
   const harness = options.harness ? assembleHarness(options.harness) : undefined
   const nativeCollaboration = collaborationTools()
   const businessTools = [...options.tools ?? [], ...harness?.tools ?? []]
@@ -305,7 +320,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       const previewVersion = options.realtime?.allowDraft ? Number((await options.database.query(
         'SELECT jsonb_array_length(steer_inputs)+1 AS version FROM lingxios.agent_work_items WHERE id=$1', [work.id])).rows[0]?.['version']) : 1
       return { ...context, previewAllowed: await realtime.allowed(work, previewVersion), ...(discoveredTools ? { discoveredTools } : {}),
-        ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await memory.context(work, signal, context.responseProfile) } : {}) }
+        ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await optionalMemoryContext(work, signal, context.responseProfile) } : {}) }
     } },
     ...(options.delivery ? { delivery: options.delivery } : {}),
   }

@@ -34,32 +34,52 @@ export function retryAfterMs(value: string | null, now = Date.now()): number | u
   return Number.isFinite(result) && result >= 0 ? Math.ceil(result) : undefined
 }
 
+function field(value: unknown, key: string): unknown {
+  try { return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined }
+  catch { return undefined }
+}
+function header(value: unknown, name: string): string | undefined {
+  try {
+    const result = value instanceof Headers ? value.get(name) : field(value,name)
+    return typeof result === 'string' ? result : undefined
+  } catch { return undefined }
+}
+
 /** Only allowlisted metadata crosses the ledger boundary; never messages or response bodies. */
 export function modelFailure(error: unknown, cancelled = false): ModelFailure {
   const diagnostics = error instanceof ModelDriverError ? error.diagnostics : undefined
-  const status = diagnostics?.status
+  const candidateStatus = diagnostics?.status ?? field(error,'status') ?? field(error,'statusCode')
+  const status = typeof candidateStatus === 'number' && Number.isInteger(candidateStatus)
+    && candidateStatus >= 100 && candidateStatus <= 599 ? candidateStatus : undefined
+  const headers = field(error,'headers')
+  const code = providerCode(diagnostics?.providerCode ?? field(error,'code') ?? field(field(error,'error'),'code'))
+  const requestId = providerRequestId(diagnostics?.requestId ?? field(error,'request_id') ?? field(error,'requestId')
+    ?? header(headers,'x-request-id') ?? header(headers,'request-id'))
+  const retryAfter = diagnostics?.retryAfterMs ?? retryAfterMs(header(headers,'retry-after') ?? null)
   let category = diagnostics?.category
   let causeCode: string | undefined
   for (let cause = error, depth = 0; cause && typeof cause === 'object' && depth < 6; depth++) {
-    const item = cause as { code?: unknown; name?: unknown; cause?: unknown }
-    if (typeof item.code === 'string' && (networkCodes.has(item.code) || timeoutCodes.has(item.code))) causeCode ??= item.code
-    if (!category && (item.name === 'TimeoutError' || typeof item.code === 'string' && timeoutCodes.has(item.code))) category = 'timeout'
-    cause = item.cause
+    const itemCode = field(cause,'code'), name = field(cause,'name')
+    if (typeof itemCode === 'string' && (networkCodes.has(itemCode) || timeoutCodes.has(itemCode))) causeCode ??= itemCode
+    if (!category && (name === 'TimeoutError' || name === 'APIConnectionTimeoutError'
+      || typeof itemCode === 'string' && timeoutCodes.has(itemCode))) category = 'timeout'
+    if (!category && name === 'APIConnectionError') category = 'network'
+    cause = field(cause,'cause')
   }
+  if (code === 'insufficient_quota' || code === 'billing_hard_limit_reached') category = 'quota'
+  if (code === 'invalid_api_key' || code === 'account_deactivated') category = 'authorization'
   if (cancelled) category = 'cancelled'
   category ??= diagnostics?.kind === 'protocol' ? 'protocol'
     : status === 401 || status === 403 ? 'authorization' : status === 402 ? 'quota'
     : status === 429 ? 'rate_limit' : status === 408 ? 'timeout'
     : status !== undefined ? status >= 500 && status !== 501 && status !== 505 ? 'unavailable' : 'unknown'
-    : diagnostics && !(error instanceof Error && error.cause) ? 'protocol'
+    : diagnostics && !field(error,'cause') ? 'protocol'
     : causeCode || diagnostics?.kind === 'provider' || diagnostics ? 'network' : 'unknown'
-  const requestId = providerRequestId(diagnostics?.requestId), code = providerCode(diagnostics?.providerCode)
   return { category, retryable: ['rate_limit', 'timeout', 'network', 'unavailable'].includes(category)
       || category === 'protocol' && diagnostics?.kind !== 'protocol',
     ...(status !== undefined ? { status } : {}), ...(requestId ? { requestId } : {}), ...(code ? { providerCode: code } : {}),
     ...(causeCode ? { causeCode } : {}),
-    ...(diagnostics?.retryAfterMs !== undefined && Number.isFinite(diagnostics.retryAfterMs) && diagnostics.retryAfterMs >= 0
-      ? { retryAfterMs: diagnostics.retryAfterMs } : {}) }
+    ...(retryAfter !== undefined && Number.isFinite(retryAfter) && retryAfter >= 0 ? { retryAfterMs: retryAfter } : {}) }
 }
 
 export function recoveryPolicy(value?: Partial<ModelRecoveryPolicy>): ModelRecoveryPolicy {
@@ -87,12 +107,12 @@ export function acquireCircuit(key: string, resetMs: number): (failure?: ModelFa
     state = { failures: 0, until: 0, probing: false, generation: 0 }
     circuits.set(key, state)
   }
-  if (state.until) state.probing = true
+  const probe = Boolean(state.until)
+  if (probe) state.probing = true
   const current = state
   const generation = current.generation
   return (failure, attempts = 1) => {
-    const probe = current.probing
-    current.probing = false
+    if (probe) current.probing = false
     if (!failure) {
       if (current.generation === generation) { current.failures = 0; current.until = 0 }
       return

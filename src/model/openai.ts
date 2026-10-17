@@ -17,7 +17,7 @@ import type { ModelItem } from '../protocol/types.js'
 import { ModelDriverError } from '../errors.js'
 import type { ModelProfile } from './profile.js'
 import { describeTool } from '../tools/catalog.js'
-import { acquireCircuit, modelFailure, providerRequestId, retryAfterMs, recoveryPolicy, type ModelRecoveryPolicy } from './recovery.js'
+import { acquireCircuit, modelFailure, providerCode, providerRequestId, retryAfterMs, recoveryPolicy, type ModelRecoveryPolicy } from './recovery.js'
 import { abortable } from '../deadline.js'
 import type {
   CompactionRequest, CompactionResult,
@@ -262,11 +262,12 @@ export class OpenAIChatDriver implements ModelDriver {
       if (response.ok) return this.boundedResponse(response, headersSignal, firstByte.signal, clearFirstByte)
       clearFirstByte()
       const status = response.status
-      await response.body?.cancel()
+      const code = await this.errorCode(response,combined)
       const requestId = providerRequestId(response.headers.get('x-request-id') ?? response.headers.get('request-id'))
       const retryAfter = retryAfterMs(response.headers.get('retry-after'))
       const failure = new ModelDriverError(`model provider returned ${status}`, { status, finishReasons: [], attempts: attempt,
-        ...(requestId ? { requestId } : {}), ...(retryAfter !== undefined ? { retryAfterMs: retryAfter } : {}) })
+        ...(requestId ? { requestId } : {}), ...(code ? { providerCode: code } : {}),
+        ...(retryAfter !== undefined ? { retryAfterMs: retryAfter } : {}) })
       if (modelFailure(failure).retryable && attempt < this.maxAttempts) {
         await this.sleep(Math.max(retryAfter ?? 0, this.backoffMs(attempt)), totalSignal)
         lastError = failure
@@ -279,6 +280,28 @@ export class OpenAIChatDriver implements ModelDriver {
       { finishReasons: [], attempts: this.maxAttempts },
       { cause: lastError },
     )
+  }
+
+  /** Parse at most 4 KiB for an allowlisted code; never retain or report provider text. */
+  private async errorCode(response: Response, signal: AbortSignal): Promise<string | undefined> {
+    if (!response.body) return undefined
+    const reader = response.body.getReader(), chunks: Uint8Array[] = []
+    const bounded = AbortSignal.any([signal,AbortSignal.timeout(250)])
+    let length = 0
+    try {
+      while (true) {
+        const chunk = await abortable(reader.read(),bounded)
+        if (chunk.done) break
+        length += chunk.value.byteLength
+        if (length > 4096) return undefined
+        chunks.push(chunk.value)
+      }
+      const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      if (!value || typeof value !== 'object') return undefined
+      const error = (value as { error?: unknown }).error
+      return error && typeof error === 'object' ? providerCode((error as { code?: unknown }).code) : undefined
+    } catch { return undefined }
+    finally { void reader.cancel().catch(() => {}).finally(() => reader.releaseLock()) }
   }
 
   private boundedResponse(response: Response, signal: AbortSignal, firstByte: AbortSignal, clearFirstByte: () => void): Response {
