@@ -1,12 +1,13 @@
 import { COMPACTION_PROMPT, textSha256, type PromptManifest } from '../context/compiler.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createHash } from 'node:crypto'
-import { ModelBudgetExceededError, ModelContextBudgetError, ModelDriverError, errorMessage } from '../errors.js'
+import { ModelBudgetExceededError, ModelContextBudgetError, ModelDriverError } from '../errors.js'
 import type { HostPort } from '../host/port.js'
 import { executionClassOf, type RunEvent, type WorkItem } from '../protocol/types.js'
 import type { ModelDriver, ModelUsage } from './driver.js'
 import { abortable } from '../deadline.js'
 import { fitsModel, inputTokens, modelProfile } from './profile.js'
+import { modelFailure, recoveryPolicy, type ModelFailure } from './recovery.js'
 
 export interface ModelPricing {
   version: string
@@ -39,6 +40,9 @@ export interface ModelCallObservation {
   configurationFingerprint?: string
   status: 'succeeded' | 'failed'
   error?: string
+  failure?: ModelFailure
+  attempt?: number
+  elapsedMs?: number
 }
 export type ModelCallObserver = (observation: ModelCallObservation, context?: import('../control-plane/outbox.js').DeliveryContext) => Promise<void>
 export interface RootModelBudgetOptions {
@@ -57,7 +61,7 @@ export const DEFAULT_MODEL_BUDGET: Required<RootModelBudgetOptions> = {
 
 /** One provider attempt boundary shared by generation, reviews, compaction and embeddings. */
 export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>,
-  model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'countTokens' | 'configurationFingerprint'>, work: WorkItem,
+  model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'countTokens' | 'configurationFingerprint' | 'recovery'>, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
   emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model') {
   let sequence = 0, calls = 0, tokens = 0, cost = 0
@@ -67,12 +71,15 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
     const instructionsSha256 = request.instructions === undefined ? undefined : textSha256(request.instructions)
     if (request.prompt && request.prompt.instructionsSha256 !== instructionsSha256) throw new Error('prompt manifest does not match model instructions')
     const logicalCallId = `${work.id}:${work.fence}:${namespace}:${++sequence}`
+    const recovery = recoveryPolicy(callModel.recovery), logicalBegan = performance.now()
+    const totalTimeout = AbortSignal.timeout(Math.min(recovery.totalTimeoutMs, limits.wallClockMs))
+    const logicalSignal = AbortSignal.any([...(request.signal ? [request.signal] : []), totalTimeout])
     const { prompt: _prompt, ...providerRequest } = request
     const input = inputTokens(callModel, providerRequest) + (callModel.toolDefinitionTokens ?? 0)
     const output = (callModel.maxOutputTokens ?? 8192) + (callModel.maxThinkingTokens ?? 0)
     const reservedCost = Math.ceil((input * limits.inputCostMicrosPerMillion + output * limits.outputCostMicrosPerMillion) / 1_000_000)
     for (let attempt = 1; ; attempt++) {
-      request.signal?.throwIfAborted()
+      logicalSignal.throwIfAborted()
       if (calls >= limits.maxModelCalls || tokens + input + output > limits.maxTokens
         || cost + reservedCost > limits.maxCostMicros || Date.now() - started >= limits.wallClockMs) {
         throw new ModelBudgetExceededError('root work model budget exhausted')
@@ -88,7 +95,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       const remaining = Date.parse(reservation.deadlineAt) - Date.now()
       if (remaining <= 0) throw new ModelBudgetExceededError('root work execution time exhausted')
       calls++; tokens += input + output; cost += reservedCost
-      const signal = AbortSignal.any([...(request.signal ? [request.signal] : []), AbortSignal.timeout(Math.min(2_147_483_647, remaining))])
+      const signal = AbortSignal.any([logicalSignal, AbortSignal.timeout(Math.min(2_147_483_647, remaining))])
       const began = performance.now()
       await emit?.({
         kind: 'model.request.started', stage: 'started', visibility: 'internal',
@@ -97,6 +104,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       let result: T | undefined, failure: unknown
       const diagnostics: Record<string, unknown> = {}
       try { result = await abortable(operation(signal, callId, diagnostics), signal) } catch (error) { failure = error }
+      const classifiedFailure = failure ? modelFailure(failure, request.signal?.aborted) : undefined
       const usage = result?.usage ?? (failure instanceof ModelDriverError ? failure.diagnostics.usage : undefined)
       const inputTokens = usage?.available ? usage.inputTokens : input
       const outputTokens = usage?.available ? usage.outputTokens : output
@@ -112,7 +120,8 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
         latencyMs: performance.now() - began, status: result ? 'succeeded' : 'failed',
         ...(typeof diagnostics['providerFirstContentMs'] === 'number' ? { firstContentMs: diagnostics['providerFirstContentMs'] } : {}),
         ...(callModel.configurationFingerprint ? { configurationFingerprint: callModel.configurationFingerprint } : {}),
-        ...(failure ? { error: errorMessage(failure) } : {}),
+        attempt, elapsedMs: performance.now() - logicalBegan,
+        ...(classifiedFailure ? { error: `Model request failed (${classifiedFailure.category})`, failure: classifiedFailure } : {}),
       }
       // A completed provider request must be settled even after cancellation or lease loss.
       await host.recordModelUsage(work, callId, { inputTokens, outputTokens, costMicros }, observation)
@@ -121,10 +130,11 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       if (result) return { ...result, callId, logicalCallId, ...(Object.keys(diagnostics).length ? {
         diagnostics: { ...('diagnostics' in result ? result.diagnostics as Record<string, unknown> : {}), ...diagnostics },
       } : {}) }
-      if (!(failure instanceof ModelDriverError) || attempt >= 3 || signal.aborted
-        || failure.diagnostics.kind === 'protocol'
-        || failure.diagnostics.status !== undefined && failure.diagnostics.status !== 429 && failure.diagnostics.status < 500) throw failure
-      await delay(Math.min(2000, 250 * 2 ** (attempt - 1)), undefined, { signal: request.signal })
+      if (!classifiedFailure?.retryable || attempt >= recovery.maxAttempts || signal.aborted) throw failure
+      const backoff = Math.max(classifiedFailure.retryAfterMs ?? 0, Math.floor(Math.random() * Math.min(2000, 250 * 2 ** (attempt - 1))))
+      // Retry-After is a minimum; if it cannot fit, stop rather than retry early.
+      if (backoff >= Math.min(remaining, recovery.totalTimeoutMs - (performance.now() - logicalBegan))) throw failure
+      await delay(backoff, undefined, { signal: logicalSignal })
     }
   }
   return { invoke, nextCallId: () => `${work.id}:${work.fence}:${namespace}:${sequence + 1}` }

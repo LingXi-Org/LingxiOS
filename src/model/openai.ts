@@ -17,6 +17,8 @@ import type { ModelItem } from '../protocol/types.js'
 import { ModelDriverError } from '../errors.js'
 import type { ModelProfile } from './profile.js'
 import { describeTool } from '../tools/catalog.js'
+import { acquireCircuit, modelFailure, providerRequestId, retryAfterMs, recoveryPolicy, type ModelRecoveryPolicy } from './recovery.js'
+import { abortable } from '../deadline.js'
 import type {
   CompactionRequest, CompactionResult,
   ModelDriver, ModelTurnRequest, ModelTurnResult, ModelUsage,
@@ -26,6 +28,7 @@ import type {
 export const DEFAULT_MODEL = { id: 'deepseek-ai/DeepSeek-V4-Flash', baseUrl: 'https://api.siliconflow.cn/v1', reasoningEffort: 'high' } as const
 
 export interface OpenAIDriverOptions {
+  recovery?: Partial<ModelRecoveryPolicy>
   capabilities?: Partial<Pick<ModelProfile, 'toolCalls' | 'jsonObject' | 'parallelTools'>>
   /** Calibrated tokenizer for this exact model configuration. */
   countTokens?: (text: string) => number
@@ -39,6 +42,11 @@ export interface OpenAIDriverOptions {
   retryBaseMs?: number
   /** Per-request timeout in ms (wall clock, including streaming). */
   requestTimeoutMs?: number
+  /** Time to first response body byte; headers alone do not count. */
+  firstByteTimeoutMs?: number
+  /** Maximum gap between response body chunks. */
+  streamIdleTimeoutMs?: number
+  circuitResetMs?: number
   maxOutputTokens?: number
   contextWindowTokens?: number
   fetchImpl?: typeof fetch
@@ -162,6 +170,7 @@ export async function* sseDataEvents(body: ReadableStream<Uint8Array>): AsyncGen
 }
 
 export class OpenAIChatDriver implements ModelDriver {
+  readonly recovery: ModelRecoveryPolicy
   readonly previewFormat = 'user-text' as const
   readonly profile: ModelProfile
   countTokens(text: string): number { return this.options.countTokens?.(text) ?? Buffer.byteLength(text) }
@@ -175,15 +184,21 @@ export class OpenAIChatDriver implements ModelDriver {
   private readonly maxAttempts: number
   private readonly retryBaseMs: number
   private readonly requestTimeoutMs: number
+  private readonly circuitKey: string
   private readonly fetchImpl: typeof fetch
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<void>
 
   constructor(readonly modelId: string, private readonly options: OpenAIDriverOptions) {
+    this.recovery = recoveryPolicy(options.recovery)
     this.baseUrl = (options.baseUrl ?? DEFAULT_MODEL.baseUrl).replace(/\/+$/, '')
+    this.circuitKey = createHash('sha256').update(JSON.stringify([this.baseUrl, modelId, options.apiKey])).digest('hex')
     if (options.reasoningEffort !== undefined && !['high', 'max'].includes(options.reasoningEffort)) throw new Error('reasoningEffort must be high or max')
     this.maxAttempts = options.maxAttempts ?? 3
     this.retryBaseMs = options.retryBaseMs ?? 500
-    this.requestTimeoutMs = options.requestTimeoutMs ?? 300_000
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 90_000
+    for (const timeout of [this.requestTimeoutMs, options.firstByteTimeoutMs ?? 30_000, options.streamIdleTimeoutMs ?? 30_000, options.circuitResetMs ?? 60_000]) {
+      if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 2_147_483_647) throw new Error('invalid model timeout')
+    }
     this.fetchImpl = options.fetchImpl ?? fetch
     this.sleep = options.sleep ?? defaultSleep
     this.contextWindowTokens = options.contextWindowTokens ?? 128_000
@@ -212,47 +227,104 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(this.maxThinkingTokens ? { thinking_budget: this.maxThinkingTokens } : {}),
       ...(this.options.reasoningEffort ? { reasoning_effort: this.options.reasoningEffort } : {}), ...body })
     let lastError: unknown
+    const totalTimeout = AbortSignal.timeout(this.recovery.totalTimeoutMs)
+    const totalSignal = AbortSignal.any([...(signal ? [signal] : []), totalTimeout])
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
-      signal?.throwIfAborted()
+      totalSignal.throwIfAborted()
       const timeout = AbortSignal.timeout(this.requestTimeoutMs)
-      const combined = signal ? AbortSignal.any([signal, timeout]) : timeout
+      const combined = AbortSignal.any([totalSignal, timeout])
+      const firstByte = new AbortController()
+      const firstByteTimer = setTimeout(() => firstByte.abort(new DOMException('model first byte timed out', 'TimeoutError')),
+        this.options.firstByteTimeoutMs ?? 30_000)
+      firstByteTimer.unref()
+      const clearFirstByte = () => clearTimeout(firstByteTimer)
+      const headersSignal = AbortSignal.any([combined, firstByte.signal])
       let response: Response
       try {
-        response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
+        response = await abortable(this.fetchImpl(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
             authorization: `Bearer ${this.options.apiKey}`,
           },
           body: encoded,
-          signal: combined,
-        })
+          signal: headersSignal,
+        }), headersSignal)
       } catch (error) {
-        signal?.throwIfAborted()
+        clearFirstByte()
+        totalSignal.throwIfAborted()
         lastError = error
         if (attempt === this.maxAttempts) break
-        await this.sleep(this.backoffMs(attempt), signal)
+        await this.sleep(this.backoffMs(attempt), totalSignal)
         continue
       }
-      if (response.ok) return response
+      if (response.ok) return this.boundedResponse(response, headersSignal, firstByte.signal, clearFirstByte)
+      clearFirstByte()
       const status = response.status
       await response.body?.cancel()
-      if ((status === 429 || status >= 500) && attempt < this.maxAttempts) {
-        const retryAfter = Number(response.headers.get('retry-after'))
-        const delay = Number.isFinite(retryAfter) && retryAfter > 0
-          ? Math.min(retryAfter * 1_000, 30_000)
-          : this.backoffMs(attempt)
-        await this.sleep(delay, signal)
-        lastError = new ModelDriverError(`model provider returned ${status}`, { status, finishReasons: [], attempts: attempt })
+      const requestId = providerRequestId(response.headers.get('x-request-id') ?? response.headers.get('request-id'))
+      const retryAfter = retryAfterMs(response.headers.get('retry-after'))
+      const failure = new ModelDriverError(`model provider returned ${status}`, { status, finishReasons: [], attempts: attempt,
+        ...(requestId ? { requestId } : {}), ...(retryAfter !== undefined ? { retryAfterMs: retryAfter } : {}) })
+      if (modelFailure(failure).retryable && attempt < this.maxAttempts) {
+        await this.sleep(Math.max(retryAfter ?? 0, this.backoffMs(attempt)), totalSignal)
+        lastError = failure
         continue
       }
-      throw new ModelDriverError(`model provider returned ${status}`, { status, finishReasons: [], attempts: attempt })
+      throw failure
     }
     throw new ModelDriverError(
       `model request failed after ${this.maxAttempts} attempts`,
       { finishReasons: [], attempts: this.maxAttempts },
       { cause: lastError },
     )
+  }
+
+  private boundedResponse(response: Response, signal: AbortSignal, firstByte: AbortSignal, clearFirstByte: () => void): Response {
+    if (!response.body) { clearFirstByte(); return response }
+    const reader = response.body.getReader()
+    let first = true, finished = false
+    const cancel = () => {
+      if (finished) return
+      finished = true
+      clearFirstByte()
+      void reader.cancel().catch(() => {}).finally(() => reader.releaseLock())
+    }
+    const body = new ReadableStream<Uint8Array>({
+      pull: async controller => {
+        if (finished) return
+        const idle = first ? firstByte : AbortSignal.timeout(this.options.streamIdleTimeoutMs ?? 30_000)
+        try {
+          const chunk = await abortable(reader.read(), AbortSignal.any([signal, idle]))
+          if (chunk.done) { finished = true; clearFirstByte(); reader.releaseLock(); controller.close(); return }
+          first = false
+          clearFirstByte()
+          controller.enqueue(chunk.value)
+        } catch (error) {
+          cancel()
+          controller.error(new ModelDriverError('model response timed out or disconnected', {
+            category: modelFailure(error).category, kind: 'provider', finishReasons: [],
+          }, { cause: error }))
+        }
+      },
+      cancel,
+    })
+    return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers })
+  }
+
+  private async guarded<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted()
+    const settle = acquireCircuit(this.circuitKey, this.options.circuitResetMs ?? 60_000)
+    try {
+      const result = await operation()
+      settle()
+      return result
+    } catch (error) {
+      const failure = modelFailure(error, signal?.aborted)
+      settle(failure, error instanceof ModelDriverError ? error.diagnostics.attempts : undefined)
+      if (signal?.aborted || error instanceof ModelDriverError) throw error
+      throw new ModelDriverError('model request failed', { kind: 'provider', category: failure.category, finishReasons: [] }, { cause: error })
+    }
   }
 
   private backoffMs(attempt: number): number {
@@ -319,7 +391,10 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(Number.isSafeInteger(reasoning) && reasoning! >= 0 && reasoning! <= output! ? { reasoningTokens: reasoning! } : {}) }
   }
 
-  async run(request: ModelTurnRequest): Promise<ModelTurnResult> {
+  run(request: ModelTurnRequest): Promise<ModelTurnResult> {
+    return this.guarded(() => this.runOnce(request), request.signal)
+  }
+  private async runOnce(request: ModelTurnRequest): Promise<ModelTurnResult> {
     const allowPython = request.codeExecution === 'enabled' || request.codeExecution === undefined && request.tools === undefined
     const tools = [
       ...(allowPython ? [IPYTHON_TOOL] : []),
@@ -366,7 +441,10 @@ export class OpenAIChatDriver implements ModelDriver {
     return result
   }
 
-  async structured(request: StructuredCallRequest): Promise<StructuredCallResult> {
+  structured(request: StructuredCallRequest): Promise<StructuredCallResult> {
+    return this.guarded(() => this.structuredOnce(request), request.signal)
+  }
+  private async structuredOnce(request: StructuredCallRequest): Promise<StructuredCallResult> {
     if (!this.profile.jsonObject) throw new Error('selected model does not support JSON object output')
     const response = await this.request({
       model: this.modelId,
@@ -397,7 +475,10 @@ export class OpenAIChatDriver implements ModelDriver {
     return { value, model: payload.model ?? this.modelId, usage: diagnostics.usage }
   }
 
-  async compact(request: CompactionRequest): Promise<CompactionResult> {
+  compact(request: CompactionRequest): Promise<CompactionResult> {
+    return this.guarded(() => this.compactOnce(request), request.signal)
+  }
+  private async compactOnce(request: CompactionRequest): Promise<CompactionResult> {
     if (!this.profile.jsonObject) throw new Error('selected model does not support JSON object output')
     const response = await this.request({
       model: this.modelId,

@@ -92,6 +92,9 @@ export interface ModelDiagnostics {
   finishReasons: string[]
   requestId?: string
   attempts?: number
+  retryAfterMs?: number
+  providerCode?: string
+  category?: 'authorization' | 'quota' | 'rate_limit' | 'timeout' | 'network' | 'unavailable' | 'protocol' | 'cancelled' | 'circuit_open' | 'unknown'
 }
 
 /** The model provider failed or returned a protocol-violating response. */
