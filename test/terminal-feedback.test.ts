@@ -4,6 +4,8 @@ import { it } from 'node:test'
 import { PGlite } from '@electric-sql/pglite'
 import { PgWorkStore, type SqlPool } from '../src/control-plane/pg-store.js'
 import { hashToken } from '../src/control-plane/memory-store.js'
+import { readDiagnostics, readOperations, refreshMetrics } from '../src/app/diagnostics.js'
+import { MetricsRegistry } from '../src/metrics.js'
 
 async function fixture() {
   const db = new PGlite()
@@ -19,6 +21,26 @@ async function fixture() {
   })
   return { db, pool, store, enqueue }
 }
+
+it('reports terminal delivery independently and excludes superseded feedback from pending gauges', async () => {
+  const { db,pool,enqueue } = await fixture()
+  try {
+    await enqueue('current'); await enqueue('obsolete')
+    await db.exec("UPDATE lingxios.agent_work_items SET status='failed'")
+    await db.exec(`UPDATE lingxios.agent_work_items SET steer_inputs='[{"id":"new","text":"next","createdAt":"now"}]' WHERE id='obsolete'`)
+    const identity = { runId: 'current',tenantId: 'tenant',agentId: 'agent',sessionId: 'current',principalId: 'human' }
+    const state = await readDiagnostics(pool,identity) as unknown as { terminal: { delivery: string }; delivery: unknown }
+    assert.equal(state.terminal.delivery,'pending'); assert.equal(state.delivery,null)
+    const metrics = new MetricsRegistry(); await refreshMetrics(pool,metrics)
+    assert.match(metrics.expose(),/agentos_terminal_delivery_pending 1/)
+    await db.exec("UPDATE lingxios.agent_terminal_outbox SET failed_at=NOW() WHERE root_work_id='current'")
+    const operations = await readOperations(pool) as unknown as { failedTerminalDeliveries: number }
+    assert.equal(operations.failedTerminalDeliveries,1)
+    await refreshMetrics(pool,metrics)
+    assert.match(metrics.expose(),/agentos_terminal_delivery_pending 0/)
+    assert.match(metrics.expose(),/agentos_terminal_delivery_failed 1/)
+  } finally { await db.close() }
+})
 
 it('atomically persists terminal feedback without a result and rejects stale lease or request completion', async () => {
   const { db, store, enqueue } = await fixture()
@@ -79,7 +101,7 @@ it('reopens durable terminal delivery, reauthorizes each attempt and preserves i
   const { db, pool, enqueue } = await fixture()
   let app: Awaited<ReturnType<typeof createLingxiOS>> | undefined
   let authorized = false, attempts = 0
-  const accepted = new Set<string>(), identities: string[] = []
+  const accepted = new Set<string>(), identities: string[] = [], payloads: string[] = []
   const delivery = {
     onEvent: async () => {}, deliverMessage: async () => { throw new Error('failed work must not deliver a successful result') },
     deliverTerminal: async (work: Omit<import('../src/protocol/types.js').WorkItem, 'leaseToken'>, feedback: import('../src/app/terminal.js').TerminalFeedback) => {
@@ -87,6 +109,7 @@ it('reopens durable terminal delivery, reauthorizes each attempt and preserves i
       assert.equal(work.tenantId, 'tenant'); assert.equal(work.principalId, 'human')
       assert.equal(feedback.suppressAgentWake, true)
       identities.push(feedback.id)
+      payloads.push(JSON.stringify(feedback))
       if (!authorized) throw new Error('current authorization unavailable')
       accepted.add(feedback.id)
       if (attempts === 2) throw new Error('acceptance acknowledgement lost')
@@ -110,6 +133,8 @@ it('reopens durable terminal delivery, reauthorizes each attempt and preserves i
     await until(() => attempts >= 2)
     await app.stop()
     assert.equal(accepted.size, 1)
+    // Later aggregation must not change an already accepted payload on a lost-ACK retry.
+    await db.exec("UPDATE lingxios.agent_terminal_outbox SET failed_count=failed_count+1,not_started_count=2,not_started_agents=ARRAY['later-agent']")
     await db.exec('UPDATE lingxios.agent_terminal_outbox SET available_at=NOW()')
     app = await createLingxiOS(options)
     await until(() => attempts >= 3)
@@ -119,6 +144,7 @@ it('reopens durable terminal delivery, reauthorizes each attempt and preserves i
     }
     assert.equal(accepted.size, 1)
     assert.equal(new Set(identities).size, 1)
+    assert.equal(new Set(payloads).size,1)
     const state = await app.readTerminal({ runId: 'reopen', tenantId: 'tenant', agentId: 'agent', sessionId: 'reopen', principalId: 'human' })
     assert.equal(state?.feedback.reason, 'context_limit')
     assert.equal(state?.delivery, 'delivered')

@@ -80,6 +80,8 @@ export interface WorkProcessor {
 }
 
 export interface AgentRuntimeOptions {
+  /** Explicit, currently authorized route; never inferred from provider availability. */
+  fallbackModel?: import('../model/execution.js').ApprovedModelFallback
   /** Optional non-reasoning configuration for host-authorized automatic response routing. */
   fastModel?: ModelDriver
   performance?: { checkpointDedup?: boolean; promptCache?: boolean; asyncCompaction?: boolean; onDemandAttachments?: boolean }
@@ -118,6 +120,7 @@ interface AttemptSignals {
 }
 
 export class AgentRuntime {
+  private readonly fallbackModel: import('../model/execution.js').ApprovedModelFallback | undefined
   private readonly fastModel: ModelDriver | undefined
   private readonly checkpointDedup: boolean
   private readonly promptCache: boolean
@@ -179,6 +182,7 @@ export class AgentRuntime {
     options: AgentRuntimeOptions = {},
   ) {
     this.fastModel = options.fastModel
+    this.fallbackModel = options.fallbackModel
     this.metrics = options.metrics
     this.checkpointDedup = options.performance?.checkpointDedup ?? true
     this.promptCache = options.performance?.promptCache ?? true
@@ -288,7 +292,7 @@ export class AgentRuntime {
       signals.lifecycle.signal,30_000,this.metrics))
     let activeSession: SessionRecord | null = null
     const log = this.logger.child({ runId, workId: work.id, agentId: work.agentId, fence: work.fence })
-    const model = executionModel(this.hostFor(work), this.model, work, this.rootModelBudget, event => this.event(work, runId, event))
+    const model = executionModel(this.hostFor(work), this.model, work, this.rootModelBudget, event => this.event(work, runId, event),'model',this.fallbackModel)
 
     try {
       const recoveryStarted = performance.now()

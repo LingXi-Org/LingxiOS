@@ -3,6 +3,28 @@ import { readFile } from 'node:fs/promises'
 import { it } from 'node:test'
 import { PGlite } from '@electric-sql/pglite'
 import { flushOutbox } from '../src/control-plane/outbox.js'
+import { NoEffectError } from '../src/tools/definition.js'
+
+it('stops on explicit authorization denial while dependency failures keep a bounded durable retry', async () => {
+  const db = new PGlite()
+  await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url),'utf8'))
+  const database = { async query(sql: string,params?: unknown[]) {
+    const result = await db.query<Record<string, unknown>>(sql,params)
+    return { rows: result.rows,rowCount: result.affectedRows ?? result.rows.length }
+  } }
+  try {
+    for (const id of ['denied','unavailable']) await db.query(`INSERT INTO lingxios.agent_run_events
+      (run_id,seq,tenant_id,agent_id,kind,stage,visibility,delivery_work) VALUES($1,1,'t','a','text','delta','user','{}')`,[id])
+    await flushOutbox(database,'agent_run_events',async row => {
+      if (row['run_id'] === 'denied') throw new NoEffectError('PRIVATE_DENIAL','forbidden')
+      throw Object.assign(new Error('PRIVATE_SQL'),{ code: '57014' })
+    })
+    const rows = (await db.query<Record<string, unknown>>('SELECT run_id,attempts,failed_at,last_error FROM lingxios.agent_run_events ORDER BY run_id')).rows
+    assert.ok(rows[0]!['failed_at']); assert.equal(rows[0]!['attempts'],1)
+    assert.equal(rows[1]!['failed_at'],null); assert.equal(rows[1]!['attempts'],1)
+    assert.doesNotMatch(JSON.stringify(rows),/PRIVATE_/)
+  } finally { await db.close() }
+})
 
 it('drains ordered events and lets a fresh healthy lane run while an earlier flush is stalled', async () => {
   const db = new PGlite()

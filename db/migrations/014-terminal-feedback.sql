@@ -77,6 +77,7 @@ CREATE TABLE lingxios.agent_budget_denials (
 );
 ALTER TABLE lingxios.agent_terminal_outbox ADD COLUMN not_started_count INTEGER NOT NULL DEFAULT 0 CHECK(not_started_count>=0);
 ALTER TABLE lingxios.agent_terminal_outbox ADD COLUMN not_started_agents TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE lingxios.agent_terminal_outbox ADD COLUMN delivery_snapshot JSONB;
 CREATE FUNCTION lingxios.release_child_budget_hold() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.status IN ('succeeded','failed','cancelled') THEN

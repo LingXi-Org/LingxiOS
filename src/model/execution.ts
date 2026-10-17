@@ -6,7 +6,7 @@ import type { HostPort } from '../host/port.js'
 import { executionClassOf, type RunEvent, type WorkItem } from '../protocol/types.js'
 import type { ModelDriver, ModelUsage } from './driver.js'
 import { abortable } from '../deadline.js'
-import { fitsModel, inputTokens, modelProfile } from './profile.js'
+import { fitsModel, inputTokens as estimateInputTokens, modelProfile } from './profile.js'
 import { modelFailure, recoveryPolicy, type ModelFailure } from './recovery.js'
 
 export interface ModelPricing {
@@ -59,6 +59,16 @@ export const DEFAULT_MODEL_BUDGET: Required<RootModelBudgetOptions> = {
   wallClockMs: 1_800_000, inputCostMicrosPerMillion: 0, outputCostMicrosPerMillion: 0,
 }
 
+/** Trusted host configuration only; embeddings intentionally have no fallback route. */
+export interface ApprovedModelFallback {
+  model: ModelDriver
+  /** This route must use the same approved price schedule as the root budget. */
+  inputCostMicrosPerMillion: number
+  outputCostMicrosPerMillion: number
+  /** Recheck tenant, data boundary and current request authorization before every routed attempt. */
+  authorize(context: { work: Omit<WorkItem,'leaseToken'>; purpose: ModelCallObservation['purpose']; signal: AbortSignal }): Promise<void>
+}
+
 /** One provider attempt boundary shared by generation, reviews, compaction and embeddings. */
 export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>,
   model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'countTokens' | 'configurationFingerprint' | 'recovery' | 'profile' | 'contextWindowTokens'>, work: WorkItem,
@@ -67,7 +77,9 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
   let sequence = 0, calls = 0, tokens = 0, cost = 0
   const started = Date.now()
   const invoke = async <T extends { model?: string; usage: ModelUsage }>(purpose: ModelCallObservation['purpose'],
-    request: { signal?: AbortSignal | undefined; input?: unknown; instructions?: string; prompt?: PromptManifest }, operation: (signal: AbortSignal, callId: string, diagnostics: Record<string, unknown>) => Promise<T>, callModel = model): Promise<T> => {
+    request: { signal?: AbortSignal | undefined; input?: unknown; instructions?: string; prompt?: PromptManifest },
+    operation: (signal: AbortSignal, callId: string, diagnostics: Record<string, unknown>, selected: typeof model) => Promise<T>,
+    callModel = model, fallback?: { model: typeof model; authorize(signal: AbortSignal): Promise<void> }): Promise<T> => {
     const instructionsSha256 = request.instructions === undefined ? undefined : textSha256(request.instructions)
     if (request.prompt && request.prompt.instructionsSha256 !== instructionsSha256) throw new Error('prompt manifest does not match model instructions')
     const logicalCallId = `${work.id}:${work.fence}:${namespace}:${++sequence}`
@@ -75,11 +87,13 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
     const totalTimeout = AbortSignal.timeout(Math.min(recovery.totalTimeoutMs, limits.wallClockMs))
     const logicalSignal = AbortSignal.any([...(request.signal ? [request.signal] : []), totalTimeout])
     const { prompt: _prompt, ...providerRequest } = request
-    const input = inputTokens(callModel, providerRequest) + (callModel.toolDefinitionTokens ?? 0)
-    const output = (callModel.maxOutputTokens ?? 8192) + (callModel.maxThinkingTokens ?? 0)
-    const reservedCost = Math.ceil((input * limits.inputCostMicrosPerMillion + output * limits.outputCostMicrosPerMillion) / 1_000_000)
+    let routed = false
     for (let attempt = 1; ; attempt++) {
       logicalSignal.throwIfAborted()
+      if (routed) await abortable(fallback!.authorize(logicalSignal),logicalSignal)
+      const input = estimateInputTokens(callModel, providerRequest) + (callModel.toolDefinitionTokens ?? 0)
+      const output = (callModel.maxOutputTokens ?? 8192) + (callModel.maxThinkingTokens ?? 0)
+      const reservedCost = Math.ceil((input * limits.inputCostMicrosPerMillion + output * limits.outputCostMicrosPerMillion) / 1_000_000)
       const dimension = Date.now() - started >= limits.wallClockMs ? 'deadline' : calls >= limits.maxModelCalls ? 'calls'
         : tokens + input + output > limits.maxTokens ? 'tokens' : cost + reservedCost > limits.maxCostMicros ? 'cost' : undefined
       if (dimension) throw new ModelBudgetExceededError('Root work budget limit reached', dimension)
@@ -106,7 +120,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
           ...(request.prompt ? { prompt: request.prompt } : {}), ...(instructionsSha256 ? { instructionsSha256 } : {}) } })
       let result: T | undefined, failure: unknown
       const diagnostics: Record<string, unknown> = {}
-      try { result = await abortable(operation(signal, callId, diagnostics), signal) } catch (error) { failure = error }
+      try { result = await abortable(operation(signal, callId, diagnostics,callModel), signal) } catch (error) { failure = error }
       const classifiedFailure = failure ? modelFailure(failure, request.signal?.aborted) : undefined
       const usage = result?.usage ?? (failure instanceof ModelDriverError ? failure.diagnostics.usage : undefined)
       const inputTokens = usage?.available ? usage.inputTokens : input
@@ -133,7 +147,13 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       if (result) return { ...result, callId, logicalCallId, ...(Object.keys(diagnostics).length ? {
         diagnostics: { ...('diagnostics' in result ? result.diagnostics as Record<string, unknown> : {}), ...diagnostics },
       } : {}) }
-      if (!classifiedFailure?.retryable || attempt >= recovery.maxAttempts || signal.aborted) throw failure
+      if (attempt >= recovery.maxAttempts || signal.aborted) throw failure
+      if (fallback && !routed && classifiedFailure && ['authorization','quota','circuit_open','network','timeout','unavailable','rate_limit'].includes(classifiedFailure.category)) {
+        callModel = fallback.model
+        routed = true
+        continue
+      }
+      if (!classifiedFailure?.retryable) throw failure
       const backoff = Math.max(classifiedFailure.retryAfterMs ?? 0, Math.floor(Math.random() * Math.min(2000, 250 * 2 ** (attempt - 1))))
       // Retry-After is a minimum; if it cannot fit, stop rather than retry early.
       if (backoff >= Math.min(remaining, recovery.totalTimeoutMs - (performance.now() - logicalBegan))) throw failure
@@ -145,13 +165,32 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
 
 export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>, source: ModelDriver, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
-  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model'): ModelDriver {
+  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', approvedFallback?: ApprovedModelFallback): ModelDriver {
   const model = source.singleAttempt?.() ?? source
+  const secondary = approvedFallback?.model.singleAttempt?.() ?? approvedFallback?.model
+  if (approvedFallback) {
+    if (typeof approvedFallback.authorize !== 'function'
+      || approvedFallback.inputCostMicrosPerMillion !== limits.inputCostMicrosPerMillion
+      || approvedFallback.outputCostMicrosPerMillion !== limits.outputCostMicrosPerMillion) throw new Error('fallback route requires matching approved pricing and current authorization')
+    const primary = modelProfile(model), profile = secondary?.profile
+    if (!profile || secondary!.previewFormat !== model.previewFormat
+      || ['toolCalls','jsonObject','parallelTools'].some(key => primary[key as 'toolCalls'] && !profile[key as 'toolCalls'])) {
+      throw new Error('fallback route lacks compatible verified model capabilities')
+    }
+  }
   const admission = namespace !== 'fast-model' && executionClassOf(work) === 'operation' ? 'background' as const : 'foreground' as const
   const { invoke, nextCallId } = modelExecution(host, model, work, limits, emit, namespace)
   const check = ({ prompt: _prompt, signal: _signal, ...input }: { prompt?: PromptManifest; signal?: AbortSignal | undefined }) => {
     if (!fitsModel(model, input)) throw new ModelContextBudgetError()
   }
+  const route = (purpose: ModelCallObservation['purpose'], { prompt: _prompt,signal: _signal,...input }: { prompt?: PromptManifest; signal?: AbortSignal | undefined }) => secondary ? {
+    model: secondary,
+    authorize: async (signal: AbortSignal) => {
+      if (!fitsModel(secondary,input)) throw new ModelContextBudgetError()
+      const { leaseToken: _token,...identity } = work
+      await approvedFallback!.authorize({ work: identity,purpose,signal })
+    },
+  } : undefined
   return {
     ...(model.previewFormat ? { previewFormat: model.previewFormat } : {}),
     nextCallId,
@@ -168,12 +207,12 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
         throw new Error('approval explanations cannot execute tools')
       }
       check(request)
-      return invoke('agent-turn', request, (signal, callId, diagnostics) => {
+      return invoke('agent-turn', request, (signal, callId, diagnostics,selected) => {
         request.onAttempt?.(callId)
         const began = performance.now()
         let firstTextMs: number | undefined
         let active = true
-        const result = model.run({ ...request, admission, signal, onTextDelta: delta => {
+        const result = (selected as ModelDriver).run({ ...request, admission, signal, onTextDelta: delta => {
             if (!active || signal.aborted) return
             if (delta) firstTextMs ??= performance.now() - began
             request.onTextDelta?.(delta)
@@ -185,17 +224,17 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
         }
         void result.then(finished, finished)
         return result
-      })
+      },model,route('agent-turn',request))
     },
     structured: request => {
       check(request)
-      return invoke('structured', request, signal => model.structured({ ...request, admission, signal }))
+      return invoke('structured', request, (signal,_id,_diagnostics,selected) => (selected as ModelDriver).structured({ ...request, admission, signal }),model,route('structured',request))
     },
     compact: request => {
       const compiled = { ...request, instructions: COMPACTION_PROMPT.instructions, prompt: COMPACTION_PROMPT.manifest }
       check(compiled)
-      return invoke('compaction', compiled, signal => model.compact({ ...compiled,
-        admission: request.admission === 'background' ? 'background' : admission, signal }))
+      return invoke('compaction', compiled, (signal,_id,_diagnostics,selected) => (selected as ModelDriver).compact({ ...compiled,
+        admission: request.admission === 'background' ? 'background' : admission, signal }),model,route('compaction',compiled))
     },
   }
 }

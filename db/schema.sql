@@ -688,10 +688,6 @@ CREATE TRIGGER agent_work_terminal_feedback AFTER INSERT OR UPDATE OF status ON 
 CREATE TRIGGER agent_terminal_wakeup AFTER INSERT ON lingxios.agent_terminal_outbox
   FOR EACH ROW EXECUTE FUNCTION lingxios.notify_runtime('lingxios_outbox');
 
-INSERT INTO lingxios.schema_version(singleton, version) VALUES(TRUE, 12);
-COMMIT;
-
-
 -- Startup holds protect queued children and one root closing call from concurrent fanout.
 ALTER TABLE lingxios.agent_model_budgets ADD COLUMN child_admission JSONB;
 ALTER TABLE lingxios.agent_model_budgets ADD COLUMN cumulative_execution BOOLEAN NOT NULL DEFAULT FALSE;
@@ -712,6 +708,7 @@ CREATE TABLE lingxios.agent_budget_denials (
 );
 ALTER TABLE lingxios.agent_terminal_outbox ADD COLUMN not_started_count INTEGER NOT NULL DEFAULT 0 CHECK(not_started_count>=0);
 ALTER TABLE lingxios.agent_terminal_outbox ADD COLUMN not_started_agents TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE lingxios.agent_terminal_outbox ADD COLUMN delivery_snapshot JSONB;
 CREATE FUNCTION lingxios.release_child_budget_hold() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.status IN ('succeeded','failed','cancelled') THEN
@@ -721,3 +718,6 @@ BEGIN
 END $$;
 CREATE TRIGGER agent_work_release_budget_hold AFTER UPDATE OF status ON lingxios.agent_work_items
   FOR EACH ROW EXECUTE FUNCTION lingxios.release_child_budget_hold();
+
+INSERT INTO lingxios.schema_version(singleton, version) VALUES(TRUE, 12);
+COMMIT;

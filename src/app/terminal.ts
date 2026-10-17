@@ -20,6 +20,7 @@ export interface TerminalFeedback {
   suppressAgentWake: true
 }
 export function terminalFeedback(row: Record<string, unknown>): TerminalFeedback {
+  row = row['delivery_snapshot'] as Record<string, unknown> | null ?? row
   return { id: String(row['id']), rootWorkId: String(row['root_work_id']), requestVersion: Number(row['request_version']),
     status: row['status'] as TerminalFeedback['status'], reason: row['reason'] as TerminalReason,
     failedCount: Number(row['failed_count']), cancelledCount: Number(row['cancelled_count']),

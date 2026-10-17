@@ -367,6 +367,10 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     return flushOutbox(backgroundDatabase, 'agent_terminal_outbox', async (row, context) => {
       const { leaseToken: _token, ...work } = workItemFromRow(row['delivery_work'] as Record<string, unknown>, '', 1)
       if (work.conversation) await authorizeConversationWork(backgroundDatabase, work, 'speak')
+      const current = await backgroundDatabase.query(`SELECT 1 FROM lingxios.agent_work_items
+        WHERE id=$1 AND tenant_id=$2 AND principal_id IS NOT DISTINCT FROM $3
+          AND jsonb_array_length(steer_inputs)+1=$4`,[work.id,work.tenantId,work.principalId ?? null,row['request_version']])
+      if (!current.rows.length) return
       await integration.delivery!.deliverTerminal!(work, terminalFeedback(row), context)
     }, { signal: shutdown.signal, metrics, concurrency: outboxConcurrency })
   }

@@ -55,8 +55,10 @@ export function createWorker(options: WorkerOptions): AgentWorker {
   const bridge: KernelHostBridge = { execute: (work, action, signal) => host.executeAction(work, action, signal) }
   const kernels = options.kernelFactory?.(bridge) ?? new KernelManager(bridge, { ...options.kernel, logger, maxKernels: options.resources?.python ?? concurrency,
     isolation: kernelIsolation(options.kernel?.isolation ?? process.env['AGENT_OS_KERNEL_ISOLATION'], process.env['NODE_ENV'] === 'production', options.trustProcessKernel) })
-  const { fastModel: _configuration, ...runtimeOptions } = options
-  const runtime = new AgentRuntime(host, model, kernels, { ...runtimeOptions, ...(fastModel ? { fastModel } : {}), metrics,
+  const fallbackModel = options.fallbackModel ? { ...options.fallbackModel,model: limitModel(options.fallbackModel.model,quota) } : undefined
+  const { fastModel: _configuration, fallbackModel: _fallbackConfiguration, ...runtimeOptions } = options
+  const runtime = new AgentRuntime(host, model, kernels, { ...runtimeOptions, ...(fastModel ? { fastModel } : {}),
+    ...(fallbackModel ? { fallbackModel } : {}), metrics,
     ...(options.modelBudget ? { rootModelBudget: options.modelBudget } : {}) })
   runtime.registerProcessor('memory_synthesis', memorySynthesisProcessor)
   runtime.registerProcessor('memory_index', memoryIndexProcessor)

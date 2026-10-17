@@ -1,6 +1,7 @@
 import type { SqlQueryable } from '../control-plane/pg-store.js'
 import type { MetricsRegistry } from '../metrics.js'
 import { readRun, runSnapshot, type RunIdentity, type RunSnapshot } from './jobs.js'
+import { readTerminalFeedback } from './terminal.js'
 
 export interface RunListQuery {
   tenantId?: string
@@ -96,6 +97,8 @@ export async function readOperations(database: SqlQueryable) {
       COALESCE(SUM((SELECT SUM(COALESCE(input_tokens+output_tokens,reserved_tokens)) FROM lingxios.agent_model_budget_calls WHERE work_id=work.id)),0) AS tokens,
       COALESCE(SUM((SELECT SUM(COALESCE(cost_micros,reserved_cost_micros)) FROM lingxios.agent_model_budget_calls WHERE work_id=work.id)),0) AS cost_micros,
       (SELECT COUNT(*) FROM lingxios.agent_delivery_outbox WHERE delivered_at IS NULL AND failed_at IS NOT NULL) AS failed_deliveries,
+      (SELECT COUNT(*) FROM lingxios.agent_terminal_outbox outbox JOIN lingxios.agent_work_items root ON root.id=outbox.root_work_id
+        WHERE outbox.request_version=jsonb_array_length(root.steer_inputs)+1 AND outbox.delivered_at IS NULL AND outbox.failed_at IS NOT NULL) AS failed_terminal_deliveries,
       (SELECT COUNT(*) FROM lingxios.agent_model_budget_calls WHERE failed_at IS NOT NULL) AS failed_usage_deliveries,
       (SELECT COUNT(*) FROM lingxios.agent_memory_capture WHERE completed_at IS NULL AND attempts>=5) AS failed_memory_captures
       FROM lingxios.agent_work_items work WHERE created_at>=NOW()-INTERVAL '24 hours'`),
@@ -114,6 +117,7 @@ export async function readOperations(database: SqlQueryable) {
     failures: Number(value['failures']), cancelled: Number(value['cancelled']), active: Number(value['active']), waiting: Number(value['waiting']), queued: Number(value['queued']),
     averageExecutionMs: Number(value['average_execution_ms']), tokens: Number(value['tokens']), costMicros: Number(value['cost_micros']),
     failedDeliveries: Number(value['failed_deliveries']), failedUsageDeliveries: Number(value['failed_usage_deliveries']),
+    failedTerminalDeliveries: Number(value['failed_terminal_deliveries']),
     failedMemoryCaptures: Number(value['failed_memory_captures']),
     trend: trend.rows.map(row => ({ time: new Date(row['time'] as Date | string).toISOString(), runs: Number(row['runs']), failures: Number(row['failures']) })),
     models: models.rows.map(row => ({ model: row['model'] as string | null, calls: Number(row['calls']), tokens: Number(row['tokens']),
@@ -123,7 +127,7 @@ export async function readOperations(database: SqlQueryable) {
 export async function readDiagnostics(database: SqlQueryable, identity: RunIdentity) {
   const run = await readRun(database, identity)
   if (!run) return null
-  const [actions, delivery, execution] = await Promise.all([
+  const [actions, delivery, execution, terminal] = await Promise.all([
     database.query(`SELECT intent.idempotency_key,intent.intent->'action'->>'action' AS action,
       COALESCE(resolved.result,receipt.result) AS result FROM lingxios.agent_action_intents intent
       LEFT JOIN lingxios.agent_action_ledger receipt USING(idempotency_key)
@@ -138,6 +142,7 @@ export async function readDiagnostics(database: SqlQueryable, identity: RunIdent
       (SELECT COUNT(*) FROM lingxios.agent_run_events WHERE run_id=$1 AND failed_at IS NOT NULL) AS failed_events,
       (SELECT COUNT(*) FROM lingxios.agent_model_budget_calls WHERE work_id=$1 AND failed_at IS NOT NULL) AS failed_usage,
       (SELECT COUNT(*) FROM lingxios.agent_verifications WHERE work_id=$1 AND request_version=$2 AND status='failed') AS failed_checks`, [run.id,run.requestVersion]),
+    readTerminalFeedback(database,identity),
   ])
   const row = execution.rows[0]!, now = Date.now()
   const age = (date: string | null) => date ? Math.max(0,(now-Date.parse(date))/1000) : null
@@ -147,7 +152,7 @@ export async function readDiagnostics(database: SqlQueryable, identity: RunIdent
     failedEvents: Number(row['failed_events']), failedUsageDeliveries: Number(row['failed_usage']),
     actions: actions.rows.slice(0,64).map(row => ({ actionKey: String(row['idempotency_key']), action: String(row['action']),
       result: row['result'] as import('../protocol/types.js').HostActionResult | null })), actionsTruncated: actions.rows.length > 64,
-    delivery: delivery.rows[0] ?? null }
+    delivery: delivery.rows[0] ?? null, terminal }
 }
 
 export async function retryDelivery(database: SqlQueryable, identity: RunIdentity, channel: 'message' | 'events' | 'usage' | 'terminal') {
@@ -179,6 +184,10 @@ export async function refreshMetrics(database: SqlQueryable, metrics: MetricsReg
     (SELECT COUNT(*) FROM lingxios.agent_delivery_outbox outbox JOIN lingxios.agent_work_items work ON work.result_id=outbox.result_id
       WHERE outbox.delivered_at IS NULL AND outbox.failed_at IS NULL AND work.cancel_requested_at IS NULL) AS delivery_pending,
     (SELECT COUNT(*) FROM lingxios.agent_delivery_outbox WHERE failed_at IS NOT NULL) AS delivery_failed,
+    (SELECT COUNT(*) FROM lingxios.agent_terminal_outbox outbox JOIN lingxios.agent_work_items root ON root.id=outbox.root_work_id
+      WHERE outbox.request_version=jsonb_array_length(root.steer_inputs)+1 AND outbox.delivered_at IS NULL AND outbox.failed_at IS NULL) AS terminal_pending,
+    (SELECT COUNT(*) FROM lingxios.agent_terminal_outbox outbox JOIN lingxios.agent_work_items root ON root.id=outbox.root_work_id
+      WHERE outbox.request_version=jsonb_array_length(root.steer_inputs)+1 AND outbox.delivered_at IS NULL AND outbox.failed_at IS NOT NULL) AS terminal_failed,
     (SELECT COUNT(*) FROM lingxios.agent_model_budget_calls WHERE failed_at IS NOT NULL) AS usage_failed,
     (SELECT COUNT(*) FROM lingxios.agent_memory_capture WHERE completed_at IS NULL AND attempts>=5) AS capture_failed,
     (SELECT COALESCE(SUM(cost_micros),0) FROM lingxios.agent_model_budget_calls) AS cost_micros`)
@@ -188,6 +197,8 @@ export async function refreshMetrics(database: SqlQueryable, metrics: MetricsReg
     ['stalled','agentos_runs_stalled','Leased work without new resource facts for two minutes'],
     ['delivery_pending','agentos_delivery_pending','Current results awaiting delivery'],
     ['delivery_failed','agentos_delivery_failed','Deliveries requiring intervention'],
+    ['terminal_pending','agentos_terminal_delivery_pending','Current terminal feedback awaiting delivery'],
+    ['terminal_failed','agentos_terminal_delivery_failed','Current terminal feedback requiring authorized retry'],
     ['usage_failed','agentos_usage_delivery_failed','Model observations requiring ledger redelivery'],
     ['capture_failed','agentos_memory_capture_failed','Committed memory references requiring operator retry'],
     ['cost_micros','agentos_recorded_cost_micros','Durable settled model cost in USD millionths'],
