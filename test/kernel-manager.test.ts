@@ -59,3 +59,17 @@ it('kills a kernel that never becomes ready', async () => {
     await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   }
 })
+
+it('keeps expression values separate from stdout and never emits internal history artifacts', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'lingxios-kernel-output-'))
+  const manager = new KernelManager({ execute: async () => ({ ok: true }) }, { homesRoot: directory })
+  try {
+    const result = await manager.execute(work, 'w', 'expression', 'print("hello")\n7')
+    assert.equal(result.stdout, 'hello\n')
+    assert.equal(result.result, 7)
+    assert.deepEqual(result.artifacts, [])
+  } finally {
+    manager.close()
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  }
+})

@@ -322,7 +322,21 @@ def create_engine() -> BasicEngine | IPythonEngine:
         from IPython.core.interactiveshell import InteractiveShell  # noqa: PLC0415
     except ImportError:
         return BasicEngine()
-    return IPythonEngine(InteractiveShell.instance())
+    from traitlets.config import Config  # noqa: PLC0415
+    from IPython.core.displayhook import DisplayHook  # noqa: PLC0415
+
+    class ResultOnlyDisplayHook(DisplayHook):
+        # The wire result carries the expression value; stdout is only user output.
+        def write_output_prompt(self) -> None:
+            pass
+
+        def write_format_data(self, format_dict: Any, md_dict: Any = None) -> None:
+            pass
+
+    # Runtime checkpoints own history. IPython's background SQLite writer would
+    # create an internal file in the home and expose it as a changed artifact.
+    config = Config({'HistoryManager': {'enabled': False}})
+    return IPythonEngine(InteractiveShell.instance(config=config, displayhook_class=ResultOnlyDisplayHook))
 
 
 engine = create_engine()
