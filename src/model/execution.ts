@@ -86,8 +86,8 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
     const recovery = recoveryPolicy(callModel.recovery), logicalBegan = performance.now()
     const totalTimeout = AbortSignal.timeout(Math.min(recovery.totalTimeoutMs, limits.wallClockMs))
     const logicalSignal = AbortSignal.any([...(request.signal ? [request.signal] : []), totalTimeout])
-    const deadlineFailure = (rootTimeout?: AbortSignal) => request.signal?.aborted ? request.signal.reason
-      : rootTimeout?.aborted ? new ModelBudgetExceededError('Root work execution time exhausted', 'deadline')
+    const deadlineFailure = (rootTimeout?: AbortSignal, first?: AbortSignal) => request.signal?.aborted ? request.signal.reason
+      : rootTimeout?.aborted && first?.reason === rootTimeout.reason ? new ModelBudgetExceededError('Root work execution time exhausted', 'deadline')
       : new ModelDriverError('Model request exceeded its total deadline', { kind: 'provider', category: 'timeout', finishReasons: [] })
     const { prompt: _prompt, ...providerRequest } = request
     let routed = false
@@ -153,7 +153,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       if (result) return { ...result, callId, logicalCallId, ...(Object.keys(diagnostics).length ? {
         diagnostics: { ...('diagnostics' in result ? result.diagnostics as Record<string, unknown> : {}), ...diagnostics },
       } : {}) }
-      if (signal.aborted) throw deadlineFailure(rootTimeout)
+      if (signal.aborted) throw deadlineFailure(rootTimeout, signal)
       if (attempt >= recovery.maxAttempts) throw failure
       if (fallback && !routed && classifiedFailure && ['authorization','quota','circuit_open','network','timeout','unavailable','rate_limit'].includes(classifiedFailure.category)) {
         callModel = fallback.model

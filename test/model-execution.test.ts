@@ -99,3 +99,19 @@ it('retains typed total-model and root-budget deadlines after settling the one i
     } finally { clearTimeout(alive) }
   }
 })
+
+it('keeps the first model deadline when durable settlement outlives the root deadline', async () => {
+  const { ModelDriverError } = await import('../src/errors.js')
+  const execution = modelExecution({
+    reserveModelCall: async () => ({ allowed: true, deadlineAt: new Date(Date.now() + 70).toISOString(),
+      remainingCalls: 10, remainingTokens: 100000, remainingCostMicros: 1000000 }),
+    recordModelUsage: async () => { await new Promise(resolve => setTimeout(resolve, 100)) },
+  }, { modelId: 'settlement-order', recovery: { maxAttempts: 3, totalTimeoutMs: 20 } },
+  { id: 'settlement-order', fence: 1, tenantId: 'tenant', agentId: 'agent', sessionId: 'session' } as WorkItem, DEFAULT_MODEL_BUDGET)
+  const alive = setTimeout(() => {}, 2000)
+  try {
+    await assert.rejects(execution.invoke('structured', {}, async signal => new Promise<never>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    })), error => error instanceof ModelDriverError && error.diagnostics.category === 'timeout')
+  } finally { clearTimeout(alive) }
+})
