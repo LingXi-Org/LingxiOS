@@ -1,3 +1,4 @@
+import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from '../runtime/wait.js'
 import { inputWaitQuestion } from '../protocol/input-wait.js'
 import type { ControlPlaneService } from '../control-plane/service.js'
@@ -79,8 +80,8 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
   // Historical receipts predate the read-wait contract. Recheck the current
   // registered effect before accepting a terminal candidate during upgrade.
   if (last.result.directive?.type === 'defer') {
-    const tool = tools.find(tool => tool.action === last.action.action)
-    if (!tool || tool.effect === 'read') return blockRecovery('Recovered wait has a read or unavailable tool contract; reconcile before continuing')
+    const violation = waitContractViolation(tools.find(tool => tool.action === last.action.action), last.result)
+    if (violation) return blockRecovery(`${violation.error}; reconcile before continuing`)
   }
   const question = inputWaitQuestion(last.result)
   let goalOutcome: GoalOutcome

@@ -817,9 +817,9 @@ it('fails before model or side effects when the original request cannot be captu
   assert.equal(completion?.goalOutcome?.verification, 'inconclusive')
 })
 
-for (const effect of ['uncertain', 'read'] as const) for (const recovery of ['step', 'cell'] as const) for (const name of ['ipython', 'chat__ask']) it(`parks only valid recovered native input before later calls (${name}, ${recovery}, ${effect})`, async () => {
+for (const effect of ['uncertain', 'idempotent', 'read', 'unknown'] as const) for (const recovery of ['step', 'cell'] as const) for (const name of ['ipython', 'chat__ask']) for (const reason of (effect === 'read' || effect === 'unknown' ? ['user', 'child'] as const : ['user'] as const)) it(`parks only valid recovered native input before later calls (${name}, ${recovery}, ${effect}, ${reason})`, async () => {
   const work: TurnContext['work'] = { id: 'native-wait', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 2, homeEpoch: 1, leaseToken: 'token' }
-  const result: HostActionResult = { ok: true, executionState: 'succeeded', directive: { type: 'defer', reason: 'user', data: { question: 'Which city?' } } }
+  const result: HostActionResult = { ok: true, executionState: 'succeeded', directive: { type: 'defer', reason, data: reason === 'user' ? { question: 'Which city?' } : { taskRef: 'child' } } }
   const receipts = [{ action: 'chat.ask', idempotencyKey: '["native-wait","ask",0]', result }]
   const session: SessionRecord = { key: '["t","a","s",null]', tenantId: 't', agentId: 'a', sessionId: 's', appliedWorkIds: [work.id], revision: 1, compactionEpoch: 0,
     history: [{ type: 'function_call', name, callId: 'ask', arguments: '{}' },
@@ -828,7 +828,7 @@ for (const effect of ['uncertain', 'read'] as const) for (const recovery of ['st
   let waited: unknown, completed: unknown, modelCalls = 0, toolCalls = 0
   const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
     loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: ['chat'], messages: [],
-      tools: [{ name: 'chat__ask', action: 'chat.ask', description: 'Ask', effect, approval: false, parameters: { type: 'object', properties: {}, additionalProperties: false } },
+      tools: [...(effect === 'unknown' ? [] : [{ name: 'chat__ask', action: 'chat.ask', description: 'Ask', effect, approval: false, parameters: { type: 'object' as const, properties: {}, additionalProperties: false as const } }]),
         { name: 'chat__write', action: 'chat.write', description: 'Write', effect: 'transaction', approval: false, parameters: { type: 'object', properties: {}, additionalProperties: false } }] }),
     loadSession: async () => session, saveSession: async () => {}, emitEvent: async () => {},
     recoverStep: async () => recovery === 'step' ? { output: boundedToolOutput({ receipts }), artifacts: [] } : null,
@@ -838,9 +838,10 @@ for (const effect of ['uncertain', 'read'] as const) for (const recovery of ['st
   const unavailable = async (): Promise<never> => { modelCalls++; throw new Error('must not call model after input wait') }
   await new AgentRuntime(host, { run: unavailable, structured: unavailable, compact: unavailable },
     { execute: async () => { throw new Error('must not rerun Python') } }).runWork(work)
-  if (effect === 'read') {
+  if (effect === 'read' || effect === 'unknown') {
     assert.equal(waited, undefined)
     assert.equal((completed as WorkCompletion)?.status, 'failed')
+    assert.match((completed as WorkCompletion)?.error ?? '', /wait.*contract|tools.*wait/i)
     assert.equal(modelCalls, 0)
     assert.equal(toolCalls, 0)
     assert.doesNotMatch(JSON.stringify(session.history), /not_started/)
@@ -855,7 +856,7 @@ for (const effect of ['uncertain', 'read'] as const) for (const recovery of ['st
   assert.equal(JSON.parse(skipped.output).executionState, 'not_started')
 })
 
-for (const method of ['direct', 'ipython'] as const) for (const effect of ['read', 'uncertain'] as const) for (const reason of ['user', 'child'] as const) it(`enforces terminal wait contracts without contradictory parallel outputs (${method}, ${effect}, ${reason})`, async () => {
+for (const method of ['direct', 'ipython'] as const) for (const effect of ['read', 'uncertain', 'idempotent', 'unknown'] as const) for (const reason of ['user', 'child'] as const) it(`enforces terminal wait contracts without contradictory parallel outputs (${method}, ${effect}, ${reason})`, async () => {
   const work: TurnContext['work'] = { id: 'wait-contract', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn',
     lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'lease' }
   let session: SessionRecord | undefined, completed: WorkCompletion | undefined, waited: unknown
@@ -863,7 +864,7 @@ for (const method of ['direct', 'ipython'] as const) for (const effect of ['read
   const unexpected = async (): Promise<never> => { throw new Error('unexpected next model or kernel call') }
   const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
     loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: ['chat'],
-      tools: [{ name: 'chat__choose', action: 'chat.choose', description: 'Choose', effect, approval: false,
+      tools: effect === 'unknown' ? [] : [{ name: 'chat__choose', action: 'chat.choose', description: 'Choose', effect, approval: false,
         parameters: { type: 'object', properties: { index: { type: 'integer' } }, additionalProperties: false } }],
       messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Choose a city.', createdAt: 'now' }] }),
     loadSession: async () => null, saveSession: async (_work, value) => { session = value }, saveStep: async () => {},
@@ -894,11 +895,11 @@ for (const method of ['direct', 'ipython'] as const) for (const effect of ['read
   } }
   await new AgentRuntime(host, model, kernels).runWork(work)
   const outputs = session!.history.filter((item): item is Extract<ModelItem, { type: 'function_call_output' }> => 'type' in item && item.type === 'function_call_output')
-  if (effect === 'read') {
-    assert.equal(waited, undefined, 'read waits cannot authorize parking')
+  if (effect === 'read' || effect === 'unknown') {
+    assert.equal(waited, undefined, 'read or unknown waits cannot authorize parking')
     assert.equal(completed?.status, 'failed')
-    assert.match(completed?.error ?? '', /read.*wait/i)
-    assert.deepEqual(executed, method === 'direct' ? [0, 1, 2, 3] : [0])
+    assert.match(completed?.error ?? '', /wait.*contract|tools.*wait/i)
+    assert.deepEqual(executed, method === 'direct' && effect === 'read' ? [0, 1, 2, 3] : [0])
     assert.equal(outputs.length, executed.length)
     for (let index = 0; index < executed.length; index++) assert.equal(outputs.filter(output => output.callId === `call-${index}`).length, 1)
     assert.doesNotMatch(JSON.stringify(outputs), /not_started/)

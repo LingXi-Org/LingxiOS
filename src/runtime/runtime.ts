@@ -1,3 +1,4 @@
+import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from './wait.js'
 import { inputWaitQuestion } from '../protocol/input-wait.js'
 import { appendReadEvidence } from '../context/research-evidence.js'
@@ -887,7 +888,7 @@ export class AgentRuntime {
           }))
           const failure = settled.find(result => result.status === 'rejected')
           if (failure?.status === 'rejected') {
-            if (failure.reason instanceof AgentOSError && failure.reason.code === 'read_wait_contract') {
+            if (failure.reason instanceof AgentOSError && ['read_wait_contract', 'unknown_wait_contract'].includes(failure.reason.code)) {
               await this.hostFor(work).saveSession(work, session)
             }
             throw failure.reason
@@ -1137,11 +1138,9 @@ export class AgentRuntime {
       const defer = execution.directives.find((directive) => directive.type === 'defer')
       // Custom HostPorts may bypass the control-plane contract check. Already
       // started reads finish and keep their real outputs; none can park the batch.
-      if (defer && toolCatalog.some(tool => tool.name === call.name && tool.effect === 'read')
-        || receipts.some(receipt => receipt.result.code === 'read_wait_contract'
-          || receipt.result.directive?.type === 'defer' && toolCatalog.some(tool => tool.action === receipt.action && tool.effect === 'read'))) {
-        throw new AgentOSError('read_wait_contract', 'Read tools cannot request a terminal wait; declare a non-read effect for waiting tools')
-      }
+      const waitViolation = receipts.map(receipt => waitContractViolation(
+        toolCatalog.find(tool => tool.action === receipt.action), receipt.result)).find(Boolean)
+      if (waitViolation) throw new AgentOSError(waitViolation.code, waitViolation.error)
       if (defer) {
         const goalOutcome: GoalOutcome = {
           ...(defer.reason === 'child' && typeof defer.data?.['taskRef'] === 'string' ? { status: 'delegated' as const, taskRef: defer.data['taskRef'] }
@@ -1326,10 +1325,11 @@ export class AgentRuntime {
             : boundedDirectToolOutput(receipts[0]!, undefined, { recovered: true }),
         })
       }
-      if (receipts?.some(receipt => receipt.result.code === 'read_wait_contract'
-        || receipt.result.directive?.type === 'defer' && context.tools?.some(tool => tool.action === receipt.action && tool.effect === 'read'))) {
+      const waitViolation = receipts?.map(receipt => waitContractViolation(
+        context.tools?.find(tool => tool.action === receipt.action), receipt.result)).find(Boolean)
+      if (waitViolation) {
         await this.hostFor(work).saveSession(work, session)
-        throw new AgentOSError('read_wait_contract', 'Read tools cannot request a terminal wait; reconcile the recovered receipt')
+        throw new AgentOSError(waitViolation.code, waitViolation.error)
       }
       if (step || call.name !== 'ipython') for (const receipt of receipts ?? []) {
         if (session.request?.evidence) {

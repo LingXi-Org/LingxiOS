@@ -6,6 +6,8 @@ import { recoverWait } from '../src/app/recover-wait.js'
 import { PgActionLedger, type SqlPool } from '../src/control-plane/pg-store.js'
 import type { ControlPlaneService } from '../src/control-plane/service.js'
 import type { SessionRecord, WorkItem } from '../src/protocol/types.js'
+import { TASK_TOOLS } from '../src/tools/catalog.js'
+import { collaborationTools } from '../src/collaboration/tools.js'
 import { userInputWait } from '../src/protocol/input-wait.js'
 
 it('bounds recovery per cell and checks terminal waits across the complete model batch', async () => {
@@ -18,6 +20,10 @@ it('bounds recovery per cell and checks terminal waits across the complete model
     await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
     const ledger = new PgActionLedger(pool)
     for (const scenario of [
+      { id: 'builtin-ask', counts: [1], waitAt: 0, action: 'task.ask', builtin: true, expected: 'awaiting_input' },
+      { id: 'builtin-child-wait', counts: [1], waitAt: 0, action: 'graph.start', builtin: true, childWait: true, expected: 'delegated' },
+      { id: 'removed-builtin-ask', counts: [1], waitAt: 0, action: 'task.ask', unknownTool: true, expected: 'blocked' },
+      { id: 'unknown-task-wait', counts: [1], waitAt: 0, action: 'task.wait', builtin: true, childWait: true, expected: 'blocked' },
       { id: 'normal-101', counts: [50, 51], waitAt: -1, expected: undefined },
       { id: 'historical-read-wait', counts: [100, 100], waitAt: 199, readTool: true, expected: 'blocked' },
       { id: 'removed-wait-tool', counts: [100, 100], waitAt: 199, unknownTool: true, expected: 'blocked' },
@@ -36,11 +42,11 @@ it('bounds recovery per cell and checks terminal waits across the complete model
       for (const [cell, count] of scenario.counts.entries()) {
         for (let callIndex = 0; callIndex < count; callIndex++, ordinal++) {
           const cellId = `cell-${cell}`, idempotencyKey = JSON.stringify([work.id, cellId, callIndex])
-          const action = { runId: work.id, cellId, callIndex, idempotencyKey, action: 'chat.ask', args: {} }
+          const action = { runId: work.id, cellId, callIndex, idempotencyKey, action: scenario.action ?? 'chat.ask', args: {} }
           await ledger.reserve(idempotencyKey, idempotencyKey, { workId: work.id, tenantId: 't', agentId: 'a', sessionId: 's',
             principalId: 'u', threadId: null, requestVersion: 1, action })
           if (ordinal !== scenario.omitAt) await ledger.record(idempotencyKey, ordinal === scenario.waitAt
-            ? userInputWait('Which city?') : { ok: true, executionState: 'succeeded', value: 'read complete' })
+            ? scenario.childWait ? { ok: true, directive: { type: 'defer', reason: 'child', data: { taskRef: 'child' } } } : userInputWait('Which city?') : { ok: true, executionState: 'succeeded', value: 'read complete' })
         }
       }
       let outcome: { status: string } | undefined
@@ -49,9 +55,9 @@ it('bounds recovery per cell and checks terminal waits across the complete model
         complete: async (_work: unknown, result: { goalOutcome: { status: string } }) => { outcome = result.goalOutcome },
         waitWork: async (_work: unknown, result: { status: string }) => { outcome = result },
       } as unknown as ControlPlaneService
-      assert.equal(await recoverWait(pool, service, work, undefined, scenario.unknownTool ? [] : [{ action: 'chat.ask', effect: scenario.readTool ? 'read' : 'uncertain' }]), scenario.expected !== undefined, scenario.id)
+      assert.equal(await recoverWait(pool, service, work, undefined, scenario.unknownTool ? [] : scenario.builtin ? [...TASK_TOOLS, ...collaborationTools()] : [{ action: 'chat.ask', effect: scenario.readTool ? 'read' : 'uncertain' }]), scenario.expected !== undefined, scenario.id)
       assert.equal(outcome?.status, scenario.expected, scenario.id)
-      if (scenario.expected === 'awaiting_input') assert.equal(history.filter(item => 'type' in item && item.type === 'function_call_output').length, 2)
+      if (['awaiting_input', 'delegated'].includes(scenario.expected ?? '')) assert.equal(history.filter(item => 'type' in item && item.type === 'function_call_output').length, scenario.counts.length)
     }
   } finally { await db.close() }
 })

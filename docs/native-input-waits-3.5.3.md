@@ -70,3 +70,16 @@ historical terminal wait. Read tools and removed/unknown tools block for
 reconciliation; non-read tools remain eligible under the existing receipt and
 request/fence validation. Custom HostPort step/cell recovery enforces the same
 read-wait rejection before parking.
+
+Live receipts, step/cell restoration, SQL terminal recovery, and control-plane
+receipt validation share one wait-contract check. A wait is eligible only when
+its action is present in that caller's current catalog with an explicit
+`transaction`, `idempotent`, or `uncertain` effect. Read actions produce
+`read_wait_contract`; unavailable or invalid-effect actions produce
+`unknown_wait_contract`. Both preserve already-observed returns for audit and
+cannot authorize waiting. No global catalog fallback can restore a removed tool.
+
+The app's integration catalog already includes `TASK_TOOLS`, including
+`task.ask`, and registered collaboration tools such as `graph.start` for child
+waits. There is no built-in `task.wait` action. The normal capability/mode-filtered
+catalog still controls which of these tools is available to a worker.
