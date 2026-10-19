@@ -1,3 +1,4 @@
+export { userInputWait, type UserInputWaitResult } from './protocol/input-wait.js'
 /** First-release public API: assembled runtime and stable data contracts. */
 export { releaseVersions } from './versions.js'
 export type { ResponsePolicy, ResponseProfile } from './runtime/response-policy.js'

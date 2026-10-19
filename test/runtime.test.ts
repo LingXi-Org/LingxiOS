@@ -816,3 +816,32 @@ it('fails before model or side effects when the original request cannot be captu
   assert.match(completion?.error ?? '', /trigger message is required/)
   assert.equal(completion?.goalOutcome?.verification, 'inconclusive')
 })
+
+for (const recovery of ['step', 'cell'] as const) for (const name of ['ipython', 'chat__ask']) it(`parks recovered native input before later calls (${name}, ${recovery})`, async () => {
+  const work: TurnContext['work'] = { id: 'native-wait', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 2, homeEpoch: 1, leaseToken: 'token' }
+  const result: HostActionResult = { ok: true, executionState: 'succeeded', directive: { type: 'defer', reason: 'user', data: { question: 'Which city?' } } }
+  const receipts = [{ action: 'chat.ask', idempotencyKey: '["native-wait","ask",0]', result }]
+  const session: SessionRecord = { key: '["t","a","s",null]', tenantId: 't', agentId: 'a', sessionId: 's', appliedWorkIds: [work.id], revision: 1, compactionEpoch: 0,
+    history: [{ type: 'function_call', name, callId: 'ask', arguments: '{}' },
+      { type: 'function_call', name: 'chat__write', callId: 'write', arguments: '{}' }],
+    request: { version: 1, workId: work.id, tenantId: 't', sessionId: 's', authorId: 'u', sourceRef: 'm', originalText: 'Ask for my city', revisions: [], attachments: [], evidence: snapshotEvidence('wait', []) } }
+  let waited: unknown, completed: unknown, modelCalls = 0, toolCalls = 0
+  const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
+    loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: ['chat'], messages: [],
+      tools: [{ name: 'chat__write', action: 'chat.write', description: 'Write', effect: 'transaction', approval: false, parameters: { type: 'object', properties: {}, additionalProperties: false } }] }),
+    loadSession: async () => session, saveSession: async () => {}, emitEvent: async () => {},
+    recoverStep: async () => recovery === 'step' ? { output: boundedToolOutput({ receipts }), artifacts: [] } : null,
+    recoverCell: async (_work, cell) => cell === 'ask' ? receipts : null,
+    executeAction: async () => { toolCalls++; return { ok: true } }, waitWork: async (_work, outcome) => { waited = outcome },
+    completeWork: async (_work, outcome) => { completed = outcome }, commitResult: async () => {}, yieldWork: async () => {} }
+  const unavailable = async (): Promise<never> => { modelCalls++; throw new Error('must not call model after input wait') }
+  await new AgentRuntime(host, { run: unavailable, structured: unavailable, compact: unavailable },
+    { execute: async () => { throw new Error('must not rerun Python') } }).runWork(work)
+  assert.deepEqual(waited, { status: 'awaiting_input', verification: 'not_run', requestVersion: 1, question: 'Which city?' })
+  assert.equal(completed, undefined)
+  assert.equal(modelCalls, 0)
+  assert.equal(toolCalls, 0)
+  const skipped = session.history.find(item => 'type' in item && item.type === 'function_call_output' && item.callId === 'write')
+  assert.ok(skipped && 'output' in skipped)
+  assert.equal(JSON.parse(skipped.output).executionState, 'not_started')
+})

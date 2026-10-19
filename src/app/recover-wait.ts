@@ -1,3 +1,5 @@
+import { closePendingCallsForWait } from '../runtime/wait.js'
+import { inputWaitQuestion } from '../protocol/input-wait.js'
 import type { ControlPlaneService } from '../control-plane/service.js'
 import type { SqlPool } from '../control-plane/pg-store.js'
 import { sessionKeyOf, type HostActionResult, type WorkItem } from '../protocol/types.js'
@@ -14,9 +16,19 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
   const current = await service.heartbeat(work)
   if (!current.ok || current.cancelRequested || !isDeepStrictEqual(current.steer ?? [], session.request.revisions)) return false
   const requestVersion = session.request.revisions.length + 1
-  const calls = session.history.filter(item => 'type' in item && item.type === 'function_call')
-  const call = calls.at(-1)
-  if (!call || !('type' in call) || call.type !== 'function_call') return false
+  // Only the most recent model batch can still be waiting. Older child waits
+  // may already have resumed within the same request version.
+  const lastCallIndex = session.history.findLastIndex(item => 'type' in item && item.type === 'function_call')
+  if (lastCallIndex < 0) return false
+  let batchStart = lastCallIndex
+  while (batchStart > 0) {
+    const prior = session.history[batchStart - 1]!
+    if ('type' in prior ? prior.type === 'function_call_output' : prior.role !== 'assistant') break
+    batchStart--
+  }
+  const calls = session.history.slice(batchStart, lastCallIndex + 1)
+    .filter((item): item is Extract<typeof item, { type: 'function_call' }> => 'type' in item && item.type === 'function_call')
+  const cells = calls.map(call => call.stepId ?? call.callId)
   const { rows } = await database.query(`SELECT intent.intent->'action' AS action,COALESCE(resolved.result,receipt.result) AS result
     FROM lingxios.agent_action_intents intent LEFT JOIN lingxios.agent_action_ledger receipt USING(idempotency_key)
     LEFT JOIN LATERAL (SELECT resolution->'result' AS result FROM lingxios.agent_action_resolutions
@@ -24,9 +36,9 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
     WHERE intent.intent->>'workId'=$1 AND intent.intent->>'tenantId'=$2 AND intent.intent->>'agentId'=$3
       AND intent.intent->>'sessionId'=$4 AND intent.intent->>'principalId' IS NOT DISTINCT FROM $5
       AND intent.intent->>'threadId' IS NOT DISTINCT FROM $6
-      AND intent.intent->'action'->>'cellId'=$7 AND (intent.intent->>'requestVersion')::integer=$8
-    ORDER BY (intent.intent->'action'->>'callIndex')::integer LIMIT 101`,
-  [work.id, work.tenantId, work.agentId, work.sessionId, work.principalId ?? null, work.threadId ?? null, call.stepId ?? call.callId, requestVersion])
+      AND intent.intent->'action'->>'cellId'=ANY($7::text[]) AND (intent.intent->>'requestVersion')::integer=$8
+    ORDER BY array_position($7::text[],intent.intent->'action'->>'cellId'),(intent.intent->'action'->>'callIndex')::integer LIMIT 101`,
+  [work.id, work.tenantId, work.agentId, work.sessionId, work.principalId ?? null, work.threadId ?? null, cells, requestVersion])
   if (!rows.length) return false
   const continuedAfterWait = rows.some((row, index) => index < rows.length - 1
     && (row['result'] as HostActionResult | null)?.directive?.type === 'defer')
@@ -41,17 +53,20 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
   }
   // The executor decides whether an interrupted read, transaction or idempotent action can resume.
   if (rows.some(row => !row['result'])) return false
-  const receipts = rows.map(row => ({ action: row['action'] as { action: string; args: Record<string, unknown>; callIndex: number; idempotencyKey: string }, result: row['result'] as HostActionResult }))
-  if (receipts.some((receipt, index) => receipt.action.callIndex !== index)) return false
+  const receipts = rows.map(row => ({ action: row['action'] as { action: string; args: Record<string, unknown>; cellId: string; callIndex: number; idempotencyKey: string }, result: row['result'] as HostActionResult }))
+  const indices = new Map<string, number>()
+  for (const receipt of receipts) {
+    const index = indices.get(receipt.action.cellId) ?? 0
+    if (receipt.action.callIndex !== index) return false
+    indices.set(receipt.action.cellId, index + 1)
+  }
   const last = receipts.at(-1)!
-  const question = last.action.args['question']
+  const question = inputWaitQuestion(last.result)
   let goalOutcome: GoalOutcome
   if (!last.result.ok && last.result.executionState !== 'unknown' && last.result.approval?.status === 'PENDING'
     && typeof last.result.approval.id === 'string' && last.result.approval.id.trim()) {
     goalOutcome = { status: 'awaiting_approval', approvalId: last.result.approval.id, verification: 'not_run', requestVersion }
-  } else if (last.action.action === 'task.ask' && last.result.ok && last.result.directive?.type === 'defer'
-    && last.result.directive.reason === 'user' && typeof question === 'string' && question.trim() && question.length <= 4000
-    && last.result.directive.data?.['question'] === question) {
+  } else if (question !== undefined) {
     goalOutcome = { status: 'awaiting_input', verification: 'not_run', requestVersion, question }
   } else if (last.result.ok && last.result.directive?.type === 'defer' && last.result.directive.reason === 'child'
     && typeof last.result.directive.data?.['taskRef'] === 'string') {
@@ -69,18 +84,22 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
     }
   } else return false
   signal?.throwIfAborted()
-  const callIndex = session.history.lastIndexOf(call)
-  if (!session.history.slice(callIndex + 1).some(item => 'type' in item && item.type === 'function_call_output' && item.callId === call.callId)) {
-    session.history.push({ type: 'function_call_output', callId: call.callId, output: boundedToolOutput({
-      recovered: true, localExecutionOutput: 'not_recovered',
-      ...(goalOutcome.status === 'awaiting_approval' ? { approvalPending: goalOutcome.approvalId } : {}),
-      receipts: receipts.map(receipt => ({ action: receipt.action.action, idempotencyKey: receipt.action.idempotencyKey, result: receipt.result })),
-    }) })
-    await service.saveSession(work, session)
+  for (const call of calls) {
+    const callIndex = session.history.lastIndexOf(call)
+    const recovered = receipts.filter(receipt => receipt.action.cellId === (call.stepId ?? call.callId))
+    if (recovered.length && !session.history.slice(callIndex + 1).some(item => 'type' in item && item.type === 'function_call_output' && item.callId === call.callId)) {
+      session.history.push({ type: 'function_call_output', callId: call.callId, output: boundedToolOutput({
+        recovered: true, localExecutionOutput: 'not_recovered',
+        ...(goalOutcome.status === 'awaiting_approval' ? { approvalPending: goalOutcome.approvalId } : {}),
+        receipts: recovered.map(receipt => ({ action: receipt.action.action, idempotencyKey: receipt.action.idempotencyKey, result: receipt.result })),
+      }) })
+    }
   }
+  if (goalOutcome.status === 'awaiting_input') closePendingCallsForWait(session)
+  await service.saveSession(work, session)
   await service.recordEvent(work, { runId: work.id, seq: (work.fence - 1) * RUN_SEQUENCE_SPAN + 1,
     kind: goalOutcome.status === 'awaiting_approval' ? 'approval.pending' : 'goal.waiting', stage: 'completed', visibility: 'user',
-    data: { recovered: true, goalOutcome, ...(goalOutcome.status === 'awaiting_approval' ? { approvalId: goalOutcome.approvalId, cellId: call.callId } : {}) } })
+    data: { recovered: true, goalOutcome, ...(goalOutcome.status === 'awaiting_approval' ? { approvalId: goalOutcome.approvalId, cellId: last.action.cellId } : {}) } })
   await service.waitWork(work, goalOutcome as import('../protocol/outcome.js').WaitingOutcome)
   return true
 }

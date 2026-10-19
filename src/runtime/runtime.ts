@@ -1,3 +1,5 @@
+import { closePendingCallsForWait } from './wait.js'
+import { inputWaitQuestion } from '../protocol/input-wait.js'
 import { appendReadEvidence } from '../context/research-evidence.js'
 import { contextItem, observationItems } from '../context/compiler.js'
 import { buildPromptContext, PROMPT_CONTRACT_VERSION } from '../prompts/provider.js'
@@ -379,6 +381,7 @@ export class AgentRuntime {
 
     const initialExecution = executionSnapshot(context, this.policy)
     const session = await this.restoreSession(work, { ...context, tools: initialExecution.tools }, initialExecution)
+    if (!session) return
     if (context.harness) {
       const binding = { runtime: releaseVersions.runtime, harness: context.harness.hash, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
@@ -1134,6 +1137,7 @@ export class AgentRuntime {
           requestVersion: (session.request?.revisions.length ?? 0) + 1,
           ...(['user','child'].includes(defer.reason ?? '') ? {} : { gaps: ['Deferred action has no verified resumable task reference'] }),
         }
+        if (defer.reason === 'user') closePendingCallsForWait(session)
         await this.hostFor(work).saveSession(work, session)
         await this.event(work, runId, {
           kind: 'goal.waiting', stage: 'completed', visibility: 'user',
@@ -1248,7 +1252,7 @@ export class AgentRuntime {
   // Session restore / prompt-context freezing
   // -------------------------------------------------------------------------
 
-  private async restoreSession(work: WorkItem, context: TurnContext, execution: ExecutionSnapshot): Promise<SessionRecord> {
+  private async restoreSession(work: WorkItem, context: TurnContext, execution: ExecutionSnapshot): Promise<SessionRecord | null> {
     const key = sessionKeyOf(work)
     const stored = context.session === undefined ? await this.hostFor(work).loadSession(work, key) : context.session
     if (stored && (stored.key !== key || stored.tenantId !== work.tenantId || stored.agentId !== work.agentId
@@ -1322,6 +1326,19 @@ export class AgentRuntime {
             deliverables: draft?.['deliverables'], constraints: draft?.['constraints'], actions: draft?.['actions'], acceptance: draft?.['acceptance'],
           })
         }
+      }
+      const deferred = receipts?.findIndex(receipt => receipt.result.directive?.type === 'defer') ?? -1
+      if (deferred >= 0 && receipts![deferred]!.result.directive?.reason === 'user') {
+        if (deferred !== receipts!.length - 1) throw new Error('actions followed a terminal wait; reconcile before continuing')
+        const question = inputWaitQuestion(receipts![deferred]!.result)
+        if (question === undefined || session.request?.workId !== work.id) throw new Error('recovered defer has no valid current input receipt')
+        const goalOutcome = { status: 'awaiting_input' as const, verification: 'not_run' as const,
+          requestVersion: session.request.revisions.length + 1, question }
+        closePendingCallsForWait(session)
+        await this.hostFor(work).saveSession(work, session)
+        await this.event(work, work.id, { kind: 'goal.waiting', stage: 'completed', visibility: 'user', data: { recovered: true, goalOutcome } })
+        await this.hostFor(work).waitWork(work, goalOutcome)
+        return null
       }
     }
     session.compactionEpoch ??= 0

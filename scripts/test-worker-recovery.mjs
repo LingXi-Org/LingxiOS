@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
-import { createLingxiOS, packageResources } from '@lyyzka/lingxios'
+import { createLingxiOS, packageResources, userInputWait } from '@lyyzka/lingxios'
 import { snapshotRequest } from '../dist/src/context/request.js'
 import { sessionKeyOf } from '../dist/src/protocol/types.js'
 
@@ -21,6 +21,11 @@ const homesRoot = join(directory, 'homes')
 let app
 const children = []
 let modelCalls = 0
+let nativeWaitMode = false
+let waitCrashStage = null
+let waitHeld = false
+let nativeExecutions = 0
+let downstreamExecutions = 0
 let heldCompletion = false
 let holdCompletion = true
 const model = createServer(async (req, res) => {
@@ -33,7 +38,10 @@ const model = createServer(async (req, res) => {
     return
   }
   modelCalls++
-  const delta = modelCalls === 1 ? { tool_calls: [{ index: 0, id: 'write-file', type: 'function',
+  const delta = nativeWaitMode && modelCalls === 1 ? { tool_calls: [
+    { index: 0, id: 'native-ask', type: 'function', function: { name: 'chat__ask', arguments: '{}' } },
+    { index: 1, id: 'must-not-write', type: 'function', function: { name: 'chat__write', arguments: '{}' } },
+  ] } : modelCalls === 1 ? { tool_calls: [{ index: 0, id: 'write-file', type: 'function',
     function: { name: 'ipython', arguments: JSON.stringify({ code: 'with open("answer.txt", "w") as f:\n    f.write("4")\nattach_file("answer.txt")' }) } }] }
     : { content: '4' }
   res.writeHead(200, { 'content-type': 'text/event-stream' })
@@ -52,6 +60,7 @@ const proxy = createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' }).end('null')
       return
     }
+    if (waitCrashStage === 'wait' && req.url.endsWith('/wait') && JSON.parse(Buffer.concat(chunks).toString()).goalOutcome?.status === 'awaiting_input') { waitHeld = true; return }
     const response = await fetch(`http://127.0.0.1:${controlPort}${req.url}`, {
       method: req.method, headers: {
         authorization: req.headers.authorization ?? '', 'content-type': req.headers['content-type'] ?? 'application/json',
@@ -60,6 +69,7 @@ const proxy = createServer(async (req, res) => {
       },
       ...(chunks.length ? { body: Buffer.concat(chunks) } : {}),
     })
+    if (waitCrashStage === 'receipt' && req.url.endsWith('/actions') && response.ok && JSON.parse(Buffer.concat(chunks).toString()).action?.action === 'chat.ask') { waitHeld = true; return }
     if (holdCompletion && req.url.endsWith('/result') && response.ok) {
       heldCompletion = true
       return // Lose the acknowledgement after atomic message/work commit.
@@ -102,7 +112,16 @@ try {
   assert.equal((await pool.query("SELECT 1 FROM pg_namespace WHERE nspname='lingxios'")).rows.length, 0, 'use a fresh disposable database')
   assert.equal((await pool.query("SELECT 1 FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema') LIMIT 1")).rows.length, 0, 'use an empty disposable database')
   await pool.query(await readFile(packageResources().schema, 'utf8'))
-  app = await createLingxiOS({ database: pool, homesRoot })
+  await pool.query('CREATE TABLE native_wait_cards(action_key text PRIMARY KEY)')
+  app = await createLingxiOS({ database: pool, homesRoot, tools: [
+    { name: 'chat__ask', action: 'chat.ask', description: 'Ask for missing input', effect: 'transaction', approval: false,
+      parameters: { type: 'object', properties: {}, additionalProperties: false }, parse: () => ({}), authorize: async () => {},
+      execute: async context => { nativeExecutions++; await context.database.query('INSERT INTO native_wait_cards VALUES($1)', [context.action.idempotencyKey]);
+        return userInputWait('Which city?', { cardId: context.action.idempotencyKey }) } },
+    { name: 'chat__write', action: 'chat.write', description: 'Forbidden downstream execution', effect: 'transaction', approval: false,
+      parameters: { type: 'object', properties: {}, additionalProperties: false }, parse: () => ({}), authorize: async () => {},
+      execute: async () => { downstreamExecutions++; return { ok: true, executionState: 'succeeded' } } },
+  ] })
   controlPort = await app.listenControlPlane({ serviceToken: 'recovery-test', port: 0 })
   model.listen(0, '127.0.0.1'); await once(model, 'listening')
   proxy.listen(0, '127.0.0.1'); await once(proxy, 'listening')
@@ -172,7 +191,34 @@ try {
   assert.equal(modelCalls, 4, 'one tool call and response for A, one response each for B and the parent')
   graphReplacement.child.kill(process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM')
   assert.deepEqual(await graphReplacement.exit, process.platform === 'win32' ? [null, 'SIGKILL'] : [0, null], graphReplacement.stderr)
-  console.log('Worker recovery passed: actual process killed after commit, replacement recovered message/artifact without model replay.')
+  nativeWaitMode = true
+  for (const stage of ['receipt', 'wait']) {
+    modelCalls = 0; waitHeld = false; waitCrashStage = stage
+    const inputIdentity = { runId: randomUUID(), tenantId: 'test', agentId: 'agent', sessionId: randomUUID(), principalId: 'human' }
+    await app.enqueue({ ...inputIdentity, id: inputIdentity.runId, text: 'Ask for my city before writing.' })
+    const asking = worker(`ask-${stage}`)
+    await until(() => waitHeld || asking.child.exitCode !== null)
+    assert.equal(waitHeld, true, asking.stderr)
+    assert.equal(modelCalls, 1)
+    asking.child.kill('SIGKILL'); await asking.exit
+    await expireWorker(`ask-${stage}`)
+    waitCrashStage = null
+    const replacement = worker(`ask-replacement-${stage}`)
+    await until(async () => (await app.readOutcome(inputIdentity))?.status === 'awaiting_input')
+    assert.deepEqual(await app.readOutcome(inputIdentity), { status: 'awaiting_input', verification: 'not_run', requestVersion: 1, question: 'Which city?' })
+    assert.equal(modelCalls, 1, 'replacement parks without another model call')
+    assert.equal(downstreamExecutions, 0, 'later call in the same model batch never runs')
+    assert.equal((await pool.query('SELECT COUNT(*)::int AS count FROM native_wait_cards')).rows[0].count, stage === 'receipt' ? 1 : 2)
+    const history = (await pool.query('SELECT history FROM lingxios.agent_os_sessions WHERE session_id=$1', [inputIdentity.sessionId])).rows[0].history
+    assert.ok(history.some(item => item.type === 'function_call_output' && item.callId === 'must-not-write' && JSON.parse(item.output).executionState === 'not_started'))
+    await app.continueInput({ ...inputIdentity, requestVersion: 1, inputId: `reply-${stage}`, text: 'Shanghai' })
+    await until(async () => (await app.readMessage(inputIdentity))?.body === '4')
+    assert.equal(modelCalls, 2, 'human reply begins one fresh model turn')
+    assert.equal(downstreamExecutions, 0, 'human reply does not execute pre-input arguments')
+    replacement.child.kill(process.platform === 'win32' ? 'SIGKILL' : 'SIGTERM'); await replacement.exit
+  }
+  assert.equal(nativeExecutions, 2, 'one card per request despite worker process death')
+  console.log('Worker recovery passed: actual process killed after commit, replacement recovered message/artifact without model replay; native input waits survived receipt/output crash windows and cancelled later batch calls.')
 } finally {
   for (const entry of children) {
     if (entry.child.exitCode === null && entry.child.signalCode === null) entry.child.kill('SIGKILL')

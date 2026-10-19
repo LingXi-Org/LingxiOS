@@ -1,3 +1,4 @@
+import { userInputWait } from '../protocol/input-wait.js'
 import { abortable } from '../deadline.js'
 import { responseProfile, type ResponsePolicy } from '../runtime/response-policy.js'
 import { candidateHash, type Candidate, type CandidateVerification } from '../outcome/verification.js'
@@ -670,7 +671,7 @@ export class ControlPlaneService {
           limitation: 'Only these fields at observation time were checked. Replaying this receipt does not refresh it; absence does not prove deletion or overall goal completion.' } }
       } else if (action.action === 'task.ask') {
         const question = action.args['question']
-        result = { ok: true, value: { question }, directive: { type: 'defer', reason: 'user', data: { question } } }
+        result = userInputWait(question as string, { question })
       } else result = await this.deps.actionExecutor.execute(work, action, options)
     } catch (error) {
       result = { ok: false, executionState: namespace === 'task' || tool?.effect === 'read' || error instanceof NoEffectError ? 'no_effect' : 'unknown',

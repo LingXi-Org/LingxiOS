@@ -72,6 +72,22 @@ Creating a control plane never claims work. A Worker receives the model, Kernel,
 
 Each `ToolDefinition` supplies one input parser and model-visible schema plus authorization, effect type, execution, approval preview, reconciliation, and verification. Validation and authorization occur before an action intent is recorded. PostgreSQL writes receive the same transaction as their action receipt. Reads may be retried; confirmed receipts are restored; unknown external effects wait for reconciliation.
 
+See [3.5.3 native input wait notes](docs/native-input-waits-3.5.3.md) for the recovery contract and release requirements.
+
+A product tool can pause for user input after durably creating its question or form:
+
+```ts
+import { userInputWait } from '@lyyzka/lingxios'
+
+// Inside the authorized native tool's execute(context, input):
+const card = await createInputCard(context, input)
+return userInputWait('Which city?', { cardId: card.id })
+```
+
+`userInputWait(question, value?)` returns a successful `defer/user` receipt. The question must be nonempty and at most 4000 characters. The runtime accepts only a durable successful receipt for the same work and current request version, then parks in `awaiting_input` without another model turn. Unstarted calls later in that model batch receive `not_started` outputs; they are reconsidered after the reply, never executed with old arguments. Receipt recovery preserves the wait without creating another card. Existing successful `ActionResult.directive = { type: 'defer', reason: 'user', data: { question } }` results remain supported.
+
+Resume through `control.continueInput({ ...identity, requestVersion, inputId, text })`. The product owns card identity, schema validation, answer authorization and submission deduplication; the runtime owns the durable wait and request continuation. A card-producing tool that returns an ordinary successful result does not request a wait.
+
 Model-visible capabilities are derived from the current authorized tool catalog.
 Hosts must provide tool definitions for capabilities they want advertised; advisory
 grants without a registered tool do not appear in the prompt. Omit unavailable
