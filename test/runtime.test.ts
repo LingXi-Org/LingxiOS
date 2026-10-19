@@ -845,3 +845,46 @@ for (const recovery of ['step', 'cell'] as const) for (const name of ['ipython',
   assert.ok(skipped && 'output' in skipped)
   assert.equal(JSON.parse(skipped.output).executionState, 'not_started')
 })
+
+for (const effect of ['read', 'uncertain'] as const) for (const reason of ['user', 'child'] as const) it(`enforces terminal wait contracts without contradictory parallel outputs (${effect}, ${reason})`, async () => {
+  const work: TurnContext['work'] = { id: 'wait-contract', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn',
+    lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'lease' }
+  let session: SessionRecord | undefined, completed: WorkCompletion | undefined, waited: unknown
+  const executed: number[] = []
+  const unexpected = async (): Promise<never> => { throw new Error('unexpected next model or kernel call') }
+  const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
+    loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: ['chat'],
+      tools: [{ name: 'chat__choose', action: 'chat.choose', description: 'Choose', effect, approval: false,
+        parameters: { type: 'object', properties: { index: { type: 'integer' } }, additionalProperties: false } }],
+      messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Choose a city.', createdAt: 'now' }] }),
+    loadSession: async () => null, saveSession: async (_work, value) => { session = value }, saveStep: async () => {},
+    emitEvent: async () => {}, commitResult: unexpected, completeWork: async (_work, value) => { completed = value },
+    waitWork: async (_work, value) => { waited = value }, yieldWork: async () => {},
+    executeAction: async (_work, action) => {
+      if (action.action === 'task.inspect') return { ok: true, value: { requestVersion: 1, pending: [], truncated: false } }
+      const index = Number(action.args['index']); executed.push(index)
+      if (index > 0) await new Promise(resolve => setTimeout(resolve, 5))
+      return index === 0 ? { ok: true, executionState: 'succeeded', value: { cardId: 'audit-card' },
+        directive: { type: 'defer', reason, data: reason === 'user' ? { question: 'Which city?' } : { taskRef: 'child' } } }
+        : { ok: true, executionState: 'succeeded', value: index }
+    } }
+  const model: ModelDriver = { structured: unexpected, compact: unexpected, run: async () => ({ text: '',
+    output: [0, 1, 2, 3].map(index => ({ type: 'function_call' as const, callId: `call-${index}`, name: 'chat__choose', arguments: JSON.stringify({ index }) })),
+    usage: { available: true, inputTokens: 1, outputTokens: 1 } }) }
+  await new AgentRuntime(host, model, { execute: unexpected }).runWork(work)
+  const outputs = session!.history.filter((item): item is Extract<ModelItem, { type: 'function_call_output' }> => 'type' in item && item.type === 'function_call_output')
+  if (effect === 'read') {
+    assert.equal(waited, undefined, 'read waits cannot authorize parking')
+    assert.equal(completed?.status, 'failed')
+    assert.match(completed?.error ?? '', /read.*wait/i)
+    assert.deepEqual(executed, [0, 1, 2, 3])
+    assert.equal(outputs.length, 4)
+    for (let index = 0; index < 4; index++) assert.equal(outputs.filter(output => output.callId === `call-${index}`).length, 1)
+    assert.doesNotMatch(JSON.stringify(outputs), /not_started/)
+    assert.match(JSON.stringify(outputs), /audit-card/)
+  } else {
+    assert.deepEqual(executed, [0])
+    assert.equal((waited as { status: string }).status, reason === 'user' ? 'awaiting_input' : 'delegated')
+    if (reason === 'user') { assert.equal(outputs.length, 4); assert.equal(outputs.filter(output => /not_started/.test(output.output)).length, 3) }
+  }
+})

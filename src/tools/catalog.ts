@@ -14,6 +14,7 @@ export interface ToolDefinition {
   action: string
   description: string
   parameters: { type: 'object'; properties: Record<string, Record<string, unknown>>; required?: string[]; additionalProperties: false }
+  /** Read tools may run concurrently and must never return a terminal defer directive. */
   effect: 'read' | 'transaction' | 'idempotent' | 'uncertain'
   approval: boolean
   readback?: string

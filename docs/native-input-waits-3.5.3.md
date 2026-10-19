@@ -36,3 +36,31 @@ requires the repository release gates on the exact main commit and matching
 `v3.5.3` tag: full tests, PostgreSQL stores, worker recovery, workspace/capacity and
 the confined Linux worker image. Product integration must pin the actually
 published `@lyyzka/lingxios@3.5.3`; a local candidate archive is test input only.
+
+### Read concurrency and terminal wait contract
+
+Only **non-read** tools may return a terminal `defer` directive, including
+`userInputWait()`. This supports `transaction`, `idempotent`, and `uncertain`
+tools; existing product `chat.ask` tools using `effect: 'uncertain'` remain valid.
+Creating a question/card is an effect, so it must not be declared as a read.
+The `deferred` catalog flag controls schema discovery and does not mean waiting.
+
+Read tools retain bounded four-way concurrency. If a read returns any terminal
+`defer` (user, child, or other reason), the control plane records
+`read_wait_contract` with `executionState: 'unknown'`, preserves the complete
+original return in `value.rejectedResult`, and removes the wait directive before
+it can authorize waiting. It does not claim the action had no effects, undo an
+already-created card, or promote the invalid return through native reconciliation.
+The host must reconcile any actual effects before continuing writes.
+
+The runtime also rejects terminal waits returned by custom read HostPorts.
+Already-started peers finish and retain their real outputs exactly once; they
+are never marked `not_started`, and the invalid wait does not park the work.
+Valid non-read input waits execute serially and close only unstarted siblings.
+
+Recovery limits apply to each cell independently: at most 100 action receipts
+per cell, with a bounded 101-row overflow probe per cell. Recovery examines every
+cell in model order, including waits beyond the first 100 combined receipts.
+A receipt after a terminal wait remains a reconciliation conflict, including
+when it belongs to a later cell. Missing receipts and non-contiguous indices
+remain ineligible for terminal recovery.

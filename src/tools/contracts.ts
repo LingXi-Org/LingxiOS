@@ -56,3 +56,12 @@ export async function observeResult(tool: NativeTool, context: ActionContext, in
   return { ...value, observations: resources.map(item => ({ resourceType: tool.observation!.resourceType,
     resourceId: item.resourceId, version: item.version, completeness: tool.observation!.completeness })) }
 }
+
+/** A read can run concurrently and must not request a terminal wait. Preserve
+ * the provider result for audit: a misdeclared tool may already have had effects. */
+export function enforceReadWaitContract(tool: Pick<ToolDefinition, 'effect'> | undefined, result: HostActionResult): HostActionResult {
+  if (tool?.effect !== 'read' || result.directive?.type !== 'defer') return result
+  return { ok: false, executionState: 'unknown', code: 'read_wait_contract',
+    error: 'Read tools cannot request a terminal wait; declare a non-read effect for waiting tools',
+    value: { rejectedResult: result } }
+}

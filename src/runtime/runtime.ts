@@ -883,10 +883,15 @@ export class AgentRuntime {
             const part = nextStreamPartIndex
             nextStreamPartIndex += onlyReads ? 2 : 0
             return this.executeCall(work, runId, session, call, signals, budget, part,
-              execution.grants, artifacts, codeExecution)
+              execution.grants, artifacts, codeExecution, liveContext.tools?.find(tool => tool.name === call.name)?.effect)
           }))
           const failure = settled.find(result => result.status === 'rejected')
-          if (failure?.status === 'rejected') throw failure.reason
+          if (failure?.status === 'rejected') {
+            if (failure.reason instanceof AgentOSError && failure.reason.code === 'read_wait_contract') {
+              await this.hostFor(work).saveSession(work, session)
+            }
+            throw failure.reason
+          }
           outcomes = settled.map(result => (result as PromiseFulfilledResult<Awaited<ReturnType<AgentRuntime['executeCall']>>>).value)
         } catch (error) {
           if (!(error instanceof ModelBudgetExceededError) && !(error instanceof AgentOSError) && !lastGood) throw error
@@ -985,6 +990,7 @@ export class AgentRuntime {
     capabilities: readonly { name: string; methods?: readonly string[] }[],
     artifacts: KernelArtifact[],
     codeExecution: import('../protocol/types.js').CodeExecutionMode,
+    toolEffect?: import('../tools/catalog.js').ToolDefinition['effect'],
   ): Promise<{ nextStreamPartIndex: number; terminal: boolean; correction?: ModelItem }> {
     let nextStreamPartIndex = streamPartIndex
     const receipts: Array<{ action: string; idempotencyKey: string; result: HostActionResult }> = []
@@ -1129,6 +1135,11 @@ export class AgentRuntime {
         await this.hostFor(work).saveSession(work, session)
       }
       const defer = execution.directives.find((directive) => directive.type === 'defer')
+      // Custom HostPorts may bypass the control-plane contract check. Already
+      // started reads finish and keep their real outputs; none can park the batch.
+      if (defer && toolEffect === 'read' || receipts.some(receipt => receipt.result.code === 'read_wait_contract')) {
+        throw new AgentOSError('read_wait_contract', 'Read tools cannot request a terminal wait; declare a non-read effect for waiting tools')
+      }
       if (defer) {
         const goalOutcome: GoalOutcome = {
           ...(defer.reason === 'child' && typeof defer.data?.['taskRef'] === 'string' ? { status: 'delegated' as const, taskRef: defer.data['taskRef'] }

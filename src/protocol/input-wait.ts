@@ -13,6 +13,8 @@ export function isInputQuestion(question: unknown): question is string {
 
 /** Return after the authorized tool has durably created its question/card. The
  * runtime records this receipt and parks the current request without another turn.
+ * Only non-read tools may wait (transaction, idempotent or uncertain). Read
+ * tools run concurrently and returning a terminal defer is a contract error.
  * Resume with continueInput using the same identity and requestVersion. */
 export function userInputWait(question: string, value?: unknown): UserInputWaitResult {
   if (!isInputQuestion(question)) throw new Error('input question must be a non-empty string of at most 4000 characters')

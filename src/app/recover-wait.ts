@@ -29,21 +29,32 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
   const calls = session.history.slice(batchStart, lastCallIndex + 1)
     .filter((item): item is Extract<typeof item, { type: 'function_call' }> => 'type' in item && item.type === 'function_call')
   const cells = calls.map(call => call.stepId ?? call.callId)
-  const { rows } = await database.query(`SELECT intent.intent->'action' AS action,COALESCE(resolved.result,receipt.result) AS result
-    FROM lingxios.agent_action_intents intent LEFT JOIN lingxios.agent_action_ledger receipt USING(idempotency_key)
-    LEFT JOIN LATERAL (SELECT resolution->'result' AS result FROM lingxios.agent_action_resolutions
-      WHERE idempotency_key=intent.idempotency_key ORDER BY resolution_seq DESC LIMIT 1) resolved ON TRUE
-    WHERE intent.intent->>'workId'=$1 AND intent.intent->>'tenantId'=$2 AND intent.intent->>'agentId'=$3
-      AND intent.intent->>'sessionId'=$4 AND intent.intent->>'principalId' IS NOT DISTINCT FROM $5
-      AND intent.intent->>'threadId' IS NOT DISTINCT FROM $6
-      AND intent.intent->'action'->>'cellId'=ANY($7::text[]) AND (intent.intent->>'requestVersion')::integer=$8
-    ORDER BY array_position($7::text[],intent.intent->'action'->>'cellId'),(intent.intent->'action'->>'callIndex')::integer LIMIT 101`,
+  // Each cell has its own 100-action budget. Bound every cell's scan while
+  // retaining model order across the entire batch (including a late wait).
+  const { rows } = await database.query(`SELECT recovered.action,recovered.result
+    FROM unnest($7::text[]) WITH ORDINALITY AS cells(cell_id,position)
+    CROSS JOIN LATERAL (
+      SELECT intent.intent->'action' AS action,COALESCE(resolved.result,receipt.result) AS result
+      FROM lingxios.agent_action_intents intent LEFT JOIN lingxios.agent_action_ledger receipt USING(idempotency_key)
+      LEFT JOIN LATERAL (SELECT resolution->'result' AS result FROM lingxios.agent_action_resolutions
+        WHERE idempotency_key=intent.idempotency_key ORDER BY resolution_seq DESC LIMIT 1) resolved ON TRUE
+      WHERE intent.intent->>'workId'=$1 AND intent.intent->>'tenantId'=$2 AND intent.intent->>'agentId'=$3
+        AND intent.intent->>'sessionId'=$4 AND intent.intent->>'principalId' IS NOT DISTINCT FROM $5
+        AND intent.intent->>'threadId' IS NOT DISTINCT FROM $6
+        AND intent.intent->'action'->>'cellId'=cells.cell_id AND (intent.intent->>'requestVersion')::integer=$8
+      ORDER BY (intent.intent->'action'->>'callIndex')::integer LIMIT 101
+    ) recovered ORDER BY cells.position,(recovered.action->>'callIndex')::integer`,
   [work.id, work.tenantId, work.agentId, work.sessionId, work.principalId ?? null, work.threadId ?? null, cells, requestVersion])
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    const cellId = (row['action'] as { cellId: string }).cellId
+    counts.set(cellId, (counts.get(cellId) ?? 0) + 1)
+  }
   if (!rows.length) return false
   const continuedAfterWait = rows.some((row, index) => index < rows.length - 1
     && (row['result'] as HostActionResult | null)?.directive?.type === 'defer')
   signal?.throwIfAborted()
-  if (rows.length > 100 || continuedAfterWait) {
+  if ([...counts.values()].some(count => count > 100) || continuedAfterWait) {
     const goalOutcome: GoalOutcome = { status: 'blocked', verification: 'inconclusive', requestVersion,
       gaps: [continuedAfterWait ? 'Actions followed a terminal wait; reconcile before continuing' : 'Action recovery exceeds the bounded receipt limit'] }
     await service.recordEvent(work, { runId: work.id, seq: (work.fence - 1) * RUN_SEQUENCE_SPAN + 1,
