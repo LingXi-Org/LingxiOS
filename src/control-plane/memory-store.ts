@@ -1,3 +1,4 @@
+import { inputWaitQuestion, isInputQuestion } from '../protocol/input-wait.js'
 import { executionClassOf, workStatusOf, type WorkStatus } from '../protocol/types.js'
 /**
  * In-memory store implementation. Serves three purposes: local development,
@@ -462,13 +463,13 @@ export class MemoryActionLedger implements ActionLedgerStore {
       .flatMap(([key]) => { const result = this.effectiveResult(key); return result?.ok ? structuredClone(result.artifacts ?? []) : [] })
   }
   async hasWait(workId: string, requestVersion: number, wait: { approvalId: string } | { question: string }): Promise<boolean> {
+    if ('question' in wait && !isInputQuestion(wait.question)) return false
     for (const [key, intent] of this.intentDetails) {
       if (intent.workId !== workId || intent.requestVersion !== requestVersion) continue
       const result = this.effectiveResult(key)
       if (!result || result.executionState === 'unknown') continue
       if ('approvalId' in wait ? result.approval?.status === 'PENDING' && result.approval.id === wait.approvalId
-        : intent.action.action === 'task.ask' && result.ok && result.directive?.type === 'defer'
-          && result.directive.reason === 'user' && result.directive.data?.['question'] === wait.question) return true
+        : inputWaitQuestion(result) === wait.question) return true
     }
     return false
   }

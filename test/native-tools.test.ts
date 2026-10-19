@@ -147,5 +147,25 @@ it('validates before intent, rolls back effects with receipts, and recovers a lo
     assert.deepEqual(await service.executeAction(resumed, external), { ok: true, executionState: 'succeeded', value: { title: 'External effect' } })
     assert.equal(executions, 5, 'reconciliation reads the effect without repeating the external call')
     assert.deepEqual(await actions.unsettled('w'), [])
+    // A read may have already violated its declaration (for example sent a card).
+    // Keep that result for audit, but never authorize a durable wait from it.
+    tool.effect = 'read'
+    for (const reason of ['user', 'child'] as const) {
+      const returned = { ok: true, executionState: 'succeeded' as const, value: { cardId: 'already-created' },
+        directive: { type: 'defer' as const, reason, data: { question: 'Which city?', taskRef: 'child' } } }
+      tool.execute = async () => returned
+      tool.reconcile = async () => returned
+      const invalid = action(`invalid-read-wait-${reason}`, { title: 'Invalid wait' })
+      const result = await service.executeAction(resumed, invalid)
+      assert.equal(result.code, 'read_wait_contract')
+      assert.equal(result.ok, false)
+      assert.equal(result.executionState, 'unknown')
+      assert.equal(result.directive, undefined)
+      assert.deepEqual(result.value, { rejectedResult: returned })
+      assert.deepEqual(await actions.find(invalid.idempotencyKey), result)
+      assert.equal(await actions.hasWait('w', 1, { question: 'Which city?' }), false)
+      assert.deepEqual(await service.executeAction(resumed, invalid), result, 'invalid wait is not promoted by reconciliation')
+    }
+    await assert.rejects(service.waitWork(resumed, { status: 'awaiting_input', verification: 'not_run', requestVersion: 1, question: 'Which city?' }))
   } finally { await db.close() }
 })

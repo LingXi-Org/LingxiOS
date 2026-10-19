@@ -248,5 +248,21 @@ try {
   const independent = await Promise.all([workStore.claim('thread-worker-a'), workStore.claim('thread-worker-b')])
   assert.deepEqual(independent.map(item => item.id).sort(), ['thread-a', 'thread-b'])
   assert.deepEqual((await pool.query('SELECT * FROM public.agent_work_items')).rows, [{ company_id: 'untouched' }])
-  console.log('Real PostgreSQL stores passed: schema 7→8→9→10→11→12 + repeatable 013, atomic concurrent child admission/closing holds/terminal deduplication, cross-process LISTEN/NOTIFY and reconnect, document CAS/restore races, reflection deduplication, atomic memory forgetting, competing claims, session exclusion, concurrent intent reservation/CAS, separate-process recovery, stale fencing, cancellation and product-table isolation.')
+  const waitLedger = new PgActionLedger(pool)
+  for (const [id, result, expected] of [
+    ['success', { ok: true, executionState: 'succeeded' }, true],
+    ['legacy', { ok: true }, true], ['failure', { ok: false }, false],
+    ['unknown', { ok: true, executionState: 'unknown' }, false],
+    ['forged', { ok: 'true' }, false], ['null-state', { ok: true, executionState: null }, false],
+  ]) {
+    const key = `input-wait-${id}`, question = 'Which city?'
+    await waitLedger.reserve(key, key, { workId: key, tenantId: 'test', principalId: 'human', agentId: 'a', sessionId: key,
+      threadId: null, requestVersion: 2, action: { runId: key, cellId: 'ask', callIndex: 0, action: 'chat.ask', args: {}, idempotencyKey: key } })
+    assert.equal(await waitLedger.hasWait(key, 2, { question }), false, 'intent alone cannot authorize a wait')
+    await waitLedger.record(key, { ...result, directive: { type: 'defer', reason: 'user', data: { question } } })
+    assert.equal(await waitLedger.hasWait(key, 2, { question }), expected, id)
+    assert.equal(await waitLedger.hasWait(key, 1, { question }), false, 'stale request version')
+    assert.equal(await waitLedger.hasWait(key, 2, { question: 'forged question' }), false)
+  }
+  console.log('Real PostgreSQL stores passed: schema 7→8→9→10→11→12 + repeatable 013, atomic concurrent child admission/closing holds/terminal deduplication, cross-process LISTEN/NOTIFY and reconnect, document CAS/restore races, reflection deduplication, atomic memory forgetting, competing claims, session exclusion, concurrent intent reservation/CAS, separate-process recovery, stale fencing, cancellation, product-table isolation and native input-wait receipt validation.')
 } finally { await pool?.end() }

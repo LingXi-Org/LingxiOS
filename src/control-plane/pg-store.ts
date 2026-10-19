@@ -1,3 +1,4 @@
+import { isInputQuestion } from '../protocol/input-wait.js'
 /**
  * Postgres store implementations over an injected pg-compatible pool (any
  * object with `query` and `connect`, e.g. `pg.Pool`). Keeping the driver out
@@ -534,6 +535,7 @@ export class PgActionLedger implements ActionLedgerStore {
   constructor(private readonly pool: SqlPool) {}
 
   async hasWait(workId: string, requestVersion: number, wait: { approvalId: string } | { question: string }): Promise<boolean> {
+    if ('question' in wait && !isInputQuestion(wait.question)) return false
     const { rows } = await this.pool.query(`SELECT i.idempotency_key FROM lingxios.agent_action_intents i
       LEFT JOIN lingxios.agent_action_ledger r USING(idempotency_key)
       LEFT JOIN LATERAL (SELECT resolution->'result' AS result FROM lingxios.agent_action_resolutions
@@ -542,9 +544,11 @@ export class PgActionLedger implements ActionLedgerStore {
         AND COALESCE(rr.result,r.result) IS NOT NULL
         AND COALESCE(COALESCE(rr.result,r.result)->>'executionState','')<>'unknown'
         AND CASE WHEN $3::text IS NOT NULL THEN COALESCE(rr.result,r.result)->'approval'->>'status'='PENDING' AND COALESCE(rr.result,r.result)->'approval'->>'id'=$3
-          ELSE i.intent->'action'->>'action'='task.ask' AND COALESCE(rr.result,r.result)->>'ok'='true'
+          ELSE COALESCE(rr.result,r.result)->'ok'='true'::jsonb
+            AND COALESCE(COALESCE(rr.result,r.result)->'executionState','"succeeded"'::jsonb)='"succeeded"'::jsonb
+            AND COALESCE(rr.result,r.result)->'approval' IS NULL
             AND COALESCE(rr.result,r.result)->'directive'->>'type'='defer' AND COALESCE(rr.result,r.result)->'directive'->>'reason'='user'
-            AND COALESCE(rr.result,r.result)->'directive'->'data'->>'question'=$4::text END LIMIT 1`,
+            AND COALESCE(rr.result,r.result)->'directive'->'data'->'question'=to_jsonb($4::text) END LIMIT 1`,
     [workId, JSON.stringify(requestVersion), 'approvalId' in wait ? wait.approvalId : null, 'question' in wait ? wait.question : null])
     return rows.length === 1
   }

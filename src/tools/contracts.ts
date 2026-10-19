@@ -56,3 +56,24 @@ export async function observeResult(tool: NativeTool, context: ActionContext, in
   return { ...value, observations: resources.map(item => ({ resourceType: tool.observation!.resourceType,
     resourceId: item.resourceId, version: item.version, completeness: tool.observation!.completeness })) }
 }
+
+/** Waiting requires an explicit non-read effect in the caller's current catalog.
+ * Never fall back to a global catalog: a missing tool may have been revoked. */
+export function waitContractViolation(tool: Pick<ToolDefinition, 'effect'> | undefined, result: HostActionResult):
+  { code: 'read_wait_contract' | 'unknown_wait_contract'; error: string } | undefined {
+  if (result.code === 'read_wait_contract' || result.code === 'unknown_wait_contract') {
+    return { code: result.code, error: result.error ?? 'Terminal wait contract violation' }
+  }
+  if (result.directive?.type !== 'defer') return undefined
+  if (tool && ['transaction', 'idempotent', 'uncertain'].includes(tool.effect)) return undefined
+  return tool?.effect === 'read'
+    ? { code: 'read_wait_contract', error: 'Read tools cannot request a terminal wait; declare a non-read effect for waiting tools' }
+    : { code: 'unknown_wait_contract', error: 'Terminal wait contract requires a currently available tool with an explicit non-read effect' }
+}
+
+/** Preserve the original return for audit; an invalid tool may already have had effects. */
+export function enforceWaitContract(tool: Pick<ToolDefinition, 'effect'> | undefined, result: HostActionResult): HostActionResult {
+  const violation = waitContractViolation(tool, result)
+  if (!violation || result.directive?.type !== 'defer') return result
+  return { ok: false, executionState: 'unknown', ...violation, value: { rejectedResult: result } }
+}

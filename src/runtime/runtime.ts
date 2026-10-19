@@ -1,3 +1,6 @@
+import { waitContractViolation } from '../tools/contracts.js'
+import { closePendingCallsForWait } from './wait.js'
+import { inputWaitQuestion } from '../protocol/input-wait.js'
 import { appendReadEvidence } from '../context/research-evidence.js'
 import { contextItem, observationItems } from '../context/compiler.js'
 import { buildPromptContext, PROMPT_CONTRACT_VERSION } from '../prompts/provider.js'
@@ -379,6 +382,7 @@ export class AgentRuntime {
 
     const initialExecution = executionSnapshot(context, this.policy)
     const session = await this.restoreSession(work, { ...context, tools: initialExecution.tools }, initialExecution)
+    if (!session) return
     if (context.harness) {
       const binding = { runtime: releaseVersions.runtime, harness: context.harness.hash, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
@@ -880,10 +884,15 @@ export class AgentRuntime {
             const part = nextStreamPartIndex
             nextStreamPartIndex += onlyReads ? 2 : 0
             return this.executeCall(work, runId, session, call, signals, budget, part,
-              execution.grants, artifacts, codeExecution)
+              execution.grants, artifacts, codeExecution, liveContext.tools)
           }))
           const failure = settled.find(result => result.status === 'rejected')
-          if (failure?.status === 'rejected') throw failure.reason
+          if (failure?.status === 'rejected') {
+            if (failure.reason instanceof AgentOSError && ['read_wait_contract', 'unknown_wait_contract'].includes(failure.reason.code)) {
+              await this.hostFor(work).saveSession(work, session)
+            }
+            throw failure.reason
+          }
           outcomes = settled.map(result => (result as PromiseFulfilledResult<Awaited<ReturnType<AgentRuntime['executeCall']>>>).value)
         } catch (error) {
           if (!(error instanceof ModelBudgetExceededError) && !(error instanceof AgentOSError) && !lastGood) throw error
@@ -982,6 +991,7 @@ export class AgentRuntime {
     capabilities: readonly { name: string; methods?: readonly string[] }[],
     artifacts: KernelArtifact[],
     codeExecution: import('../protocol/types.js').CodeExecutionMode,
+    toolCatalog: readonly import('../tools/catalog.js').ToolDefinition[] = [],
   ): Promise<{ nextStreamPartIndex: number; terminal: boolean; correction?: ModelItem }> {
     let nextStreamPartIndex = streamPartIndex
     const receipts: Array<{ action: string; idempotencyKey: string; result: HostActionResult }> = []
@@ -1126,6 +1136,11 @@ export class AgentRuntime {
         await this.hostFor(work).saveSession(work, session)
       }
       const defer = execution.directives.find((directive) => directive.type === 'defer')
+      // Custom HostPorts may bypass the control-plane contract check. Already
+      // started reads finish and keep their real outputs; none can park the batch.
+      const waitViolation = receipts.map(receipt => waitContractViolation(
+        toolCatalog.find(tool => tool.action === receipt.action), receipt.result)).find(Boolean)
+      if (waitViolation) throw new AgentOSError(waitViolation.code, waitViolation.error)
       if (defer) {
         const goalOutcome: GoalOutcome = {
           ...(defer.reason === 'child' && typeof defer.data?.['taskRef'] === 'string' ? { status: 'delegated' as const, taskRef: defer.data['taskRef'] }
@@ -1134,6 +1149,7 @@ export class AgentRuntime {
           requestVersion: (session.request?.revisions.length ?? 0) + 1,
           ...(['user','child'].includes(defer.reason ?? '') ? {} : { gaps: ['Deferred action has no verified resumable task reference'] }),
         }
+        if (defer.reason === 'user') closePendingCallsForWait(session)
         await this.hostFor(work).saveSession(work, session)
         await this.event(work, runId, {
           kind: 'goal.waiting', stage: 'completed', visibility: 'user',
@@ -1248,7 +1264,7 @@ export class AgentRuntime {
   // Session restore / prompt-context freezing
   // -------------------------------------------------------------------------
 
-  private async restoreSession(work: WorkItem, context: TurnContext, execution: ExecutionSnapshot): Promise<SessionRecord> {
+  private async restoreSession(work: WorkItem, context: TurnContext, execution: ExecutionSnapshot): Promise<SessionRecord | null> {
     const key = sessionKeyOf(work)
     const stored = context.session === undefined ? await this.hostFor(work).loadSession(work, key) : context.session
     if (stored && (stored.key !== key || stored.tenantId !== work.tenantId || stored.agentId !== work.agentId
@@ -1309,6 +1325,12 @@ export class AgentRuntime {
             : boundedDirectToolOutput(receipts[0]!, undefined, { recovered: true }),
         })
       }
+      const waitViolation = receipts?.map(receipt => waitContractViolation(
+        context.tools?.find(tool => tool.action === receipt.action), receipt.result)).find(Boolean)
+      if (waitViolation) {
+        await this.hostFor(work).saveSession(work, session)
+        throw new AgentOSError(waitViolation.code, waitViolation.error)
+      }
       if (step || call.name !== 'ipython') for (const receipt of receipts ?? []) {
         if (session.request?.evidence) {
           session.request.evidence = appendReadEvidence(session.request.evidence, receipt.idempotencyKey, receipt.result, receipt.action)
@@ -1322,6 +1344,19 @@ export class AgentRuntime {
             deliverables: draft?.['deliverables'], constraints: draft?.['constraints'], actions: draft?.['actions'], acceptance: draft?.['acceptance'],
           })
         }
+      }
+      const deferred = receipts?.findIndex(receipt => receipt.result.directive?.type === 'defer') ?? -1
+      if (deferred >= 0 && receipts![deferred]!.result.directive?.reason === 'user') {
+        if (deferred !== receipts!.length - 1) throw new Error('actions followed a terminal wait; reconcile before continuing')
+        const question = inputWaitQuestion(receipts![deferred]!.result)
+        if (question === undefined || session.request?.workId !== work.id) throw new Error('recovered defer has no valid current input receipt')
+        const goalOutcome = { status: 'awaiting_input' as const, verification: 'not_run' as const,
+          requestVersion: session.request.revisions.length + 1, question }
+        closePendingCallsForWait(session)
+        await this.hostFor(work).saveSession(work, session)
+        await this.event(work, work.id, { kind: 'goal.waiting', stage: 'completed', visibility: 'user', data: { recovered: true, goalOutcome } })
+        await this.hostFor(work).waitWork(work, goalOutcome)
+        return null
       }
     }
     session.compactionEpoch ??= 0

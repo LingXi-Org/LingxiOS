@@ -7,8 +7,9 @@ import { createWorker } from '../src/worker/index.js'
 import { sessionKeyOf } from '../src/protocol/types.js'
 import type { SqlPool } from '../src/control-plane/pg-store.js'
 import http from 'node:http'
+import type { ToolDefinition } from '../src/tools/definition.js'
 
-it('asks through real Python, exposes the question and continues after a human reply', async () => {
+for (const native of [false, true]) it(`asks through real Python (${native ? 'native' : 'builtin'}), exposes the question and continues after a human reply`, async () => {
   const db = new PGlite()
   const pool: SqlPool = { query: async (sql, params) => {
     const result = await db.query<Record<string, unknown>>(sql, params)
@@ -28,7 +29,7 @@ it('asks through real Python, exposes the question and continues after a human r
       requests++
       if (requests > 1) resumedContext = body
       const delta = requests === 1 ? { tool_calls: [{ index: 0, id: 'ask', function: { name: 'ipython',
-        arguments: JSON.stringify({ code: 'host.task.ask(question="Which city?")\nraise RuntimeError("must not execute after asking")' }) } }] } : { content: 'Use Shanghai.' }
+        arguments: JSON.stringify({ code: `${native ? 'host.chat.ask(form="city")' : 'host.task.ask(question="Which city?")'}\nraise RuntimeError("must not execute after asking")` }) } }] } : { content: 'Use Shanghai.' }
       response.writeHead(200, { 'content-type': 'text/event-stream' })
       response.end(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: requests === 1 ? 'tool_calls' : 'stop' }] })}\n\ndata: [DONE]\n\n`)
     })
@@ -37,7 +38,12 @@ it('asks through real Python, exposes the question and continues after a human r
   const address = server.address()
   assert.ok(address && typeof address === 'object')
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
-  const app = await createLingxiOS({ database: pool })
+  let cards = 0
+  const tool: ToolDefinition = { name: 'chat__ask', action: 'chat.ask', description: 'Ask for a city', effect: 'transaction', approval: false,
+    parameters: { type: 'object', properties: { form: { type: 'string' } }, required: ['form'], additionalProperties: false },
+    parse: input => input as Record<string, unknown>, authorize: async () => {}, execute: async () => { cards++;
+      return { ok: true, executionState: 'succeeded', directive: { type: 'defer', reason: 'user', data: { question: 'Which city?' } } } } }
+  const app = await createLingxiOS({ database: pool, ...(native ? { tools: [tool] } : {}) })
   const worker = createWorker({ controlPlane: app, model: { id: 'test', apiKey: 'test', baseUrl: `http://127.0.0.1:${address.port}` } })
   try {
     const identity = { runId: 'ask-work', tenantId: 't', agentId: 'a', sessionId: 's', principalId: 'u' }
@@ -48,6 +54,10 @@ it('asks through real Python, exposes the question and continues after a human r
     assert.deepEqual(await app.readOutcome(identity), { status: 'awaiting_input', verification: 'not_run', requestVersion: 1, question: 'Which city?' })
     assert.equal(await app.readMessage(identity), null)
     assert.equal(requests, 1)
+    await db.exec(`UPDATE lingxios.agent_work_items SET status='queued',goal_outcome=NULL,finished_at=NULL`)
+    assert.equal(await worker.runNext(), true)
+    assert.equal(requests, 1, 'saved function output still restores the wait before model execution')
+    assert.equal((await app.readOutcome(identity))?.status, 'awaiting_input')
     const page = await app.readEvents(identity)
     assert.ok(page.events.some(event => event.kind === 'goal.waiting' && (event.data['goalOutcome'] as { question: string }).question === 'Which city?'))
     assert.ok(page.events.every(event => event.visibility === 'user'))
@@ -74,6 +84,7 @@ it('asks through real Python, exposes the question and continues after a human r
       UPDATE lingxios.agent_work_items SET status='queued',goal_outcome=NULL,finished_at=NULL`)
     assert.equal(await worker.runNext(), true)
     assert.equal((await app.readOutcome(identity))?.status, 'awaiting_input')
+    assert.equal(cards, native ? 1 : 0, 'recovery does not send another card')
     const replyAttachment = { id: 'schedule', sourceVersion: 'v1', name: 'schedule.txt', mimeType: 'text/plain', size: 14, text: 'Avoid Mondays.' }
     const reply = { ...identity, principalId: 'u', inputId: 'reply', requestVersion: 1, text: 'Shanghai', attachments: [replyAttachment] }
     await assert.rejects(app.continueInput({ ...reply, attachments: Array.from({ length: 20 }, (_, index) => ({ ...replyAttachment, id: String(index) })) }), /request attachment limit/)

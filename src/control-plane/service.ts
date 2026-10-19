@@ -1,3 +1,4 @@
+import { userInputWait } from '../protocol/input-wait.js'
 import { abortable } from '../deadline.js'
 import { responseProfile, type ResponsePolicy } from '../runtime/response-policy.js'
 import { candidateHash, type Candidate, type CandidateVerification } from '../outcome/verification.js'
@@ -8,7 +9,7 @@ import { NoEffectError } from '../tools/definition.js'
 import { permitsTool, executionMode } from '../runtime/execution-policy.js'
 import { canonicalJson } from '../context/compiler.js'
 import { observationRef } from '../context/observations.js'
-import { toolContractHash } from '../tools/contracts.js'
+import { toolContractHash, enforceWaitContract } from '../tools/contracts.js'
 import { snapshotObligations } from '../outcome/obligations.js'
 import { modelPricing } from '../model/execution.js'
 import { appendReadEvidence } from '../context/research-evidence.js'
@@ -276,6 +277,7 @@ export class ControlPlaneService {
       this.deps.metrics?.counter('agentos_action_recovery_total', 'Actions settled by native readback').inc({ outcome: 'unavailable' })
       return null
     }
+    if (result) result = enforceWaitContract((this.deps.tools ?? TASK_TOOLS).find(tool => tool.action === action.action), result)
     if (!result || result.approval || result.executionState === 'unknown' || !result.ok && result.executionState !== 'no_effect') return null
     result = { ...result, executionState: result.ok ? 'succeeded' : 'no_effect' }
     await this.deps.actions.recordResolution({ id: 'native:' + createHash('sha256').update(JSON.stringify([action.idempotencyKey,result])).digest('hex'),
@@ -670,12 +672,13 @@ export class ControlPlaneService {
           limitation: 'Only these fields at observation time were checked. Replaying this receipt does not refresh it; absence does not prove deletion or overall goal completion.' } }
       } else if (action.action === 'task.ask') {
         const question = action.args['question']
-        result = { ok: true, value: { question }, directive: { type: 'defer', reason: 'user', data: { question } } }
+        result = userInputWait(question as string, { question })
       } else result = await this.deps.actionExecutor.execute(work, action, options)
     } catch (error) {
       result = { ok: false, executionState: namespace === 'task' || tool?.effect === 'read' || error instanceof NoEffectError ? 'no_effect' : 'unknown',
         ...(error instanceof NoEffectError ? { code: error.code, ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}) } : {}), error: errorMessage(error) }
     }
+    result = enforceWaitContract(tool, result)
     const recorded = await this.deps.actions.record(action.idempotencyKey, result)
     this.deps.metrics?.counter('agentos_actions_executed_total', 'Host actions executed').inc({
       namespace, ok: String(recorded.ok),
