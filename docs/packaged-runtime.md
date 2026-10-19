@@ -126,6 +126,20 @@ Only newly committed, non-delegated interactions enter searchable evidence. The 
 
 ## Memory evolution
 
+Configure `memory.evolution` with `{ benchmarkId, benchmark }` to supply a trusted
+`EvolutionBenchmark` definition. The runtime captures a structured clone when it
+is created and rejects a definition whose `id` differs from `benchmarkId`. Only an
+approved, committed synthesis with nonempty candidates freezes the definition,
+after current scope authorization, in the same deadline-bound database transaction
+as memory changes, proposal and the action receipt. A conflicting frozen definition
+is a hard failure that rolls back the whole action. Read/context authorization,
+loads and synthesis without candidates do not register a benchmark. Keep
+`resolveScopes` limited to current permission resolution.
+
+The existing `{ benchmarkId }` configuration still requires a trusted caller to
+freeze that benchmark through `control.freezeEvolutionBenchmark` before proposals.
+Benchmark definitions are trusted configuration, never model-visible tool input.
+
 Memory synthesis may propose tenant-scoped experience, skill, or strategy candidates only when a product configured a frozen benchmark. A candidate is activated after repeated target improvement, no holdout regression, and all deterministic authorization, approval, isolation, and no-code-mutation gates pass. Source revocation expires dependent candidates. Each run pins its active strategy versions; later activation affects new runs only. Trusted administrators can inspect or roll back evaluated versions.
 
 ## Operations

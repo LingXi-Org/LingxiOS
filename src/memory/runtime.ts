@@ -5,7 +5,7 @@ import type { RootModelBudgetOptions } from '../model/execution.js'
 import { memoryDocument, memoryEntry, scopeParams } from './store.js'
 import { createSemanticMemory } from './semantic.js'
 import { executeMemorySynthesis, parseMemoryChanges, parseMemoryConflicts } from './synthesis.js'
-import { executeEvolution, parseEvolutionCandidates, pinnedEvolution, proposeEvolution } from './evolution.js'
+import { executeEvolution, freezeEvolutionBenchmark, parseEvolutionCandidates, pinnedEvolution, proposeEvolution } from './evolution.js'
 import { withTransaction } from '../control-plane/pg-store.js'
 import { authorizedScopes, identityOf, memorySettings, sourceIdentity, type MemoryOptions } from './access.js'
 import { createMemoryService } from './service.js'
@@ -19,6 +19,11 @@ import { sameScope } from './access.js'
 export type { MemoryOptions } from './access.js'
 
 export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, budget?: RootModelBudgetOptions) {
+  const evolution = options.evolution === undefined ? undefined : {
+    benchmarkId: options.evolution.benchmarkId,
+    ...(options.evolution.benchmark === undefined ? {} : { benchmark: structuredClone(options.evolution.benchmark) }),
+  }
+  if (evolution?.benchmark && evolution.benchmark.id !== evolution.benchmarkId) throw new Error('evolution benchmark ID must match benchmarkId')
   const semantic = options.embeddings ? createSemanticMemory(database, options.embeddings, budget) : undefined
   const service = createMemoryService(database,options,semantic),settings = memorySettings(options)
   const maintenanceScopes = async (work: Omit<WorkItem,'leaseToken'>,db: SqlQueryable) => {
@@ -45,7 +50,7 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
         parseMemoryChanges(input['changes'])
         parseMemoryConflicts(input['conflicts'] ?? [])
         parseEvolutionCandidates(input['candidates'] ?? [])
-        if (!options.evolution && (input['candidates'] as unknown[] | undefined)?.length) throw new Error('evolution requires a frozen benchmark')
+        if (!evolution && (input['candidates'] as unknown[] | undefined)?.length) throw new Error('evolution requires a frozen benchmark')
         if (typeof input['approved'] !== 'boolean' || typeof input['confidence'] !== 'number' || !Number.isFinite(input['confidence']) || input['confidence'] < 0 || input['confidence'] > 1) throw new Error('invalid memory verification')
       }
       return input
@@ -56,14 +61,17 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
     async execute(context, input) {
       const { candidates, ...memoryInput } = input
       const value = await executeMemorySynthesis(context.database,context.work,method,memoryInput,options)
-      if (method === 'apply' && value && 'outcome' in value && value.outcome === 'committed' && options.evolution) {
+      if (method === 'apply' && value && 'outcome' in value && value.outcome === 'committed' && evolution && (candidates as unknown[] | undefined)?.length) {
+        const parsed = parseEvolutionCandidates(candidates)
         const scopes = (await maintenanceScopes(context.work,context.database)).filter(scope => scope.scopeType===context.work.meta?.['scopeType'] && scope.scopeId===context.work.meta?.['scopeId'])
-        await proposeEvolution(context.database,context.work,scopes,options.evolution.benchmarkId,parseEvolutionCandidates(candidates ?? []),options.writePolicy)
+        if (!scopes.length) throw new Error('memory source scope was revoked')
+        if (evolution.benchmark) await freezeEvolutionBenchmark(context.database,context.work.tenantId,evolution.benchmark)
+        await proposeEvolution(context.database,context.work,scopes,evolution.benchmarkId,parsed,options.writePolicy)
       }
-      return { ok: true, executionState: 'succeeded', value: method === 'load' && value ? { ...value, evolutionEnabled: !!options.evolution } : value }
+      return { ok: true, executionState: 'succeeded', value: method === 'load' && value ? { ...value, evolutionEnabled: !!evolution } : value }
     },
   }))
-  if (options.evolution) for (const method of ['load','record','finish'] as const) tools.push({
+  if (evolution) for (const method of ['load','record','finish'] as const) tools.push({
     action: `memory_evaluation.${method}`, name: `memory_evaluation__${method}`, description: 'Run the frozen independent evaluation and gate candidate activation.',
     effect: 'transaction', approval: false,
     parameters: { type: 'object', additionalProperties: false, properties: method === 'record' ? {
@@ -140,7 +148,7 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
           recalled.push((result.items as MemoryHit[]).filter(item => item.layer!=='core')); retrieval.push(result.retrieval)
         }
       }
-      const strategies=!fast && options.evolution?await withTransaction(db,client=>pinnedEvolution(client,work,scopes)):[]
+      const strategies=!fast && evolution?await withTransaction(db,client=>pinnedEvolution(client,work,scopes)):[]
       const current = await abortable(authorizedScopes(options,identity,db,signal),signal)
       if (scopes.some(scope => !current.some(candidate => sameScope(scope,candidate)))) throw new Error('memory scope was revoked during retrieval')
       return fitMemorySnapshot(snapshotMemories({status:'available',core:roundRobin(core),directory:roundRobin(directory),recalled:roundRobin(recalled),strategies,

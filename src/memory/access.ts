@@ -3,6 +3,7 @@ import type { SqlQueryable } from '../control-plane/pg-store.js'
 import type { WorkItem } from '../protocol/types.js'
 import type { EmbeddingOptions } from '../model/embeddings.js'
 import type { MemoryWritePolicy } from './policy.js'
+import type { EvolutionBenchmark } from './evolution.js'
 import type { MemoryIdentity, MemoryScope } from './types.js'
 import { validateScope } from './store.js'
 import { authorizeConversationWork, digest } from '../collaboration/access.js'
@@ -13,7 +14,12 @@ export interface MemoryOptions {
   resolveScopes(identity: MemoryIdentity, database: SqlQueryable, signal?: AbortSignal): Promise<MemoryScope[]>
   writePolicy?: MemoryWritePolicy
   embeddings?: EmbeddingOptions
-  evolution?: { benchmarkId: string }
+  evolution?: {
+    benchmarkId: string
+    /** Trusted, cloneable definition frozen atomically only when synthesis proposes candidates.
+     * Its ID must match benchmarkId. Omit to require prior administrative freezing. */
+    benchmark?: EvolutionBenchmark
+  }
   contextBudget?: { ratio?: number; maxTokens?: number; concurrency?: number; timeoutMs?: number;
     /** Optional recall is on demand via memory.search; core and authorization stay mandatory. */
     optionalRecall?: boolean; recallTimeoutMs?: number }
