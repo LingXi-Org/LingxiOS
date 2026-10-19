@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { abortable } from '../deadline.js'
+import { abortable, scopedSignal } from '../deadline.js'
 import { sessionKeyOf, type WorkItem } from '../protocol/types.js'
 import { checkedWorkspaceEntries, workspaceLimits, workspacePath, type WorkspaceCheckpoint, type WorkspaceEntry, type WorkspaceLimits, type WorkspaceSnapshot } from '../protocol/workspace.js'
 import type { SqlPool } from '../control-plane/pg-store.js'
@@ -51,21 +51,23 @@ export function createWorkspaceStore(database: SqlPool, objects: RuntimeObjectSt
       return { baseGeneration: checkpoint.baseGeneration, entries }
     },
     async maintenance(external?: AbortSignal) {
-      const signal = objectSignal(external, limits.timeoutMs)
-      const page = await abortable(objects.list('workspaces/', cursor, 100, signal), signal)
-      cursor = page.cursor
-      let removed = 0
-      for (const object of page.objects.slice(0, 100)) {
-        const match = /^workspaces\/[a-f0-9]{64}\/([a-f0-9]{64})-(\d+)\/[a-f0-9-]{36}\/[a-f0-9]{64}$/.exec(object.key)
-        if (!match || !Number.isFinite(Date.parse(object.updatedAt)) || Date.parse(object.updatedAt) > Date.now() - 86_400_000) continue
-        const { rows } = await database.query(`SELECT EXISTS(SELECT 1 FROM lingxios.agent_workspace_checkpoints
-          WHERE entries @> $1::jsonb) OR EXISTS(SELECT 1 FROM lingxios.agent_work_items
-          WHERE encode(sha256(convert_to(id,'UTF8')),'hex')=$2 AND fence=$3 AND status IN ('queued','leased','waiting')) AS retained`,
-        [JSON.stringify([{ objectKey: object.key }]), match[1], match[2]])
-        // New uploads use a new UUID; a removed object can never be adopted by a later generation.
-        if (!rows[0]?.['retained']) { await abortable(objects.delete(object.key, signal), signal); removed++ }
-      }
-      return { inspected: page.objects.length, removed }
+      const scope = scopedSignal([external], limits.timeoutMs), signal = scope.signal
+      try {
+        const page = await abortable(objects.list('workspaces/', cursor, 100, signal), signal)
+        cursor = page.cursor
+        let removed = 0
+        for (const object of page.objects.slice(0, 100)) {
+          const match = /^workspaces\/[a-f0-9]{64}\/([a-f0-9]{64})-(\d+)\/[a-f0-9-]{36}\/[a-f0-9]{64}$/.exec(object.key)
+          if (!match || !Number.isFinite(Date.parse(object.updatedAt)) || Date.parse(object.updatedAt) > Date.now() - 86_400_000) continue
+          const { rows } = await database.query(`SELECT EXISTS(SELECT 1 FROM lingxios.agent_workspace_checkpoints
+            WHERE entries @> $1::jsonb) OR EXISTS(SELECT 1 FROM lingxios.agent_work_items
+            WHERE encode(sha256(convert_to(id,'UTF8')),'hex')=$2 AND fence=$3 AND status IN ('queued','leased','waiting')) AS retained`,
+          [JSON.stringify([{ objectKey: object.key }]), match[1], match[2]])
+          // New uploads use a new UUID; a removed object can never be adopted by a later generation.
+          if (!rows[0]?.['retained']) { await abortable(objects.delete(object.key, signal), signal); removed++ }
+        }
+        return { inspected: page.objects.length, removed }
+      } finally { scope.dispose() }
     },
   }
 }

@@ -2,7 +2,7 @@ import { DEFAULT_MODEL_BUDGET } from '../model/execution.js'
 import { readTerminalFeedback, terminalFeedback } from './terminal.js'
 import { classifyToolFailure } from '../tools/failure.js'
 import { snapshotMemories } from '../memory/context.js'
-import { abortable } from '../deadline.js'
+import { abortable, scopedSignal } from '../deadline.js'
 import type { VerificationRecord } from '../outcome/verification.js'
 import { flushOutbox, drainOutboxes } from '../control-plane/outbox.js'
 import { Wakeup, listenWakeups } from '../control-plane/wakeup.js'
@@ -191,8 +191,11 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   const runWakeup = new Wakeup()
   const waitForWork: NonNullable<HostPort['waitForWork']> = async (cursor, timeoutMs, signal) => {
     const version = workWakeup.version
-    if (cursor === `${wakeEpoch}:${version}`) await workWakeup.wait(version, Math.min(timeoutMs, 25_000),
-      AbortSignal.any([shutdown.signal, ...signal ? [signal] : []]))
+    if (cursor === `${wakeEpoch}:${version}`) {
+      const scope = scopedSignal([shutdown.signal, signal])
+      try { await workWakeup.wait(version, Math.min(timeoutMs, 25_000), scope.signal) }
+      finally { scope.dispose() }
+    }
     return `${wakeEpoch}:${workWakeup.version}`
   }
   const metrics = options.metrics ?? new MetricsRegistry()
@@ -378,7 +381,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   async function verifyNative(work: Omit<WorkItem, 'leaseToken'>, candidate: import('../outcome/verification.js').Candidate, database: SqlQueryable) {
     const graphChecks = await verifyGraphResults(database, work, candidate.requestVersion)
     if (!options.verifyRun) return graphChecks
-    const deadlineAt = new Date(Date.now() + 10_000).toISOString(), signal = AbortSignal.any([shutdown.signal,AbortSignal.timeout(10_000)])
+    const deadlineAt = new Date(Date.now() + 10_000).toISOString(), scope = scopedSignal([shutdown.signal], 10_000), signal = scope.signal
     let active = true
     try {
       const records = await abortable(options.verifyRun({ work, candidate: structuredClone(candidate), requestVersion: candidate.requestVersion, signal, deadlineAt, database: {
@@ -389,7 +392,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         throw new Error('native verification returned invalid acceptance records')
       }
       return [...graphChecks, ...records]
-    } finally { active = false }
+    } finally { active = false; scope.dispose() }
   }
 
   const service = new ControlPlaneService({
@@ -459,8 +462,10 @@ export async function createLingxiOS(options: LingxiOSOptions) {
             for (const row of rendered.rows) {
               const intent = row['intent'] as import('../control-plane/stores.js').ActionIntent
               if (intent.toolContractHash !== toolContractHash(helperTools.find(tool => tool.action === 'presentation.render')!)) throw new Error('presentation contract changed before commit')
-              await integration.actionExecutor.prepare(work, intent.action, { requestVersion: message.envelope.requestVersion,
-                signal: AbortSignal.any([shutdown.signal, AbortSignal.timeout(10_000)]), deadlineAt: new Date(Date.now() + 10_000).toISOString() })
+              const scope = scopedSignal([shutdown.signal], 10_000)
+              try { await integration.actionExecutor.prepare(work, intent.action, { requestVersion: message.envelope.requestVersion,
+                signal: scope.signal, deadlineAt: new Date(Date.now() + 10_000).toISOString() }) }
+              finally { scope.dispose() }
               components.push(structuredClone((row['result'] as { value: { presentation: TrustedPresentation } }).value.presentation))
             }
             if (components.length) message = { ...message, envelope: { ...message.envelope, presentations: components } }
@@ -532,7 +537,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     const key = JSON.stringify([proof.id, proof.fence])
     const prior = recoveries.get(key)
     if (prior) return prior
-    const signal = AbortSignal.any([shutdown.signal, AbortSignal.timeout(30_000), ...external ? [external] : []])
+    const scope = scopedSignal([shutdown.signal, external], 30_000), signal = scope.signal
     const db = deadlinePool(options.database, signal)
     const work = { ...leased, leaseToken: proof.leaseToken }
     const recovery = (async () => {
@@ -541,7 +546,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       await executeDecidedApprovals(db, service, work, signal)
       signal.throwIfAborted()
       return recoverWait(db, service, work, signal)
-    })().finally(() => recoveries.delete(key))
+    })().finally(() => { scope.dispose(); recoveries.delete(key) })
     recoveries.set(key, recovery)
     return recovery
   }

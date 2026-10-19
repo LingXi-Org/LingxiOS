@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises'
-import { abortable } from '../deadline.js'
+import { abortable, scopedSignal } from '../deadline.js'
 import type { SqlClient, SqlPool } from './pg-store.js'
 import type { Logger } from '../logging.js'
 
@@ -40,6 +40,7 @@ interface NotificationClient extends SqlClient {
 export async function listenWakeups(pool: SqlPool, notify: (channel: 'work' | 'outbox') => void,
   signal: AbortSignal, logger: Logger): Promise<void> {
   while (!signal.aborted) {
+    const acquisition = scopedSignal([signal], 5000)
     let client: NotificationClient | undefined
     let disconnected: (() => void) | undefined
     const notification = (message?: unknown) => {
@@ -49,7 +50,7 @@ export async function listenWakeups(pool: SqlPool, notify: (channel: 'work' | 'o
     }
     try {
       const pending = pool.connect()
-      const connecting = AbortSignal.any([signal, AbortSignal.timeout(5000)])
+      const connecting = acquisition.signal
       let acquired: SqlClient
       try { acquired = await abortable(pending, connecting) }
       catch (error) {
@@ -67,11 +68,13 @@ export async function listenWakeups(pool: SqlPool, notify: (channel: 'work' | 'o
       client.on('error', disconnected!)
       client.on('end', disconnected!)
       await abortable(client.query('LISTEN lingxios_work; LISTEN lingxios_outbox'), connecting)
+      acquisition.dispose()
       notify('work'); notify('outbox') // Initial/reconnect scan AFTER LISTEN commits.
       await abortable(ended, signal)
     } catch {
       if (!signal.aborted) logger.warn('database notification listener unavailable; periodic scans remain active')
     } finally {
+      acquisition.dispose()
       if (client) {
         client.removeListener('notification', notification)
         client.removeListener('error', disconnected!)

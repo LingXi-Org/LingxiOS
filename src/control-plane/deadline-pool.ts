@@ -1,4 +1,4 @@
-import { abortable } from '../deadline.js'
+import { abortable, scopedSignal } from '../deadline.js'
 import type { SqlClient, SqlPool } from './pg-store.js'
 import { LATENCY_BUCKETS, type MetricsRegistry } from '../metrics.js'
 
@@ -12,13 +12,16 @@ export function sqlOperation(sql: string): 'write' | 'read' | 'transaction' {
 export function deadlinePool(pool: SqlPool, signal?: AbortSignal, timeoutMs = 30_000, metrics?: MetricsRegistry): SqlPool {
   return {
     async connect() {
-      const bounded = AbortSignal.any([AbortSignal.timeout(timeoutMs),...signal ? [signal] : []])
+      const scope = scopedSignal([signal], timeoutMs), bounded = scope.signal
       bounded.throwIfAborted()
       const acquiring = performance.now()
-      const pending = pool.connect()
+      let pending: Promise<SqlClient>
+      try { pending = pool.connect() }
+      catch (error) { scope.dispose(); throw error }
       let client: SqlClient
       try { client = await abortable(pending,bounded) }
       catch (error) {
+        scope.dispose()
         void pending.then(late => late.release(error instanceof Error ? error : new Error('connection acquisition cancelled')), () => {})
         throw error
       }
@@ -30,6 +33,7 @@ export function deadlinePool(pool: SqlPool, signal?: AbortSignal, timeoutMs = 30
         if (released) return
         released = true
         bounded.removeEventListener('abort',cancel)
+        scope.dispose()
         client.release(error)
       }
       const cancel = () => release(bounded.reason instanceof Error ? bounded.reason : new Error('database deadline exceeded'))

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { SqlQueryable } from './pg-store.js'
 import { createLogger } from '../logging.js'
-import { abortable } from '../deadline.js'
+import { abortable, scopedSignal } from '../deadline.js'
 import { classifyToolFailure } from '../tools/failure.js'
 import { LATENCY_BUCKETS, type MetricsRegistry } from '../metrics.js'
 
@@ -118,7 +118,7 @@ async function deliverBatch(database: SqlQueryable, table: Table, deliver: Deliv
     const where = `${spec.keys.map((key, index) => `${key}=$${index + 1}`).join(' AND ')} AND claim_token=$${params.length}`
     const timeout = new AbortController()
     const timer = setTimeout(() => timeout.abort(new Error('delivery deadline exceeded')), timeoutMs)
-    const signal = AbortSignal.any([timeout.signal, ...(options.signal ? [options.signal] : [])])
+    const scope = scopedSignal([timeout.signal, options.signal]), signal = scope.signal
     const began = performance.now()
     try {
       signal.throwIfAborted()
@@ -140,6 +140,7 @@ async function deliverBatch(database: SqlQueryable, table: Table, deliver: Deliv
         .catch(() => { throw new Error('outbox failure could not be persisted') })
     } finally {
       clearTimeout(timer)
+      scope.dispose()
       options.metrics?.histogram('agentos_outbox_delivery_seconds', 'One delivery attempt including acknowledgement', LATENCY_BUCKETS)
         .observe((performance.now() - began) / 1000, { channel: table })
     }
