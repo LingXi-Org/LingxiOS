@@ -883,7 +883,7 @@ export class AgentRuntime {
             const part = nextStreamPartIndex
             nextStreamPartIndex += onlyReads ? 2 : 0
             return this.executeCall(work, runId, session, call, signals, budget, part,
-              execution.grants, artifacts, codeExecution, liveContext.tools?.find(tool => tool.name === call.name)?.effect)
+              execution.grants, artifacts, codeExecution, liveContext.tools)
           }))
           const failure = settled.find(result => result.status === 'rejected')
           if (failure?.status === 'rejected') {
@@ -990,7 +990,7 @@ export class AgentRuntime {
     capabilities: readonly { name: string; methods?: readonly string[] }[],
     artifacts: KernelArtifact[],
     codeExecution: import('../protocol/types.js').CodeExecutionMode,
-    toolEffect?: import('../tools/catalog.js').ToolDefinition['effect'],
+    toolCatalog: readonly import('../tools/catalog.js').ToolDefinition[] = [],
   ): Promise<{ nextStreamPartIndex: number; terminal: boolean; correction?: ModelItem }> {
     let nextStreamPartIndex = streamPartIndex
     const receipts: Array<{ action: string; idempotencyKey: string; result: HostActionResult }> = []
@@ -1137,7 +1137,9 @@ export class AgentRuntime {
       const defer = execution.directives.find((directive) => directive.type === 'defer')
       // Custom HostPorts may bypass the control-plane contract check. Already
       // started reads finish and keep their real outputs; none can park the batch.
-      if (defer && toolEffect === 'read' || receipts.some(receipt => receipt.result.code === 'read_wait_contract')) {
+      if (defer && toolCatalog.some(tool => tool.name === call.name && tool.effect === 'read')
+        || receipts.some(receipt => receipt.result.code === 'read_wait_contract'
+          || receipt.result.directive?.type === 'defer' && toolCatalog.some(tool => tool.action === receipt.action && tool.effect === 'read'))) {
         throw new AgentOSError('read_wait_contract', 'Read tools cannot request a terminal wait; declare a non-read effect for waiting tools')
       }
       if (defer) {

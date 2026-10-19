@@ -855,7 +855,7 @@ for (const effect of ['uncertain', 'read'] as const) for (const recovery of ['st
   assert.equal(JSON.parse(skipped.output).executionState, 'not_started')
 })
 
-for (const effect of ['read', 'uncertain'] as const) for (const reason of ['user', 'child'] as const) it(`enforces terminal wait contracts without contradictory parallel outputs (${effect}, ${reason})`, async () => {
+for (const method of ['direct', 'ipython'] as const) for (const effect of ['read', 'uncertain'] as const) for (const reason of ['user', 'child'] as const) it(`enforces terminal wait contracts without contradictory parallel outputs (${method}, ${effect}, ${reason})`, async () => {
   const work: TurnContext['work'] = { id: 'wait-contract', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn',
     lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'lease' }
   let session: SessionRecord | undefined, completed: WorkCompletion | undefined, waited: unknown
@@ -878,17 +878,29 @@ for (const effect of ['read', 'uncertain'] as const) for (const reason of ['user
         : { ok: true, executionState: 'succeeded', value: index }
     } }
   const model: ModelDriver = { structured: unexpected, compact: unexpected, run: async () => ({ text: '',
-    output: [0, 1, 2, 3].map(index => ({ type: 'function_call' as const, callId: `call-${index}`, name: 'chat__choose', arguments: JSON.stringify({ index }) })),
+    output: [0, 1, 2, 3].map(index => ({ type: 'function_call' as const, callId: `call-${index}`, name: method === 'direct' ? 'chat__choose' : 'ipython',
+      arguments: JSON.stringify(method === 'direct' ? { index } : { code: `host.chat.choose(index=${index})` }) })),
     usage: { available: true, inputTokens: 1, outputTokens: 1 } }) }
-  await new AgentRuntime(host, model, { execute: unexpected }).runWork(work)
+  const kernels: KernelExecutor = { execute: async (_work, runId, cellId, code, _signal, options) => {
+    assert.equal(method, 'ipython')
+    assert.equal(code, 'host.chat.choose(index=0)', 'later calls must not run after the terminal receipt')
+    const action: HostAction = { runId, cellId, callIndex: 0, action: 'chat.choose', args: { index: 0 },
+      idempotencyKey: actionKeyOf({ runId, cellId, callIndex: 0 }) }
+    await options?.onHostAction?.({ stage: 'started', action })
+    const result = await host.executeAction(work, action)
+    await options?.onHostAction?.({ stage: 'completed', action, result })
+    return { executionId: cellId, stdout: '', stderr: '', result: null, durationMs: 1,
+      truncated: false, artifacts: [], directives: result.directive ? [result.directive] : [] }
+  } }
+  await new AgentRuntime(host, model, kernels).runWork(work)
   const outputs = session!.history.filter((item): item is Extract<ModelItem, { type: 'function_call_output' }> => 'type' in item && item.type === 'function_call_output')
   if (effect === 'read') {
     assert.equal(waited, undefined, 'read waits cannot authorize parking')
     assert.equal(completed?.status, 'failed')
     assert.match(completed?.error ?? '', /read.*wait/i)
-    assert.deepEqual(executed, [0, 1, 2, 3])
-    assert.equal(outputs.length, 4)
-    for (let index = 0; index < 4; index++) assert.equal(outputs.filter(output => output.callId === `call-${index}`).length, 1)
+    assert.deepEqual(executed, method === 'direct' ? [0, 1, 2, 3] : [0])
+    assert.equal(outputs.length, executed.length)
+    for (let index = 0; index < executed.length; index++) assert.equal(outputs.filter(output => output.callId === `call-${index}`).length, 1)
     assert.doesNotMatch(JSON.stringify(outputs), /not_started/)
     assert.match(JSON.stringify(outputs), /audit-card/)
   } else {
