@@ -3,7 +3,7 @@
  * eagerly so a misconfigured service fails at boot, not mid-run.
  */
 import { ConfigError } from './errors.js'
-import { DEFAULT_MODEL } from './model/openai.js'
+import { DEFAULT_MODEL, type ReasoningEffort } from './model/openai.js'
 import type { RootModelBudgetOptions } from './runtime/runtime.js'
 
 export function loadModelBudget(env: NodeJS.ProcessEnv = process.env): RootModelBudgetOptions {
@@ -53,13 +53,21 @@ export interface WorkerConfig {
     id: string
     apiKey: string
     baseUrl: string
-    reasoningEffort?: 'high' | 'max'
+    reasoningEffort?: ReasoningEffort
+    compactionReasoningEffort?: ReasoningEffort
+    auxiliaryStreaming?: boolean
   }
 }
 
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  const reasoningEffort = env['AGENT_OS_REASONING_EFFORT']?.trim()
-  if (reasoningEffort !== undefined && reasoningEffort !== 'high' && reasoningEffort !== 'max') throw new ConfigError('AGENT_OS_REASONING_EFFORT must be high or max')
+  const effort = (name: string): ReasoningEffort | undefined => {
+    const value = env[name]?.trim()
+    if (value !== undefined && value !== 'low' && value !== 'high' && value !== 'max') throw new ConfigError(`${name} must be low, high or max`)
+    return value
+  }
+  const reasoningEffort = effort('AGENT_OS_REASONING_EFFORT')
+  const compactionReasoningEffort = effort('AGENT_OS_COMPACTION_REASONING_EFFORT')
+  const auxiliaryStreaming = env['AGENT_OS_AUXILIARY_STREAMING'] === undefined ? undefined : boolEnv('AGENT_OS_AUXILIARY_STREAMING', false, env)
   return {
     controlPlaneUrl: requiredEnv('AGENT_OS_CONTROL_PLANE_URL', env),
     serviceToken: requiredEnv('AGENT_OS_SERVICE_TOKEN', env),
@@ -73,6 +81,8 @@ export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerCo
       apiKey: requiredEnv('AGENT_OS_MODEL_API_KEY', env),
       baseUrl: env['AGENT_OS_MODEL_BASE_URL']?.trim() || DEFAULT_MODEL.baseUrl,
       ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(compactionReasoningEffort ? { compactionReasoningEffort } : {}),
+      ...(auxiliaryStreaming !== undefined ? { auxiliaryStreaming } : {}),
     },
   }
 }

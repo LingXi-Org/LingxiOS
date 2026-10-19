@@ -27,6 +27,8 @@ import type {
 
 export const DEFAULT_MODEL = { id: 'deepseek-ai/DeepSeek-V4-Flash', baseUrl: 'https://api.siliconflow.cn/v1', reasoningEffort: 'high' } as const
 
+export type ReasoningEffort = 'low' | 'high' | 'max'
+
 export interface OpenAIDriverOptions {
   recovery?: Partial<ModelRecoveryPolicy>
   capabilities?: Partial<Pick<ModelProfile, 'toolCalls' | 'jsonObject' | 'parallelTools'>>
@@ -35,7 +37,11 @@ export interface OpenAIDriverOptions {
   maxThinkingTokens?: number
   apiKey: string
   baseUrl?: string
-  reasoningEffort?: 'high' | 'max'
+  reasoningEffort?: ReasoningEffort
+  /** Independent effort for compaction; omitted by default, without inheriting the main effort. */
+  compactionReasoningEffort?: ReasoningEffort
+  /** Stream structured and compaction responses internally; disabled by default. */
+  auxiliaryStreaming?: boolean
   /** Max attempts per request across retryable failures (429/5xx/network). */
   maxAttempts?: number
   /** Base backoff in ms; grows exponentially with full jitter. */
@@ -168,6 +174,9 @@ export async function* sseDataEvents(body: ReadableStream<Uint8Array>): AsyncGen
       if (data) yield data
     }
   }
+  if (buffer.split(/\r?\n/).some(line => line.trim() && !line.startsWith(':'))) {
+    throw new ModelDriverError('model stream ended with an incomplete event', { kind: 'provider', finishReasons: [] })
+  }
 }
 
 export class OpenAIChatDriver implements ModelDriver {
@@ -193,7 +202,10 @@ export class OpenAIChatDriver implements ModelDriver {
     this.recovery = recoveryPolicy(options.recovery)
     this.baseUrl = (options.baseUrl ?? DEFAULT_MODEL.baseUrl).replace(/\/+$/, '')
     this.circuitKey = createHash('sha256').update(JSON.stringify([this.baseUrl, modelId, options.apiKey])).digest('hex')
-    if (options.reasoningEffort !== undefined && !['high', 'max'].includes(options.reasoningEffort)) throw new Error('reasoningEffort must be high or max')
+    for (const key of ['reasoningEffort', 'compactionReasoningEffort'] as const) {
+      if (options[key] !== undefined && !['low', 'high', 'max'].includes(options[key])) throw new Error(`${key} must be low, high or max`)
+    }
+    if (options.auxiliaryStreaming !== undefined && typeof options.auxiliaryStreaming !== 'boolean') throw new Error('auxiliaryStreaming must be a boolean')
     this.maxAttempts = options.maxAttempts ?? 3
     this.retryBaseMs = options.retryBaseMs ?? 500
     this.requestTimeoutMs = options.requestTimeoutMs ?? 90_000
@@ -219,6 +231,8 @@ export class OpenAIChatDriver implements ModelDriver {
       contextWindowTokens: this.contextWindowTokens, maxThinkingTokens: this.maxThinkingTokens, compactionThinking: false, tool: 'ipython-v1',
       capabilities: this.profile,
       previewFormat: this.previewFormat,
+      ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
+      ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
     })).digest('hex')
   }
 
@@ -337,45 +351,55 @@ export class OpenAIChatDriver implements ModelDriver {
   private async consumeStream(response: Response, onTextDelta?: (delta: string) => void): Promise<StreamAccumulator> {
     if (!response.body) throw new ModelDriverError('model provider returned no response body', { finishReasons: [] })
     const accumulator: StreamAccumulator = { text: '', toolCalls: new Map(), finishReasons: [] }
-    for await (const data of sseDataEvents(response.body)) {
-      if (data === '[DONE]') break
-      let chunk: {
-        model?: string
-        usage?: ProviderUsage | null
-        choices?: Array<{
-          finish_reason?: string | null
-          delta?: {
-            content?: string | null
-            tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
-          }
-        }>
-      }
-      try {
-        chunk = JSON.parse(data)
-      } catch {
-        throw new ModelDriverError('model stream contained invalid JSON', { kind: 'provider', finishReasons: accumulator.finishReasons })
-      }
-      if (chunk.model) accumulator.model = chunk.model
-      if (chunk.usage) accumulator.usage = chunk.usage
-      const choice = chunk.choices?.[0]
-      if (!choice) continue
-      if (choice.finish_reason) accumulator.finishReasons.push(choice.finish_reason)
-      const content = choice.delta?.content
-      if (typeof content === 'string' && content.length > 0) {
-        accumulator.text += content
-        onTextDelta?.(content)
-      }
-      for (const toolCall of choice.delta?.tool_calls ?? []) {
-        const index = toolCall.index ?? 0
-        let entry = accumulator.toolCalls.get(index)
-        if (!entry) {
-          entry = { id: '', name: '', arguments: '' }
-          accumulator.toolCalls.set(index, entry)
+    try {
+      for await (const data of sseDataEvents(response.body)) {
+        if (data === '[DONE]') break
+        let chunk: {
+          model?: string
+          usage?: ProviderUsage | null
+          choices?: Array<{
+            finish_reason?: string | null
+            delta?: {
+              content?: string | null
+              tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
+            }
+          }>
         }
-        if (toolCall.id) entry.id = toolCall.id
-        if (toolCall.function?.name) entry.name += toolCall.function.name
-        if (toolCall.function?.arguments) entry.arguments += toolCall.function.arguments
+        try {
+          chunk = JSON.parse(data)
+        } catch {
+          throw new ModelDriverError('model stream contained invalid JSON', { kind: 'provider', finishReasons: accumulator.finishReasons })
+        }
+        if (chunk.model) accumulator.model = chunk.model
+        if (chunk.usage) accumulator.usage = chunk.usage
+        const choice = chunk.choices?.[0]
+        if (!choice) continue
+        if (choice.finish_reason) accumulator.finishReasons.push(choice.finish_reason)
+        const content = choice.delta?.content
+        if (typeof content === 'string' && content.length > 0) {
+          accumulator.text += content
+          onTextDelta?.(content)
+        }
+        for (const toolCall of choice.delta?.tool_calls ?? []) {
+          const index = toolCall.index ?? 0
+          let entry = accumulator.toolCalls.get(index)
+          if (!entry) {
+            entry = { id: '', name: '', arguments: '' }
+            accumulator.toolCalls.set(index, entry)
+          }
+          if (toolCall.id) entry.id = toolCall.id
+          if (toolCall.function?.name) entry.name += toolCall.function.name
+          if (toolCall.function?.arguments) entry.arguments += toolCall.function.arguments
+        }
       }
+    } catch (error) {
+      const usage = this.usageOf(accumulator)
+      if (!usage.available) throw error
+      const diagnostics = error instanceof ModelDriverError ? error.diagnostics
+        : { kind: 'provider' as const, category: modelFailure(error).category, finishReasons: accumulator.finishReasons }
+      throw new ModelDriverError(error instanceof ModelDriverError ? error.message : 'model stream failed',
+        { ...diagnostics, category: diagnostics.category ?? modelFailure(error).category,
+          usage: diagnostics.usage?.available ? diagnostics.usage : usage }, { cause: error })
     }
     return accumulator
   }
@@ -446,6 +470,31 @@ export class OpenAIChatDriver implements ModelDriver {
   structured(request: StructuredCallRequest): Promise<StructuredCallResult> {
     return this.guarded(() => this.structuredOnce(request), request.signal)
   }
+
+  private async auxiliaryPayload(response: Response): Promise<{
+    content: string | null | undefined
+    model: string
+    diagnostics: { finishReasons: string[]; usage: ModelUsage }
+  }> {
+    if (this.options.auxiliaryStreaming) {
+      // Auxiliary content is internal: never pass a preview callback or expose reasoning fields.
+      const accumulator = await this.consumeStream(response)
+      const diagnostics = { finishReasons: accumulator.finishReasons, usage: this.usageOf(accumulator) }
+      if (!diagnostics.finishReasons.length || diagnostics.finishReasons.some(reason => reason !== 'stop') || accumulator.toolCalls.size) {
+        throw new ModelDriverError('model response did not finish normally', diagnostics)
+      }
+      return { content: accumulator.text, model: accumulator.model ?? this.modelId, diagnostics }
+    }
+    const payload = await responseJson(response) as {
+      model?: string
+      usage?: ProviderUsage
+      choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>
+    }
+    const diagnostics = { finishReasons: [payload.choices?.[0]?.finish_reason ?? 'missing'], usage: this.usageOf({ usage: payload.usage ?? {} }) }
+    if (payload.choices?.[0]?.finish_reason !== 'stop') throw new ModelDriverError('model response did not finish normally', diagnostics)
+    return { content: payload.choices?.[0]?.message?.content, model: payload.model ?? this.modelId, diagnostics }
+  }
+
   private async structuredOnce(request: StructuredCallRequest): Promise<StructuredCallResult> {
     if (!this.profile.jsonObject) throw new Error('selected model does not support JSON object output')
     const response = await this.request({
@@ -455,16 +504,10 @@ export class OpenAIChatDriver implements ModelDriver {
         { role: 'user', content: JSON.stringify(request.input) },
       ],
       response_format: { type: 'json_object' },
-      stream: false,
+      stream: this.options.auxiliaryStreaming ?? false,
+      ...(this.options.auxiliaryStreaming ? { stream_options: { include_usage: true } } : {}),
     }, request.signal)
-    const payload = await responseJson(response) as {
-      model?: string
-      usage?: ProviderUsage
-      choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>
-    }
-    const diagnostics = { finishReasons: [payload.choices?.[0]?.finish_reason ?? 'missing'], usage: this.usageOf({ usage: payload.usage ?? {} }) }
-    if (payload.choices?.[0]?.finish_reason !== 'stop') throw new ModelDriverError('model response did not finish normally', diagnostics)
-    const content = payload.choices?.[0]?.message?.content
+    const { content, model, diagnostics } = await this.auxiliaryPayload(response)
     if (typeof content !== 'string' || !content.trim()) {
       throw new ModelDriverError('structured call returned no content', { ...diagnostics, finishReasons: [] })
     }
@@ -474,7 +517,7 @@ export class OpenAIChatDriver implements ModelDriver {
     } catch {
       throw new ModelDriverError('structured call returned invalid JSON', { ...diagnostics, finishReasons: [] })
     }
-    return { value, model: payload.model ?? this.modelId, usage: diagnostics.usage }
+    return { value, model, usage: diagnostics.usage }
   }
 
   compact(request: CompactionRequest): Promise<CompactionResult> {
@@ -484,8 +527,8 @@ export class OpenAIChatDriver implements ModelDriver {
     if (!this.profile.jsonObject) throw new Error('selected model does not support JSON object output')
     const response = await this.request({
       model: this.modelId,
-      ...(this.options.maxThinkingTokens !== undefined || this.options.reasoningEffort
-        ? { enable_thinking: false, thinking_budget: undefined, reasoning_effort: undefined } : {}),
+      ...(this.options.maxThinkingTokens !== undefined || this.options.reasoningEffort || this.options.compactionReasoningEffort
+        ? { enable_thinking: false, thinking_budget: undefined, reasoning_effort: this.options.compactionReasoningEffort } : {}),
       messages: [
         {
           role: 'system',
@@ -494,19 +537,13 @@ export class OpenAIChatDriver implements ModelDriver {
         { role: 'user', content: JSON.stringify(request.items) },
       ],
       response_format: { type: 'json_object' },
-      stream: false,
+      stream: this.options.auxiliaryStreaming ?? false,
+      ...(this.options.auxiliaryStreaming ? { stream_options: { include_usage: true } } : {}),
     }, request.signal)
-    const payload = await responseJson(response) as {
-      model?: string
-      usage?: ProviderUsage
-      choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>
-    }
-    const diagnostics = { finishReasons: [payload.choices?.[0]?.finish_reason ?? 'missing'], usage: this.usageOf({ usage: payload.usage ?? {} }) }
-    if (payload.choices?.[0]?.finish_reason !== 'stop') throw new ModelDriverError('model response did not finish normally', diagnostics)
-    const content = payload.choices?.[0]?.message?.content
+    const { content, model, diagnostics } = await this.auxiliaryPayload(response)
     if (typeof content !== 'string' || !content.trim()) {
       throw new ModelDriverError('compaction returned no summary', { ...diagnostics, finishReasons: [] })
     }
-    return { value: content.trim(), model: payload.model ?? this.modelId, usage: diagnostics.usage }
+    return { value: content.trim(), model, usage: diagnostics.usage }
   }
 }
