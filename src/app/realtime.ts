@@ -6,7 +6,7 @@ import { ControlPlaneError, type LeaseProof } from '../control-plane/service.js'
 import { authorizeConversationWork } from '../collaboration/access.js'
 import { isPreviewFrame, type PreviewFrame, type PreviewSnapshot } from '../protocol/preview.js'
 import type { RunEvent, WorkItem } from '../protocol/types.js'
-import { abortable } from '../deadline.js'
+import { abortable, scopedSignal } from '../deadline.js'
 import { candidateHash } from '../outcome/verification.js'
 
 export type PreviewUpdate = PreviewSnapshot & { kind: 'snapshot' }
@@ -43,8 +43,9 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
   let subscribers = 0, uploads = 0
   const owners = new Map<string, { fence: number; token: string }>()
   const ephemeral = async <T>(run: (signal: AbortSignal) => Promise<T>, fallback: T, parent: AbortSignal = shutdown): Promise<T> => {
-    const signal = AbortSignal.any([parent, shutdown, AbortSignal.timeout(250)])
+    const scope = scopedSignal([parent, shutdown], 250), signal = scope.signal
     try { return await abortable(run(signal), signal) } catch { return fallback }
+    finally { scope.dispose() }
   }
   const entryFor = (id: string): Entry => {
     let entry = entries.get(id)
@@ -131,12 +132,13 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
     const entry = entryFor(identity.runId)
     subscribers++
     entry.readers++
-    const stopped = new AbortController(), signal = AbortSignal.any([shutdown, stopped.signal, ...input.signal ? [input.signal] : []])
+    const stopped = new AbortController(), scope = scopedSignal([shutdown, stopped.signal, input.signal]), signal = scope.signal
     let released = false
     const cleanup = () => {
       if (released) return
       released = true; subscribers--; entry.readers--
       signal.removeEventListener('abort', cleanup)
+      scope.dispose()
     }
     signal.addEventListener('abort', cleanup, { once: true })
     if (signal.aborted) cleanup()
@@ -189,10 +191,11 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
           if (rows.length === 100) continue
           if (!['queued','leased','waiting'].includes(state.run.status)) return
           const waiting = new AbortController()
+          const waitScope = scopedSignal([signal, waiting.signal])
           try {
-            await Promise.race([changed.wait(durableVersion, 750, AbortSignal.any([signal, waiting.signal])),
-              entry.wake.wait(previewVersion, 750, AbortSignal.any([signal, waiting.signal]))])
-          } finally { waiting.abort() }
+            await Promise.race([changed.wait(durableVersion, 750, waitScope.signal),
+              entry.wake.wait(previewVersion, 750, waitScope.signal)])
+          } finally { waiting.abort(); waitScope.dispose() }
           yield null // SSE keepalive; never counted as body TTFT.
         }
       } finally { unsubscribe?.(); cleanup() }
@@ -206,9 +209,9 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
           const item = next.value
           const text = item ? `${item.type === 'event' ? `id: ${item.event.seq}\n` : ''}event: ${item.type}\ndata: ${JSON.stringify(item)}\n\n` : ': keepalive\n\n'
           controller.enqueue(new TextEncoder().encode(text))
-        } catch (error) { cleanup(); stopped.abort(); controller.error(error); await iterator.return(undefined) }
+        } catch (error) { stopped.abort(); cleanup(); controller.error(error); await iterator.return(undefined) }
       },
-      async cancel() { cleanup(); stopped.abort(); await iterator.return(undefined) },
+      async cancel() { stopped.abort(); cleanup(); await iterator.return(undefined) },
     }, { highWaterMark: 1 })
     return new Response(body, { headers: { 'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no' } })

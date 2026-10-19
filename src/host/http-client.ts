@@ -9,7 +9,7 @@
  */
 import { AGENT_OS_PROTOCOL_VERSION } from '../protocol/constants.js'
 import { randomUUID } from 'node:crypto'
-import { abortable } from '../deadline.js'
+import { abortable, scopedSignal } from '../deadline.js'
 import { previewRequestBody } from './preview-stream.js'
 import type { PreviewFrame } from '../protocol/preview.js'
 import type { WorkspaceEntry, WorkspaceState } from '../protocol/workspace.js'
@@ -95,9 +95,15 @@ export class HttpHostClient implements HostPort {
 
   private async request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal,
     binary?: { bytes: Uint8Array; headers: Record<string, string> }): Promise<T> {
-    const encoded = binary ? Buffer.from(binary.bytes) : body === undefined ? undefined : JSON.stringify(body)
     const workspaceCall = /\/(workspace(?:-bytes)?|checkpoint)$/.test(path)
-    signal = AbortSignal.any([AbortSignal.timeout(workspaceCall ? 300_000 : this.timeoutMs),...signal ? [signal] : []])
+    const scope = scopedSignal([signal], workspaceCall ? 300_000 : this.timeoutMs)
+    try { return await this.requestBounded<T>(method, path, body, scope.signal, binary) }
+    finally { scope.dispose() }
+  }
+
+  private async requestBounded<T>(method: string, path: string, body: unknown, signal: AbortSignal,
+    binary?: { bytes: Uint8Array; headers: Record<string, string> }): Promise<T> {
+    const encoded = binary ? Buffer.from(binary.bytes) : body === undefined ? undefined : JSON.stringify(body)
     let lastError: unknown
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
       signal?.throwIfAborted()

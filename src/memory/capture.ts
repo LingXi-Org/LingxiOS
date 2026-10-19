@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { withTransaction, workItemFromRow, type SqlPool } from '../control-plane/pg-store.js'
 import { deadlinePool } from '../control-plane/deadline-pool.js'
+import { scopedSignal } from '../deadline.js'
 import { authorizedScopes, identityOf, sameScope, type MemoryOptions } from './access.js'
 import { captureMemoryEvidence, prepareMemoryEvidence } from './evidence.js'
 import type { AssistantMessage } from '../protocol/types.js'
@@ -17,7 +18,7 @@ export async function drainMemoryCapture(pool: SqlPool, options: MemoryOptions, 
       FROM ready WHERE q.result_id=ready.result_id RETURNING q.result_id`, [token])).rows[0]
     if (!claim) return
     const resultId = String(claim['result_id'])
-    const signal = AbortSignal.any([AbortSignal.timeout(30_000), ...external ? [external] : []])
+    const scope = scopedSignal([external], 30_000), signal = scope.signal
     const db = deadlinePool(pool, signal)
     try {
       const source = (await db.query(`SELECT w.*,r.message FROM lingxios.agent_work_items w
@@ -51,6 +52,6 @@ export async function drainMemoryCapture(pool: SqlPool, options: MemoryOptions, 
         available_at=NOW()+INTERVAL '5 seconds'*power(2,attempts) WHERE result_id=$1 AND claim_token=$2`, [resultId, token])
       if (external?.aborted) return
       throw error
-    }
+    } finally { scope.dispose() }
   }
 }
