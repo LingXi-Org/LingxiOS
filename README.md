@@ -11,7 +11,7 @@ The package has four public entries: `@lyyzka/lingxios`, `@lyyzka/lingxios/worke
 ## Install
 
 ```sh
-npm install @lyyzka/lingxios@3.5.1
+npm install @lyyzka/lingxios@3.5.4
 ```
 
 Configure the GitHub Packages registry for the `@lyyzka` scope before installing:
@@ -67,6 +67,8 @@ await control.stop()
 ```
 
 Creating a control plane never claims work. A Worker receives the model, Kernel, runtime policy, and optional native processors. Web/API processes expose authenticated ingress and control operations; Worker processes alone execute tasks.
+
+See [reasoning effort and optional auxiliary streaming](docs/reasoning-effort-contract.md) for explicit provider parameters, compatible defaults, and deterministic HTTP timing tests.
 
 ## Native tools and recovery
 
