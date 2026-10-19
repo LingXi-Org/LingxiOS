@@ -1324,6 +1324,11 @@ export class AgentRuntime {
             : boundedDirectToolOutput(receipts[0]!, undefined, { recovered: true }),
         })
       }
+      if (receipts?.some(receipt => receipt.result.code === 'read_wait_contract'
+        || receipt.result.directive?.type === 'defer' && context.tools?.some(tool => tool.action === receipt.action && tool.effect === 'read'))) {
+        await this.hostFor(work).saveSession(work, session)
+        throw new AgentOSError('read_wait_contract', 'Read tools cannot request a terminal wait; reconcile the recovered receipt')
+      }
       if (step || call.name !== 'ipython') for (const receipt of receipts ?? []) {
         if (session.request?.evidence) {
           session.request.evidence = appendReadEvidence(session.request.evidence, receipt.idempotencyKey, receipt.result, receipt.action)

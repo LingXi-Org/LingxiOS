@@ -540,7 +540,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       signal.throwIfAborted()
       await executeDecidedApprovals(db, service, work, signal)
       signal.throwIfAborted()
-      return recoverWait(db, service, work, signal)
+      return recoverWait(db, service, work, signal, integration.tools)
     })().finally(() => recoveries.delete(key))
     recoveries.set(key, recovery)
     return recovery

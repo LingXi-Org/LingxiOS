@@ -6,16 +6,25 @@ import { sessionKeyOf, type HostActionResult, type WorkItem } from '../protocol/
 import { RUN_SEQUENCE_SPAN } from '../protocol/constants.js'
 import { boundedToolOutput } from '../runtime/tool.js'
 import { isDeepStrictEqual } from 'node:util'
+import type { ToolDefinition } from '../tools/catalog.js'
 import type { GoalOutcome } from '../protocol/outcome.js'
 
 /** Durable terminal receipts recover a wait without rerunning Python or any business action. */
-export async function recoverWait(database: SqlPool, service: ControlPlaneService, work: WorkItem, signal?: AbortSignal): Promise<boolean> {
+export async function recoverWait(database: SqlPool, service: ControlPlaneService, work: WorkItem, signal?: AbortSignal, tools: readonly Pick<ToolDefinition, 'action' | 'effect'>[] = []): Promise<boolean> {
   signal?.throwIfAborted()
   const session = await service.getSession(work, sessionKeyOf(work))
   if (!session?.request || session.request.workId !== work.id) return false
   const current = await service.heartbeat(work)
   if (!current.ok || current.cancelRequested || !isDeepStrictEqual(current.steer ?? [], session.request.revisions)) return false
   const requestVersion = session.request.revisions.length + 1
+  const blockRecovery = async (gap: string): Promise<boolean> => {
+    signal?.throwIfAborted()
+    const goalOutcome: GoalOutcome = { status: 'blocked', verification: 'inconclusive', requestVersion, gaps: [gap] }
+    await service.recordEvent(work, { runId: work.id, seq: (work.fence - 1) * RUN_SEQUENCE_SPAN + 1,
+      kind: 'run.completed', stage: 'completed', visibility: 'user', data: { recovered: true, goalOutcome } })
+    await service.complete(work, { status: 'completed', goalOutcome })
+    return true
+  }
   // Only the most recent model batch can still be waiting. Older child waits
   // may already have resumed within the same request version.
   const lastCallIndex = session.history.findLastIndex(item => 'type' in item && item.type === 'function_call')
@@ -55,12 +64,7 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
     && (row['result'] as HostActionResult | null)?.directive?.type === 'defer')
   signal?.throwIfAborted()
   if ([...counts.values()].some(count => count > 100) || continuedAfterWait) {
-    const goalOutcome: GoalOutcome = { status: 'blocked', verification: 'inconclusive', requestVersion,
-      gaps: [continuedAfterWait ? 'Actions followed a terminal wait; reconcile before continuing' : 'Action recovery exceeds the bounded receipt limit'] }
-    await service.recordEvent(work, { runId: work.id, seq: (work.fence - 1) * RUN_SEQUENCE_SPAN + 1,
-      kind: 'run.completed', stage: 'completed', visibility: 'user', data: { recovered: true, goalOutcome } })
-    await service.complete(work, { status: 'completed', goalOutcome })
-    return true
+    return blockRecovery(continuedAfterWait ? 'Actions followed a terminal wait; reconcile before continuing' : 'Action recovery exceeds the bounded receipt limit')
   }
   // The executor decides whether an interrupted read, transaction or idempotent action can resume.
   if (rows.some(row => !row['result'])) return false
@@ -72,6 +76,12 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
     indices.set(receipt.action.cellId, index + 1)
   }
   const last = receipts.at(-1)!
+  // Historical receipts predate the read-wait contract. Recheck the current
+  // registered effect before accepting a terminal candidate during upgrade.
+  if (last.result.directive?.type === 'defer') {
+    const tool = tools.find(tool => tool.action === last.action.action)
+    if (!tool || tool.effect === 'read') return blockRecovery('Recovered wait has a read or unavailable tool contract; reconcile before continuing')
+  }
   const question = inputWaitQuestion(last.result)
   let goalOutcome: GoalOutcome
   if (!last.result.ok && last.result.executionState !== 'unknown' && last.result.approval?.status === 'PENDING'

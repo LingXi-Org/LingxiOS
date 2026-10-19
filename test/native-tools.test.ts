@@ -154,6 +154,7 @@ it('validates before intent, rolls back effects with receipts, and recovers a lo
       const returned = { ok: true, executionState: 'succeeded' as const, value: { cardId: 'already-created' },
         directive: { type: 'defer' as const, reason, data: { question: 'Which city?', taskRef: 'child' } } }
       tool.execute = async () => returned
+      tool.reconcile = async () => returned
       const invalid = action(`invalid-read-wait-${reason}`, { title: 'Invalid wait' })
       const result = await service.executeAction(resumed, invalid)
       assert.equal(result.code, 'read_wait_contract')

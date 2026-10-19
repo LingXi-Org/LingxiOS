@@ -817,7 +817,7 @@ it('fails before model or side effects when the original request cannot be captu
   assert.equal(completion?.goalOutcome?.verification, 'inconclusive')
 })
 
-for (const recovery of ['step', 'cell'] as const) for (const name of ['ipython', 'chat__ask']) it(`parks recovered native input before later calls (${name}, ${recovery})`, async () => {
+for (const effect of ['uncertain', 'read'] as const) for (const recovery of ['step', 'cell'] as const) for (const name of ['ipython', 'chat__ask']) it(`parks only valid recovered native input before later calls (${name}, ${recovery}, ${effect})`, async () => {
   const work: TurnContext['work'] = { id: 'native-wait', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 2, homeEpoch: 1, leaseToken: 'token' }
   const result: HostActionResult = { ok: true, executionState: 'succeeded', directive: { type: 'defer', reason: 'user', data: { question: 'Which city?' } } }
   const receipts = [{ action: 'chat.ask', idempotencyKey: '["native-wait","ask",0]', result }]
@@ -828,7 +828,8 @@ for (const recovery of ['step', 'cell'] as const) for (const name of ['ipython',
   let waited: unknown, completed: unknown, modelCalls = 0, toolCalls = 0
   const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
     loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: ['chat'], messages: [],
-      tools: [{ name: 'chat__write', action: 'chat.write', description: 'Write', effect: 'transaction', approval: false, parameters: { type: 'object', properties: {}, additionalProperties: false } }] }),
+      tools: [{ name: 'chat__ask', action: 'chat.ask', description: 'Ask', effect, approval: false, parameters: { type: 'object', properties: {}, additionalProperties: false } },
+        { name: 'chat__write', action: 'chat.write', description: 'Write', effect: 'transaction', approval: false, parameters: { type: 'object', properties: {}, additionalProperties: false } }] }),
     loadSession: async () => session, saveSession: async () => {}, emitEvent: async () => {},
     recoverStep: async () => recovery === 'step' ? { output: boundedToolOutput({ receipts }), artifacts: [] } : null,
     recoverCell: async (_work, cell) => cell === 'ask' ? receipts : null,
@@ -837,6 +838,14 @@ for (const recovery of ['step', 'cell'] as const) for (const name of ['ipython',
   const unavailable = async (): Promise<never> => { modelCalls++; throw new Error('must not call model after input wait') }
   await new AgentRuntime(host, { run: unavailable, structured: unavailable, compact: unavailable },
     { execute: async () => { throw new Error('must not rerun Python') } }).runWork(work)
+  if (effect === 'read') {
+    assert.equal(waited, undefined)
+    assert.equal((completed as WorkCompletion)?.status, 'failed')
+    assert.equal(modelCalls, 0)
+    assert.equal(toolCalls, 0)
+    assert.doesNotMatch(JSON.stringify(session.history), /not_started/)
+    return
+  }
   assert.deepEqual(waited, { status: 'awaiting_input', verification: 'not_run', requestVersion: 1, question: 'Which city?' })
   assert.equal(completed, undefined)
   assert.equal(modelCalls, 0)

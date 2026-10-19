@@ -64,3 +64,9 @@ cell in model order, including waits beyond the first 100 combined receipts.
 A receipt after a terminal wait remains a reconciliation conflict, including
 when it belongs to a later cell. Missing receipts and non-contiguous indices
 remain ineligible for terminal recovery.
+
+Recovery also rechecks the current registered effect before accepting a
+historical terminal wait. Read tools and removed/unknown tools block for
+reconciliation; non-read tools remain eligible under the existing receipt and
+request/fence validation. Custom HostPort step/cell recovery enforces the same
+read-wait rejection before parking.

@@ -19,6 +19,8 @@ it('bounds recovery per cell and checks terminal waits across the complete model
     const ledger = new PgActionLedger(pool)
     for (const scenario of [
       { id: 'normal-101', counts: [50, 51], waitAt: -1, expected: undefined },
+      { id: 'historical-read-wait', counts: [100, 100], waitAt: 199, readTool: true, expected: 'blocked' },
+      { id: 'removed-wait-tool', counts: [100, 100], waitAt: 199, unknownTool: true, expected: 'blocked' },
       { id: 'tail-200', counts: [100, 100], waitAt: 199, expected: 'awaiting_input' },
       { id: 'wait-before-next-cell', counts: [50, 51], waitAt: 49, expected: 'blocked' },
       { id: 'wait-after-old-page', counts: [100, 100], waitAt: 150, expected: 'blocked' },
@@ -47,7 +49,7 @@ it('bounds recovery per cell and checks terminal waits across the complete model
         complete: async (_work: unknown, result: { goalOutcome: { status: string } }) => { outcome = result.goalOutcome },
         waitWork: async (_work: unknown, result: { status: string }) => { outcome = result },
       } as unknown as ControlPlaneService
-      assert.equal(await recoverWait(pool, service, work), scenario.expected !== undefined, scenario.id)
+      assert.equal(await recoverWait(pool, service, work, undefined, scenario.unknownTool ? [] : [{ action: 'chat.ask', effect: scenario.readTool ? 'read' : 'uncertain' }]), scenario.expected !== undefined, scenario.id)
       assert.equal(outcome?.status, scenario.expected, scenario.id)
       if (scenario.expected === 'awaiting_input') assert.equal(history.filter(item => 'type' in item && item.type === 'function_call_output').length, 2)
     }
