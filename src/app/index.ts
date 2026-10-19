@@ -2,7 +2,7 @@ import { DEFAULT_MODEL_BUDGET } from '../model/execution.js'
 import { readTerminalFeedback, terminalFeedback } from './terminal.js'
 import { classifyToolFailure } from '../tools/failure.js'
 import { snapshotMemories } from '../memory/context.js'
-import { abortable } from '../deadline.js'
+import { abortable, scopedSignal } from '../deadline.js'
 import type { VerificationRecord } from '../outcome/verification.js'
 import { flushOutbox, drainOutboxes } from '../control-plane/outbox.js'
 import { Wakeup, listenWakeups } from '../control-plane/wakeup.js'
@@ -191,8 +191,11 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   const runWakeup = new Wakeup()
   const waitForWork: NonNullable<HostPort['waitForWork']> = async (cursor, timeoutMs, signal) => {
     const version = workWakeup.version
-    if (cursor === `${wakeEpoch}:${version}`) await workWakeup.wait(version, Math.min(timeoutMs, 25_000),
-      AbortSignal.any([shutdown.signal, ...signal ? [signal] : []]))
+    if (cursor === `${wakeEpoch}:${version}`) {
+      const scope = scopedSignal([shutdown.signal, signal])
+      try { await workWakeup.wait(version, Math.min(timeoutMs, 25_000), scope.signal) }
+      finally { scope.dispose() }
+    }
     return `${wakeEpoch}:${workWakeup.version}`
   }
   const metrics = options.metrics ?? new MetricsRegistry()
