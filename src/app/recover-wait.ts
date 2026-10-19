@@ -1,3 +1,4 @@
+import { PgStepStore } from '../control-plane/steps.js'
 import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from '../runtime/wait.js'
 import { inputWaitQuestion } from '../protocol/input-wait.js'
@@ -106,10 +107,20 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
     }
   } else return false
   signal?.throwIfAborted()
+  const steps = new PgStepStore(database)
   for (const call of calls) {
     const callIndex = session.history.lastIndexOf(call)
-    const recovered = receipts.filter(receipt => receipt.action.cellId === (call.stepId ?? call.callId))
-    if (recovered.length && !session.history.slice(callIndex + 1).some(item => 'type' in item && item.type === 'function_call_output' && item.callId === call.callId)) {
+    if (session.history.slice(callIndex + 1).some(item => 'type' in item && item.type === 'function_call_output' && item.callId === call.callId)) continue
+    const cellId = call.stepId ?? call.callId
+    const recovered = receipts.filter(receipt => receipt.action.cellId === cellId)
+    // Pure Python can complete without any host-action receipt. Its saved output
+    // (including local artifacts) must survive closing the unstarted remainder.
+    const step = call.name === 'ipython' && !recovered.length ? await steps.get(work.id, cellId, requestVersion) : null
+    if (step?.kind === 'ipython' && step.output !== undefined) {
+      session.history.push({ type: 'function_call_output', callId: call.callId, output: step.output })
+      continue
+    }
+    if (recovered.length) {
       session.history.push({ type: 'function_call_output', callId: call.callId, output: boundedToolOutput({
         recovered: true, localExecutionOutput: 'not_recovered',
         ...(goalOutcome.status === 'awaiting_approval' ? { approvalPending: goalOutcome.approvalId } : {}),

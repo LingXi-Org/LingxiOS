@@ -3,6 +3,7 @@ import { it } from 'node:test'
 import { readFile } from 'node:fs/promises'
 import { PGlite } from '@electric-sql/pglite'
 import { recoverWait } from '../src/app/recover-wait.js'
+import { PgStepStore } from '../src/control-plane/steps.js'
 import { PgActionLedger, type SqlPool } from '../src/control-plane/pg-store.js'
 import type { ControlPlaneService } from '../src/control-plane/service.js'
 import type { SessionRecord, WorkItem } from '../src/protocol/types.js'
@@ -59,5 +60,56 @@ it('bounds recovery per cell and checks terminal waits across the complete model
       assert.equal(outcome?.status, scenario.expected, scenario.id)
       if (['awaiting_input', 'delegated'].includes(scenario.expected ?? '')) assert.equal(history.filter(item => 'type' in item && item.type === 'function_call_output').length, scenario.counts.length)
     }
+  } finally { await db.close() }
+})
+
+
+it('restores completed local Python output and artifacts before closing unstarted siblings at an input wait', async () => {
+  const db = new PGlite()
+  const pool: SqlPool = { query: async (sql, args) => {
+    const result = await db.query<Record<string, unknown>>(sql, args)
+    return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length }
+  }, connect: async () => ({ query: pool.query, release() {} }) }
+  try {
+    await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
+    const work: WorkItem = { id: 'local-python', tenantId: 't', agentId: 'a', sessionId: 's', principalId: 'u',
+      kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 2, homeEpoch: 1, leaseToken: 'lease' }
+    await db.exec(`INSERT INTO lingxios.agent_work_items
+      (id,tenant_id,agent_id,session_id,principal_id,kind,lane,trigger_ref,status,fence,lease_token_hash,lease_expires_at)
+      VALUES ('local-python','t','a','s','u','turn','interactive','m','leased',2,'test-token',NOW()+INTERVAL '5 minutes')`)
+    const calls = ['local', 'ask', 'later'].map(callId => ({ type: 'function_call' as const, name: 'ipython', callId,
+      stepId: `step-${callId}`, arguments: JSON.stringify({ code: callId === 'local' ? 'print(42)' : callId }) }))
+    const session = { history: [...calls], request: { workId: work.id, revisions: [] } } as unknown as SessionRecord
+    const artifact = { id: 'answer', path: 'answer.txt', name: 'answer.txt', mime: 'text/plain', size: 2,
+      sha256: 'a'.repeat(64) }
+    const output = JSON.stringify({ stdout: '42\n', stderr: '', result: 42, truncated: false, artifacts: [artifact], receipts: [] })
+    const steps = new PgStepStore(pool)
+    await steps.save({ workId: work.id, fence: 2, leaseTokenHash: 'test-token' }, { id: 'step-local', requestVersion: 1,
+      kind: 'ipython', input: { callId: 'local', code: 'print(42)' }, output, artifacts: [artifact] })
+    const ledger = new PgActionLedger(pool)
+    const idempotencyKey = JSON.stringify([work.id, 'step-ask', 0])
+    const action = { runId: work.id, cellId: 'step-ask', callIndex: 0, idempotencyKey, action: 'task.ask', args: { question: 'Which city?' } }
+    await ledger.reserve(idempotencyKey, idempotencyKey, { workId: work.id, tenantId: 't', agentId: 'a', sessionId: 's',
+      principalId: 'u', threadId: null, requestVersion: 1, action })
+    await ledger.record(idempotencyKey, userInputWait('Which city?'))
+    assert.equal((await db.query("SELECT * FROM lingxios.agent_action_intents WHERE intent->'action'->>'cellId'=$1", ['step-local'])).rows.length, 0)
+    let waited: unknown
+    const service = { getSession: async () => session, heartbeat: async () => ({ ok: true, steer: [] }),
+      recordEvent: async () => {}, saveSession: async () => {}, complete: async () => assert.fail('valid input wait must not complete'),
+      waitWork: async (_work: unknown, outcome: unknown) => { waited = outcome },
+    } as unknown as ControlPlaneService
+    assert.equal(await recoverWait(pool, service, work, undefined, TASK_TOOLS), true)
+    assert.equal((waited as { status: string }).status, 'awaiting_input')
+    const outputs = () => session.history.filter((item): item is Extract<SessionRecord['history'][number], { type: 'function_call_output' }> =>
+      'type' in item && item.type === 'function_call_output')
+    assert.equal(outputs().find(item => item.callId === 'local')?.output, output, 'durable local output must not become not_started')
+    assert.deepEqual(JSON.parse(outputs().find(item => item.callId === 'local')!.output).artifacts, [artifact])
+    assert.equal(JSON.parse(outputs().find(item => item.callId === 'later')!.output).executionState, 'not_started')
+    assert.deepEqual((await steps.get(work.id, 'step-local', 1))?.artifacts, [artifact])
+    assert.equal(outputs().length, 3)
+    // Repeated recovery keeps the already persisted output rather than duplicating it.
+    assert.equal(await recoverWait(pool, service, work, undefined, TASK_TOOLS), true)
+    assert.equal(outputs().length, 3)
+    assert.equal(outputs().find(item => item.callId === 'local')?.output, output)
   } finally { await db.close() }
 })
