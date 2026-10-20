@@ -93,10 +93,12 @@ invalid changes into accepted empty changes. Test the partition and successful
 new fact plus unchanged protected value before the implementation; retain the
 existing rejection, version, epoch and coverage tests.
 
-The protected-reference candidate's first page validates its proposal, receives
-successful provider output for verification, then fails before apply. This
-localizes a second defect to the verifier response shape. A malformed verifier
-must never authorize writing. It may consume the same single repair allowance
+An early inference from the protected-reference run's event timing suspected
+a malformed verifier. The later action ledger disproves that localization: an
+approved apply with a strategy candidate rolled back on a partial source page.
+See evolution-page-failure-model.md. The verifier-shape hardening below has
+separate synthetic evidence and is not the proven cause of that live failure.
+A malformed verifier must never authorize writing. It may consume the same single repair allowance
 already reserved for this page and request a fresh independent, well-formed
 verdict. Do not retry transport/cancellation or an already-used allowance; a
 second malformed verdict remains pending. Keep the four-call maximum. Record

@@ -1,9 +1,9 @@
 # Issue 216: deletion confirmation and extraction completeness
 
 Based on OS `b8bbef2762c782c75079c3f81113296e95d17bb1`, independently
-branched as `codex/issue216-confirmation-completeness`. Runtime implementation
-is frozen at `47e1a847ec0d42d6e664625d6444ce3a1971cf5d`; subsequent changes
-are tests/evidence. Product qualification uses PR224's
+branched as `codex/issue216-confirmation-completeness`. The initial deletion/source-completeness implementation was
+`47e1a847ec0d42d6e664625d6444ce3a1971cf5d`; resumed native changes and their
+qualification are recorded below. Product qualification uses PR224's
 `cef2349c71f576ca53e76a1b12eacfdec5f75eba`. The package is a local source
 candidate (package-proof.json), not a published release.
 
@@ -76,7 +76,7 @@ This fix does not retroactively relabel old terminal rows from an earlier binary
   auxiliary path; it does not erase or count that foreground run as passed.
   Two earlier harness configuration failures made zero provider requests
   (`live-results.json`, `invalid-probe-configuration.json`).
-- Full product live-continuity **fails** (`product-live.tap`, `product-live-counts.json`): the learner source remains pending at 5/7 segments, one synthesis job has two failed attempts, and the run ends with Abort timeout after about 207 seconds. All 41 model calls have measured usage (7 embedding calls; 463,940 costMicros total). The public terminal category is execution_failed; the sanitized record does not establish the underlying cause. Final background inheritance, revision and forget-index assertions were not reached. No extra retry or budget increase was used to obtain a green result. No new browser screenshots: this changes native backend
+- Initial full product live-continuity **fails** (`product-live.tap`, `product-live-counts.json`): the learner source remains pending at 5/7 segments, one synthesis job has two failed attempts, and the run ends with Abort timeout after about 207 seconds. All 41 model calls have measured usage (7 embedding calls; 463,940 costMicros total). The public terminal category is execution_failed; the sanitized record does not establish the underlying cause. Final background inheritance, revision and forget-index assertions were not reached. No extra retry or budget increase was used to obtain a green result. No new browser screenshots: this changes native backend
   behavior; PR35 retains the existing unchanged UI checks.
 
 The initial boundary probe's `deletion-boundaries.json` is also retained: its
@@ -124,5 +124,61 @@ owning regression. The original 207-second Abort still lacks operation ownership
 `diagnostic-package-proof.json` identifies the local candidate used for the
 retained-page probe. It was packed locally, not published. `retained-offline.json`
 and `retained-page.json` use `probeCompleted` to distinguish a completed
-investigation from feature acceptance, which remains false. Remote handoff is
-blocked by GitHub HTTP 401; no credentials or security settings were changed.
+investigation from feature acceptance, which remains false. Remote handoff was initially blocked by GitHub HTTP 401. The existing channel
+was subsequently restored and verified as `lyyzka`, with repository push access;
+normal pushes resumed without changing authentication or security settings.
+
+
+## Resumed final source candidate
+
+Final implementation: `2738508c90386d94c512d08519855bfc51c15674`.
+Protected explicit/locked records are read-only model context, while the
+original transactional snapshot remains authoritative. Malformed review shape
+can consume only the existing single repair allowance and still requires a new
+independent complete/approved verdict. This latter hardening is supported by a
+synthetic red/green test, not claimed as the cause of the real apply failure.
+
+The real failed apply receipt instead contained one strategy candidate on a
+partial page. Load now advertises candidates only at a complete accepted current
+scope boundary; proposal and evaluation validate scoped completion, current
+source version, epoch and lease. Other pending scopes do not block a completed
+one. Partial/rejected/incomplete/forgotten input cannot create an evaluated
+candidate. Existing legacy complete unsegmented sources remain valid. No active
+strategy is granted without frozen independent evaluation.
+
+`evolution-page-red.tap` retains both failures. The first regression exposed a
+fixture that had not released the synthesis session lease; its failure remains
+in `evolution-page-fixture-lease.tap`. The corrected fixture completes work via
+the official store before claiming evaluation. `evolution-page-regression.tap`
+passes 37/37, including deletion recovery, all review/coverage protections,
+source completeness, current-scope evaluation and legacy evolution behavior.
+The build passes. `scoped-package-proof.json` identifies the locally packed
+source (459 compiled files compared); package publication was not performed.
+
+[Loop PR232](https://github.com/LingXi-Org/LingxiLoop/pull/232) retains resumed
+baseline and candidate evidence. Final full product live-continuity passes in
+86.658 seconds (89.289 with harness): 37 measured calls, 10 actual embeddings,
+400,008 costMicros summed across separately bounded roots. All seven synthesis
+jobs finish on the first attempt; no failed apply/validation remains. Nine
+checks include explicit long-input save, immediate core input, real hybrid
+recall, automatic middle/tail extraction, first new-room input, effective
+revision and forget/index removal. Root budgets remain 24 calls / 300,000 tokens /
+400,000 costMicros / 180 seconds; the largest observed root costs 141,632.
+The preceding protected and review candidates also passed but needed one
+durable recovery. The final source addresses that independently proven cause.
+
+Original 207-second Abort ownership remains unproven and is not claimed fixed.
+Formal coordinated version publication, exact Loop pin/lock, integrated release
+CI, production migration/backfill and deployed acceptance remain with the sole
+integrator. No merge, publication, deployment, closure, credential change or
+production data mutation was performed here. Native schema13 / migration015 /
+Loop0047 remain unchanged. Existing original issue216 product UI evidence is
+retained; this follow-up adds no UI and claims no new browser run.
+
+Final package product owning integration also passes 4/4 in 49.314 seconds;
+server typecheck passes. Their complete artifacts are committed in Loop PR232.
+Reproduce the final 37-case native check after `npm run build`:
+
+```sh
+node --test --test-concurrency=1 dist/test/memory-evolution-registration.test.js dist/test/evolution.test.js dist/test/memory-page-completeness.test.js dist/test/memory-synthesis.test.js dist/test/memory-rejected-tail.test.js dist/test/memory-synthesis-protected.test.js dist/test/memory-deletion-confirmation.test.js
+```
