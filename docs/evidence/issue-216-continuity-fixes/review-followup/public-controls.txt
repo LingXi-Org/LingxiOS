@@ -1,0 +1,52 @@
+(node:1257069) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:1257076) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: reserves child startup and root closing capacity, consumes only the matching hold, and releases cancelled holds
+ok 1 - reserves child startup and root closing capacity, consumes only the matching hold, and releases cancelled holds
+  ---
+  duration_ms: 2279.085468
+  type: 'test'
+  ...
+# Subtest: reports missing profiles, cost, calls and deadline admission without creating work or resetting the root
+ok 2 - reports missing profiles, cost, calls and deadline admission without creating work or resetting the root
+  ---
+  duration_ms: 6650.706233
+  type: 'test'
+  ...
+# Subtest: rolls back graph creation on admission failure and separately persists one authorized root notice
+ok 3 - rolls back graph creation on admission failure and separately persists one authorized root notice
+  ---
+  duration_ms: 2270.389316
+  type: 'test'
+  ...
+# Subtest: admits a five-specialist team with sufficient budget while bounding pending fanout at eight
+ok 4 - admits a five-specialist team with sufficient budget while bounding pending fanout at eight
+  ---
+  duration_ms: 2102.215405
+  type: 'test'
+  ...
+# Subtest: uses settled near-limit cost exactly once before child startup plus closing admission
+ok 5 - uses settled near-limit cost exactly once before child startup plus closing admission
+  ---
+  duration_ms: 2033.884461
+  type: 'test'
+  ...
+# (node:1257518) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: degrades only optional memory dependency/authorization failures while keeping mandatory authorization and explicit operations strict
+ok 6 - degrades only optional memory dependency/authorization failures while keeping mandatory authorization and explicit operations strict
+  ---
+  duration_ms: 2134.03617
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 17924.439436
