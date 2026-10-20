@@ -11,6 +11,7 @@ import type {
   CapabilityGrant, CodeExecutionMode, ModelItem, PromptContext, TurnContext,
 } from '../protocol/types.js'
 import type { GoalAssessment } from '../outcome/assessment.js'
+import { memorySnapshotBody } from '../memory/context.js'
 
 export interface RuntimePolicy {
   /**
@@ -78,7 +79,7 @@ export class DefaultRuntimePolicy implements RuntimePolicy {
       + 'Core contains durable identity and preferences supplied or supported by the user. Directory paths reveal reference knowledge; use memory.list/read/search to explore details. '
       + 'Use the memory tools to preserve useful new facts or correct supported errors; explicit and locked documents require a current human request to change. '
       + 'The original request and its revisions remain authoritative. Missing or unavailable memory must not block the current request. '
-      + 'Records omitted by the shared budget are not evidence of absence.\n' + JSON.stringify(context.memory) }] : items
+      + 'Records omitted by the shared budget are not evidence of absence.\n' + JSON.stringify(memorySnapshotBody(context.memory)) }] : items
   }
 
   turnInputItems(context: TurnContext, hasHistory: boolean): ModelItem[] {

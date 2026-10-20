@@ -33,7 +33,7 @@ export function observationTool(tools: readonly ToolDefinition[], allowed: (cont
     await source.authorize({ ...context, action: intent.action }, source.parse(intent.action.args))
     const serialized = canonicalJson(result.value)
     if (textSha256(serialized) !== input['sha256']) throw new Error('observation hash mismatch')
-    return { serialized, ref: observationRef(intent.action.idempotencyKey, result.value) }
+    return { serialized, ref: observationRef(intent.action.idempotencyKey, result.value), memorySources: result.memorySources }
   }
   return {
     name: 'observations__read', action: 'observations.read', description: 'Read a range of a full persisted tool value by observation reference and SHA-256. Ranges use UTF-16 character offsets, at most 8000 characters. Rechecks current source authorization.',
@@ -49,10 +49,10 @@ export function observationTool(tools: readonly ToolDefinition[], allowed: (cont
     },
     async authorize(context, input) { await read(context, input) },
     async execute(context, input) {
-      const { serialized, ref } = await read(context, input)
+      const { serialized, ref, memorySources } = await read(context, input)
       const start = Number(input['start']), end = Math.min(serialized.length, start + Number(input['length']))
       if (start > serialized.length) throw new Error('observation range exceeds its length')
-      return { ok: true, value: { ...ref, start, end,
+      return { ok: true, ...(memorySources ? { memorySources } : {}), value: { ...ref, start, end,
         text: serialized.slice(start, end), next: end < serialized.length ? end : null } }
     },
   }

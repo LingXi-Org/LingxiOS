@@ -139,6 +139,8 @@ export function actionKeyOf(action: Pick<HostAction, 'runId' | 'cellId' | 'callI
 }
 
 export interface HostActionResult {
+  /** Native memory provenance. Durable control data, excluded from model/log projections. */
+  memorySources?: import('../memory/history.js').MemorySources
   /** Sanitized failure metadata; never authorization to replay an unknown effect. */
   diagnostics?: import('../tools/failure.js').ToolFailureDiagnostics
   /** Source excerpts returned by an authorized read; the runtime assigns citation markers. */
@@ -223,10 +225,11 @@ export interface RunEvent {
 // Sessions and model items
 // ---------------------------------------------------------------------------
 
-export type ModelItem =
+export type ModelItem = (
   | { role: 'user' | 'assistant' | 'system'; content: string }
   | { type: 'function_call'; callId: string; name: string; arguments: string; stepId?: string }
   | { type: 'function_call_output'; callId: string; output: string }
+) & { memorySources?: import('../memory/history.js').MemorySources }
 
 /**
  * Durable conversational state of one agent session, saved with optimistic

@@ -16,6 +16,7 @@ import type { MemoryDocument, MemoryEntry, MemoryHit, MemoryReview } from './typ
 import { abortable } from '../deadline.js'
 import { deadlinePool } from '../control-plane/deadline-pool.js'
 import { readMemoryEpochs, rememberMemoryAdmission, admitMemoryModel } from './admission.js'
+import { legacyMemoryEvidence } from './history.js'
 export type { MemoryOptions } from './access.js'
 
 export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, budget?: RootModelBudgetOptions) {
@@ -125,7 +126,7 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
     admit: (db: SqlQueryable,work: Omit<WorkItem,'leaseToken'>) => admitMemoryModel(db,options,work),
     prepareReview: (work: Omit<WorkItem,'leaseToken'>,action:HostAction) => withTransaction(database,db => prepareMemoryReview(db,options,work,action)),
     recordReview: (work: Omit<WorkItem,'leaseToken'>,action:HostAction,hash:string,review:MemoryReview) => withTransaction(database,db => recordMemoryReview(db,options,work,action,hash,review)),
-    async context(work: Omit<WorkItem, 'leaseToken'>, external?: AbortSignal, profile: 'fast' | 'deep' = 'deep') {
+    async context(work: Omit<WorkItem, 'leaseToken'>, external?: AbortSignal, profile: 'fast' | 'deep' = 'deep', legacyMemoryProof = true) {
       const started=Date.now()
       const fast = profile === 'fast'
       const signal = AbortSignal.any([AbortSignal.timeout(settings.timeoutMs), ...external ? [external] : []])
@@ -161,8 +162,10 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
         }
       }
       const strategies=!fast && evolution?await withTransaction(db,client=>pinnedEvolution(client,work,scopes)):[]
+      const legacyEvidence = legacyMemoryProof ? await legacyMemoryEvidence(db,work) : {}
       if (epochs.length) await withTransaction(db,client=>rememberMemoryAdmission(client,options,work,epochs))
       return fitMemorySnapshot(snapshotMemories({status:'available',core:roundRobin(core),directory:roundRobin(directory),recalled:roundRobin(recalled),strategies,
+        sourceEpochs:epochs,...legacyEvidence,
         ...(epochs.length ? {admission:true as const} : {}),
         omitted:{core:omittedCore,directory:omittedDirectory,recalled:0,strategies:0},
         budget:{ratio:settings.ratio,maxTokens:fast ? Math.min(1024,settings.maxTokens) : settings.maxTokens,

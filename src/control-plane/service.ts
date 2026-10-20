@@ -16,6 +16,7 @@ import { appendReadEvidence } from '../context/research-evidence.js'
 import { appendResourceCheck } from '../context/resource-checks.js'
 import { createTaskContract } from '../context/task-contract.js'
 import { snapshotAttachments } from '../context/attachments.js'
+import { isMemorySummary, SUMMARY_PREFIX } from '../memory/history.js'
 /**
  * ControlPlaneService — transport-independent control-plane logic.
  *
@@ -459,6 +460,10 @@ export class ControlPlaneService {
       })()).then(async snapshot => ({ ...snapshot, session: await this.authorizeSession(work, snapshot.session) }))
     const [context, snapshot, dependencies] = await Promise.all([
       snapshotPromise.then(snapshot => this.deps.contextProvider.loadContext(work, signal, {
+        legacyMemoryProof: !!snapshot.session && (
+          (!!snapshot.session.summary && !snapshot.session.history.some(item => isMemorySummary(item) && 'role' in item && item.content === SUMMARY_PREFIX + snapshot.session!.summary && item.memorySources))
+          || snapshot.session.history.some(item => !item.memorySources && 'type' in item
+            && item.type === 'function_call' && item.name === 'ipython')),
         responseProfile: snapshot.session?.request && [snapshot.session.request.attachments,
           ...[...snapshot.session.request.inheritedRevisions ?? [], ...snapshot.session.request.revisions]
             .map(revision => revision.attachments ?? [])].some(attachments => attachments.length)
