@@ -2,15 +2,21 @@ import type { MemorySnapshot } from './types.js'
 import { excerpt, memoryDigest } from './text.js'
 
 export function snapshotMemories(input: Omit<MemorySnapshot,'id'>): MemorySnapshot {
-  return { ...input,id: `memory:${memoryDigest(input)}` }
+  return { ...input,id: `memory:${memoryDigest(memorySnapshotBody(input))}` }
 }
 
+/** Do not serialize admission/provenance control data into prompts or charge body budget for it. */
+export function memorySnapshotBody<T extends Omit<MemorySnapshot, 'id'>>(snapshot: T) {
+  const { admission: _admission, admissionRequestVersion: _version, sourceEpochs: _epochs, legacyMemoryInvalidated: _legacy,
+    legacyMemoryCells: _cells, legacyMemoryCellsComplete: _complete, ...body } = snapshot
+  return body
+}
 /** Whole records only. Core is retained before directory entries, recall excerpts, and optional strategy hints. */
 export function fitMemorySnapshot(source: MemorySnapshot, contextWindowTokens: number, availableTokens = Infinity): MemorySnapshot {
   const max = Math.max(0,Math.min(source.budget.maxTokens,Math.floor(contextWindowTokens*source.budget.ratio),availableTokens))
   const result = structuredClone(source)
   result.core=[]; result.directory=[]; result.recalled=[]; result.strategies=[]
-  const base = Buffer.byteLength(JSON.stringify(result))+128
+  const base = Buffer.byteLength(JSON.stringify(memorySnapshotBody(result)))+128
   let remaining = Math.max(0,max-base)
   if (source.budget.allocation) {
     const capacity = remaining, allocation = source.budget.allocation
@@ -47,7 +53,7 @@ export function fitMemorySnapshot(source: MemorySnapshot, contextWindowTokens: n
     result.diagnostics={...source.diagnostics,elapsedMs:source.diagnostics?.elapsedMs ?? 0,coreRead:source.core.length,recalled:source.recalled.length,
       injected:result.core.length+result.recalled.length,omissions:omissions.slice(0,32)}
     // Diagnostics consume the same bounded input allocation as their evidence.
-    while(Buffer.byteLength(JSON.stringify(result))>max && result.diagnostics.omissions.length) result.diagnostics.omissions.pop()
+    while(Buffer.byteLength(JSON.stringify(memorySnapshotBody(result)))>max && result.diagnostics.omissions.length) result.diagnostics.omissions.pop()
     const { id:_id,...value }=result
     return snapshotMemories(value)
   }

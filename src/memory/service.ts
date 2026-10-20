@@ -115,6 +115,9 @@ export function createMemoryService(database: SqlPool,options: MemoryOptions,sem
     async execute(context,input) {
       const identity = identityOf(context.work),scope = {tenantId:context.work.tenantId,scopeType:String(input['scopeType']),scopeId:String(input['scopeId'])}
       const db = context.database
+      // Same tool transaction as the read/receipt. Forget cannot advance the
+      // scope between reading its body and recording this provenance.
+      const sourceEpochs = await lockMemoryScopes(db,[scope])
       let value: unknown
       switch (method) {
         case 'list': {
@@ -142,7 +145,7 @@ export function createMemoryService(database: SqlPool,options: MemoryOptions,sem
         }
         case 'apply': case 'restore': case 'forget': value=await mutate(context,scope); break
       }
-      return {ok:true,executionState:'succeeded',value}
+      return {ok:true,executionState:'succeeded',value,memorySources:{version:1 as const,sources:sourceEpochs}}
     },
   }))
   async function mutate(context: ActionContext,scope: MemoryScope) {

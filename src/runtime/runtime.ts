@@ -12,7 +12,7 @@ import { createTaskContract } from '../context/task-contract.js'
 import { abortable } from '../deadline.js'
 import { deadlineHost } from '../host/deadline-host.js'
 import { checkpointHost } from '../host/checkpoint-host.js'
-import { fitMemorySnapshot } from '../memory/context.js'
+import { fitMemorySnapshot, memorySnapshotBody } from '../memory/context.js'
 import { memoryEventValue } from '../memory/telemetry.js'
 import type { MemorySnapshot } from '../memory/types.js'
 /**
@@ -62,6 +62,8 @@ import { DefaultRuntimePolicy, type RuntimePolicy } from './policy.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { ModelBudgetExceededError } from '../errors.js'
 import { boundedDirectToolOutput, boundedToolOutput, parseIPythonArguments } from './tool.js'
+import { projectMemoryHistory, stripMemorySources, receiptMemoryMetadata, memoryDependencies,
+  invalidMemorySources, isMemorySummary } from '../memory/history.js'
 import { receiptReferences } from '../context/observations.js'
 import { exposedTools } from '../tools/discovery.js'
 import { promptProgram } from '../prompts/program.js'
@@ -523,17 +525,22 @@ export class AgentRuntime {
       const modelTools = exposedTools(execution.tools, liveContext.executionSteps ?? [], liveContext.discoveredTools)
       session.promptContext = buildPromptContext(liveContext, this.policy, session.compactionEpoch, this.promptContractVersion, undefined, execution, this.promptCache)
       const preferenceItems = (session.promptContext.blocks ?? []).filter(block => block.trust !== 'platform' && block.trust !== 'product').map(contextItem)
-      const dynamicItems = [...preferenceItems, ...this.policy.dynamicContextItems(liveContext)]
+      const modelContext = (value: typeof liveContext) => value.memory
+        ? { ...value, memory: memorySnapshotBody(value.memory) } : value
+      const dynamicItems = [...preferenceItems, ...this.policy.dynamicContextItems(modelContext(liveContext))]
       const instructions = session.promptContext.systemInstructions
       if (budget.rediagnose && protocolCorrection && 'role' in protocolCorrection) protocolCorrection = { role: 'user', content: 'Repeated failure without new observations: diagnose the cause and change the approach before another attempt. ' + protocolCorrection.content }
       const currentEvidenceItems = evidenceItems(evidence(), modelTools.some(tool => tool.action === 'task.read_evidence'))
       const currentRequestItems = session.request ? requestItems(session.request,
         this.onDemandAttachments && modelTools.some(tool => tool.action === 'task.read_attachment')) : []
-      const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...(protocolCorrection ? [protocolCorrection] : [])]
+      const projectHistory = (items: readonly ModelItem[]) => projectMemoryHistory(items, liveContext.memory)
+      const restoredMessages = session.history.some(item => isMemorySummary(item) && invalidMemorySources(item, liveContext.memory))
+        ? this.policy.turnInputItems(liveContext, false) : []
+      const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...restoredMessages, ...(protocolCorrection ? [protocolCorrection] : [])]
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
       const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
-        items: observationItems([...history, ...supplementalItems], 'turn-context'), tools: modelTools, codeExecution })
+        items: observationItems(stripMemorySources([...projectHistory(history), ...supplementalItems]), 'turn-context'), tools: modelTools, codeExecution })
       const profile = modelProfile(model), reservedTokens = profile.maxOutputTokens + profile.maxThinkingTokens + 512
       const estimateOverhead = () => inputTokens(model, modelInputFor([])) + reservedTokens
       let overheadTokens = estimateOverhead()
@@ -542,7 +549,7 @@ export class AgentRuntime {
       let dynamicCount=dynamicItems.length
       const renderMemory = (snapshot: MemorySnapshot|undefined) => {
         const {memory:_memory,...withoutMemory}=liveContext
-        const items=[...preferenceItems,...this.policy.dynamicContextItems({...withoutMemory,...snapshot?{memory:snapshot}:{}})]
+        const items=[...preferenceItems,...this.policy.dynamicContextItems(modelContext({...withoutMemory,...snapshot?{memory:snapshot}:{}}))]
         supplementalItems.splice(0,dynamicCount,...items); dynamicCount=items.length
         memoryForModel=snapshot; overheadTokens=estimateOverhead()
       }
@@ -583,7 +590,7 @@ export class AgentRuntime {
       if (pendingCompaction?.ready) pendingCompaction = undefined
       let compacted = prepared
       if (!this.asyncCompaction || estimateTokens(session.history, model) + overheadTokens >= hardLimit) {
-        const recovered = await compactIfNeeded(session, instructions, model, this.compaction, signals.generationSignal(), overheadTokens)
+        const recovered = await compactIfNeeded(session, instructions, model, this.compaction, signals.generationSignal(), overheadTokens, false, projectHistory)
           .catch((error): CompactionOutcome => {
             if (!signals.hasSteer() && (!memoryForModel || !(error instanceof HardLimitExceededError))) throw error
             return { compacted: false }
@@ -635,7 +642,7 @@ export class AgentRuntime {
         prompt: session.promptContext.manifest, promptFingerprint: session.promptContext.fingerprint,
         promptContractVersion: this.promptContractVersion, toolProtocol: 'ipython-v1', decision: protocolCorrection ? 'correction' : hop === 0 ? 'initial' : 'continue',
       } })
-      let turn
+      let turn: Awaited<ReturnType<ModelDriver['run']>>
       let parser = new CandidateBodyParser()
       const publishes = liveContext.publicTextAllowed && model.previewFormat === 'user-text'
       const preview = !publishes && liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
@@ -667,7 +674,7 @@ export class AgentRuntime {
               if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
                 && estimateTokens(session.history, model) + overheadTokens >= backgroundLimit) {
                 sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
-                  { ...this.compaction, softRatio: backgroundLimit / this.compaction.contextWindowTokens }, generationSignal, overheadTokens))
+                  { ...this.compaction, softRatio: backgroundLimit / this.compaction.contextWindowTokens }, generationSignal, overheadTokens, projectHistory))
               }
               providerBegan = performance.now()
               parser = new CandidateBodyParser()
@@ -745,6 +752,15 @@ export class AgentRuntime {
       if (signals.lifecycle.signal.aborted) throw new RunCancelledError('lifecycle')
       if (signals.hasSteer()) continue
 
+      // Intermediate model output can carry memory observations forward too.
+      // Final public answers below retain their ordinary conversation identity.
+      const derivedSources = memoryDependencies([...projectHistory(session.history), {
+        role: 'user', content: '', memorySources: { version: 1,
+          sources: memoryForModel && [memoryForModel.core, memoryForModel.directory, memoryForModel.recalled, memoryForModel.strategies].some(items => items.length)
+            ? memoryForModel.sourceEpochs ?? [] : [] },
+      }])
+      const derivedMetadata = derivedSources.sources.length || derivedSources.unknown ? { memorySources: derivedSources } : {}
+      const derivedOutput = () => turn.output.map(item => ({ ...item, ...derivedMetadata }))
       const calls = turn.output.filter(
         (item): item is Extract<ModelItem, { type: 'function_call' }> => 'type' in item && item.type === 'function_call',
       )
@@ -780,7 +796,7 @@ export class AgentRuntime {
         } catch (error) {
           await this.event(work, runId, { kind: 'response.withheld', stage: 'failed', visibility: 'internal',
             data: { violation: errorMessage(error), candidateType: 'final_json' } })
-          session.history.push(...turn.output)
+          session.history.push(...derivedOutput())
           await this.hostFor(work).saveSession(work, session)
           // A failed self-check does not invalidate an independently valid answer body.
           let body: unknown
@@ -799,7 +815,7 @@ export class AgentRuntime {
       const conversationTurn = work.conversation?.internal === false && work.meta?.['conversationTurn'] === true
       if (assessment?.status === 'partial' && !conversationTurn && budget.consume('content_acceptance', JSON.stringify(assessment.gaps))) {
         await rememberCandidate(turn.text, liveContext, assessment.gaps)
-        session.history.push(...turn.output)
+        session.history.push(...derivedOutput())
         await this.hostFor(work).saveSession(work, session)
         await this.event(work, runId, { kind: 'response.withheld', stage: 'failed', visibility: 'internal',
           data: { violation: 'A partial candidate was returned while execution budget remains', gaps: assessment.gaps } })
@@ -930,7 +946,7 @@ export class AgentRuntime {
         if (finalPublicTextPartId) await this.hostFor(work).saveStep(work, { id: `public-text:${finalPublicTextPartId}`, kind: 'runtime.public_text_source',
           requestVersion: (session.request?.revisions.length ?? 0) + 1,
           input: { publicTextPartId: finalPublicTextPartId, publicTextBodyHash: createHash('sha256').update(turn.text.trim()).digest('hex') }, output: '{}', artifacts: [] })
-        session.history.push(...turn.output)
+        session.history.push(...stripMemorySources(turn.output))
         finalText = turn.text.trim()
         if (finalText) {
           const partIndex = nextStreamPartIndex++
@@ -945,7 +961,7 @@ export class AgentRuntime {
 
       for (const call of calls) call.stepId ??= `step:${randomUUID()}`
       executedSteps.push(...calls.map(call => ({ id: call.stepId!, kind: call.name, requestVersion: session.request!.revisions.length + 1, input: {}, artifacts: [] })))
-      session.history.push(...turn.output)
+      session.history.push(...derivedOutput())
       await this.hostFor(work).saveSession(work, session)
       const onlyReads = model.profile?.parallelTools !== false
         && calls.every(call => liveContext.tools?.some(tool => tool.name === call.name && tool.effect === 'read'))
@@ -965,7 +981,7 @@ export class AgentRuntime {
           const settled = await Promise.allSettled(batch.map(async call => {
             const part = nextStreamPartIndex
             nextStreamPartIndex += onlyReads ? 2 : 0
-            return this.executeCall(work, runId, session, call, signals, budget, part,
+            return this.executeCall(work, runId, session, { ...call, ...derivedMetadata }, signals, budget, part,
               execution.grants, artifacts, codeExecution, liveContext.tools)
           }))
           const failure = settled.find(result => result.status === 'rejected')
@@ -1198,7 +1214,8 @@ export class AgentRuntime {
         if (JSON.stringify(facts) !== '{}') budget.observe(facts)
       }
       session.history.push({ type: 'function_call_output', callId: call.callId,
-        output: call.name === 'ipython' ? output : boundedDirectToolOutput(receipts[0]!) })
+        output: call.name === 'ipython' ? output : boundedDirectToolOutput(receipts[0]!),
+        ...receiptMemoryMetadata(receipts, call.memorySources) })
       await this.event(work, runId, {
         kind: 'ipython.completed', stage: 'completed', visibility: 'internal',
         data: {
@@ -1262,6 +1279,7 @@ export class AgentRuntime {
         })
         session.history.push({
           type: 'function_call_output', callId: call.callId,
+          ...receiptMemoryMetadata(receipts, call.memorySources),
           output: boundedToolOutput({ approvalPending: error.approvalId, receipts }),
         })
         await this.hostFor(work).saveSession(work, session)
@@ -1271,6 +1289,7 @@ export class AgentRuntime {
       if (error instanceof KernelTimeoutError) {
         session.history.push({
           type: 'function_call_output', callId: call.callId,
+          ...receiptMemoryMetadata(receipts, call.memorySources),
           output: boundedToolOutput({ error: error.message, kernelRestarted: true, receipts }),
         })
         await this.event(work, runId, {
@@ -1282,6 +1301,7 @@ export class AgentRuntime {
       if (error instanceof KernelExecutionError) {
         session.history.push({
           type: 'function_call_output', callId: call.callId,
+          ...receiptMemoryMetadata(receipts, call.memorySources),
           output: boundedToolOutput({ error: error.message, receipts }),
         })
         await this.event(work, runId, {
@@ -1387,7 +1407,11 @@ export class AgentRuntime {
           if (!receipts?.length) throw new Error('unresolved direct tool receipt; reconcile before continuing')
           output = boundedDirectToolOutput(receipts[0]!, undefined, { recovered: true })
         }
-        session.history.push({ type: 'function_call_output', callId, output })
+        // Rendering deliberately omits provenance; recover the original trusted
+        // receipt proof from the ledger, never today's memory snapshot.
+        const sourceReceipts = await this.hostFor(work).recoverCell(work, call.stepId ?? callId)
+        session.history.push({ type: 'function_call_output', callId, output,
+          ...receiptMemoryMetadata(sourceReceipts ?? receipts ?? [], call.memorySources) })
       } else {
         receipts = await this.hostFor(work).recoverCell(work, call.stepId ?? callId)
         const tool = context.tools?.find(tool => tool.name === call.name)
@@ -1405,6 +1429,7 @@ export class AgentRuntime {
         }
         session.history.push({
           type: 'function_call_output', callId,
+          ...receiptMemoryMetadata(receipts, call.memorySources),
           output: call.name === 'ipython'
             ? boundedToolOutput({ recovered: true, localExecutionOutput: 'not_recovered', receipts }, undefined,
               execution.tools.some(tool => tool.action === 'observations.read') ? receiptReferences(receipts) : [])
