@@ -1,0 +1,100 @@
+(node:818364) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:818371) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: contains a real pg client socket failure and serves the next request with a replacement connection
+not ok 1 - contains a real pg client socket failure and serves the next request with a replacement connection
+  ---
+  duration_ms: 79.670334
+  type: 'test'
+  location: '/workspace/LingxiOS-callback-context/dist/test/database-socket-error.test.js:6:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    {"observedQueryDisconnect":true}
+    
+    (node:818379) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+    (Use `node --trace-warnings ...` to show where the warning was created)
+    node:events:497
+          throw er; // Unhandled 'error' event
+          ^
+    
+    Error: Connection terminated unexpectedly
+        at Connection.<anonymous> (/workspace/LingxiOS-callback-context/node_modules/pg/lib/client.js:180:73)
+        at Object.onceWrapper (node:events:633:28)
+        at Connection.emit (node:events:519:28)
+        at Socket.<anonymous> (/workspace/LingxiOS-callback-context/node_modules/pg/lib/connection.js:61:12)
+        at Socket.emit (node:events:519:28)
+        at TCP.<anonymous> (node:net:347:12)
+    Emitted 'error' event on Client instance at:
+        at Client._handleErrorEvent (/workspace/LingxiOS-callback-context/node_modules/pg/lib/client.js:393:10)
+        at Connection.<anonymous> (/workspace/LingxiOS-callback-context/node_modules/pg/lib/client.js:198:16)
+        at Object.onceWrapper (node:events:633:28)
+        at Connection.emit (node:events:519:28)
+        at Socket.<anonymous> (/workspace/LingxiOS-callback-context/node_modules/pg/lib/connection.js:61:12)
+        at Socket.emit (node:events:519:28)
+        at TCP.<anonymous> (node:net:347:12)
+    
+    Node.js v22.23.3
+    
+    
+    1 !== 0
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    Connection.<anonymous> (/workspace/LingxiOS-callback-context/node_modules/pg/lib/client.js:180:73)
+    Object.onceWrapper (node:events:633:28)
+    Connection.emit (node:events:519:28)
+    Socket.<anonymous> (/workspace/LingxiOS-callback-context/node_modules/pg/lib/connection.js:61:12)
+    Socket.emit (node:events:519:28)
+    TCP.<anonymous> (node:net:347:12)
+    Client._handleErrorEvent (/workspace/LingxiOS-callback-context/node_modules/pg/lib/client.js:393:10)
+    Connection.<anonymous> (/workspace/LingxiOS-callback-context/node_modules/pg/lib/client.js:198:16)
+    Object.onceWrapper (node:events:633:28)
+    Connection.emit (node:events:519:28)
+    Socket.<anonymous> (/workspace/LingxiOS-callback-context/node_modules/pg/lib/connection.js:61:12)
+    Socket.emit (node:events:519:28)
+    TCP.<anonymous> (node:net:347:12)
+    TestContext.<anonymous> (file:///workspace/LingxiOS-callback-context/dist/test/database-socket-error.test.js:62:12)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    Test.start (node:internal/test_runner/test:944:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+  ...
+# Subtest: owns and cleans nested client error listeners on failure and successful release
+not ok 2 - owns and cleans nested client error listeners on failure and successful release
+  ---
+  duration_ms: 0.872586
+  type: 'test'
+  location: '/workspace/LingxiOS-callback-context/dist/test/database-socket-error.test.js:66:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    1 !== 3
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 3
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///workspace/LingxiOS-callback-context/dist/test/database-socket-error.test.js:75:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 0
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 154.876313

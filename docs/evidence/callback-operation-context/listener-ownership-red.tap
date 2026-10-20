@@ -1,0 +1,39 @@
+(node:819907) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:819914) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: contains a real pg client socket failure and serves the next request with a replacement connection
+ok 1 - contains a real pg client socket failure and serves the next request with a replacement connection
+  ---
+  duration_ms: 100.866856
+  type: 'test'
+  ...
+# Subtest: owns and cleans nested client error listeners on failure and successful release
+not ok 2 - owns and cleans nested client error listeners on failure and successful release
+  ---
+  duration_ms: 3.469933
+  type: 'test'
+  location: '/workspace/LingxiOS-callback-context/dist/test/database-socket-error.test.js:66:1'
+  failureType: 'testCodeFailure'
+  error: 'a wrapper only removes subscriptions it owns'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (file:///workspace/LingxiOS-callback-context/dist/test/database-socket-error.test.js:87:12)
+    process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 1
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 197.232931

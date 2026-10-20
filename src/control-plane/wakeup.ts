@@ -32,6 +32,7 @@ export class Wakeup {
 }
 
 interface NotificationClient extends SqlClient {
+  on(event: 'error', listener: (error: Error) => void): unknown
   on(event: string, listener: (message?: unknown) => void): unknown
   removeListener(event: string, listener: (message?: unknown) => void): unknown
 }
