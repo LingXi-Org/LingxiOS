@@ -623,7 +623,7 @@ export class ControlPlaneService {
           }
         }
         const pending = await this.deps.actions.unsettled(work.id)
-        const sideEffects = (this.deps.tools ?? TASK_TOOLS).filter(candidate => !candidate.action.startsWith('task.') && !candidate.action.startsWith('graph.') && candidate.effect !== 'read').map(candidate => candidate.action)
+        const sideEffects = (this.deps.tools ?? TASK_TOOLS).filter(candidate => !candidate.action.startsWith('task.') && !candidate.action.startsWith('graph.') && candidate.action !== 'skills.activate' && candidate.effect !== 'read').map(candidate => candidate.action)
         const completedBusinessAction = await this.deps.actions.hasSuccessfulAction(work.id, requestVersion, sideEffects)
         result = { ok: true, value: { requestVersion, pending: pending.slice(0, 64), truncated: pending.length > 64, completedBusinessAction } }
       } else if (action.action === 'task.read_evidence') {
@@ -881,7 +881,7 @@ export class ControlPlaneService {
     try {
       const assessment = message.envelope.assessment
       const gaps: string[] = []
-      const sideEffects = (this.deps.tools ?? TASK_TOOLS).filter(tool => !tool.action.startsWith('task.') && !tool.action.startsWith('graph.') && tool.effect !== 'read').map(tool => tool.action)
+      const sideEffects = (this.deps.tools ?? TASK_TOOLS).filter(tool => !tool.action.startsWith('task.') && !tool.action.startsWith('graph.') && tool.action !== 'skills.activate' && tool.effect !== 'read').map(tool => tool.action)
       const actionGap = businessActionDeliveryGap(session.request,
         await this.deps.actions.hasSuccessfulAction(work.id, message.envelope.requestVersion, sideEffects), artifacts.length > 0)
       if (actionGap) gaps.push(actionGap)

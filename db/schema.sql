@@ -83,6 +83,25 @@ END $$;
 CREATE TRIGGER agent_work_attempt AFTER INSERT OR UPDATE ON lingxios.agent_work_items
   FOR EACH ROW EXECUTE FUNCTION lingxios.track_attempt();
 
+CREATE TABLE lingxios.agent_skill_activations (
+  id TEXT PRIMARY KEY CHECK(id ~ '^[a-f0-9]{64}$'),
+  work_id TEXT NOT NULL REFERENCES lingxios.agent_work_items(id) ON DELETE CASCADE,
+  tenant_id TEXT NOT NULL,
+  principal_id TEXT NOT NULL,
+  request_version INT NOT NULL CHECK(request_version>0),
+  skill_name TEXT NOT NULL,
+  skill_version TEXT NOT NULL,
+  skill_hash TEXT NOT NULL CHECK(skill_hash ~ '^[a-f0-9]{64}$'),
+  checker TEXT NOT NULL,
+  activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolution TEXT CHECK(resolution IN ('delivered','unsupported','failed')),
+  resolved_candidate_hash TEXT CHECK(resolved_candidate_hash ~ '^[a-f0-9]{64}$'),
+  resolved_at TIMESTAMPTZ,
+  CHECK ((resolution IS NULL AND resolved_candidate_hash IS NULL AND resolved_at IS NULL)
+    OR (resolution IS NOT NULL AND resolved_candidate_hash IS NOT NULL AND resolved_at IS NOT NULL)),
+  UNIQUE(work_id,request_version,skill_name)
+);
+
 CREATE TABLE lingxios.agent_steps (
   step_seq BIGINT GENERATED ALWAYS AS IDENTITY,
   work_id TEXT NOT NULL REFERENCES lingxios.agent_work_items(id) ON DELETE CASCADE,
@@ -719,7 +738,7 @@ END $$;
 CREATE TRIGGER agent_work_release_budget_hold AFTER UPDATE OF status ON lingxios.agent_work_items
   FOR EACH ROW EXECUTE FUNCTION lingxios.release_child_budget_hold();
 
-INSERT INTO lingxios.schema_version(singleton, version) VALUES(TRUE, 13);
+INSERT INTO lingxios.schema_version(singleton, version) VALUES(TRUE, 14);
 
 ALTER TABLE lingxios.agent_memory_evidence ADD COLUMN IF NOT EXISTS source_complete BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE lingxios.agent_memory_evidence_scopes ADD COLUMN IF NOT EXISTS segment_cursor INTEGER NOT NULL DEFAULT 0 CHECK(segment_cursor>=0);

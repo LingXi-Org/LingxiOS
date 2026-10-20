@@ -8,6 +8,7 @@ export type { ConversationIdentity, ThreadIdentity, ConversationPolicy, Conversa
   MessageReference, WorkConversation, IMMessageInput, IMIngressResult, IMDeliveryContext, IMDeliveryReceipt,
   GraphInput, GraphNode, SharedStateIdentity, SharedStateSnapshot, SharedStateUpdate, SharedStateChange, SharedStateResult } from './collaboration/types.js'
 export { assembleHarness, type HarnessProfile, type CapabilityDefinition, type HarnessContext } from './harness/profile.js'
+export type { SkillActivation, SkillDeliveryDecision } from './skills/delivery.js'
 export { skillIndex, type SkillDefinition, type SkillIndex } from './skills/definition.js'
 export type { PresentationDefinition, TrustedPresentation } from './presentation/definition.js'
 export type { ObservationRef } from './context/observations.js'

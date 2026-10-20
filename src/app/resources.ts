@@ -8,6 +8,9 @@ export function packageResources() {
     schema011: fileURLToPath(new URL('../../../db/schema-011.sql', import.meta.url)),
     /** Immutable 3.5.6 schema for upgrade and pre-activation rollback provenance. */
     schema012: fileURLToPath(new URL('../../../db/schema-012.sql', import.meta.url)),
+    /** Immutable native13 baseline for the explicit skill-delivery upgrade. */
+    schema013: fileURLToPath(new URL('../../../db/schema-013.sql', import.meta.url)),
+    migration016: fileURLToPath(new URL('../../../db/migrations/016-skill-delivery.sql', import.meta.url)),
     migration008: fileURLToPath(new URL('../../../db/migrations/008-governance.sql', import.meta.url)),
     memoryReset009: fileURLToPath(new URL('../../../db/migrations/009-cognitive-memory-reset.sql', import.meta.url)),
     migration010: fileURLToPath(new URL('../../../db/migrations/010-im-collaboration.sql', import.meta.url)),

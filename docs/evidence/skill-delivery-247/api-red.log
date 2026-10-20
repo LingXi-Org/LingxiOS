@@ -1,0 +1,25 @@
+
+> @lyyzka/lingxios@3.5.8 build
+> node scripts/build.mjs
+
+test/skill-delivery.test.ts(5,43): error TS2305: Module '"../src/index.js"' has no exported member 'SkillDeliveryDecision'.
+test/skill-delivery.test.ts(10,85): error TS2307: Cannot find module '../src/skills/delivery.js' or its corresponding type declarations.
+test/skill-delivery.test.ts(27,53): error TS2339: Property 'skillActivations' does not exist on type 'RunVerificationContext'.
+test/skill-delivery.test.ts(28,5): error TS2353: Object literal may only specify known properties, and 'verifySkillDelivery' does not exist in type 'LingxiOSOptions'.
+test/skill-delivery.test.ts(28,32): error TS7006: Parameter 'context' implicitly has an 'any' type.
+test/skill-delivery.test.ts(28,72): error TS7006: Parameter 'activation' implicitly has an 'any' type.
+test/skill-delivery.test.ts(56,18): error TS7053: Element implicitly has an 'any' type because expression of type '"resolution"' can't be used to index type '{}'.
+  Property 'resolution' does not exist on type '{}'.
+test/skill-delivery.test.ts(77,18): error TS7053: Element implicitly has an 'any' type because expression of type '"n"' can't be used to index type '{}'.
+  Property 'n' does not exist on type '{}'.
+test/skill-delivery.test.ts(91,18): error TS7053: Element implicitly has an 'any' type because expression of type '"resolution"' can't be used to index type '{}'.
+  Property 'resolution' does not exist on type '{}'.
+test/skill-delivery.test.ts(93,18): error TS7053: Element implicitly has an 'any' type because expression of type '"resolution"' can't be used to index type '{}'.
+  Property 'resolution' does not exist on type '{}'.
+test/skill-delivery.test.ts(102,18): error TS7053: Element implicitly has an 'any' type because expression of type '"version"' can't be used to index type '{}'.
+  Property 'version' does not exist on type '{}'.
+npm notice
+npm notice New major version of npm available! 10.9.9 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

@@ -15,9 +15,9 @@ export const identity: MemoryIdentity={tenantId:'t',agentId:'a',principalId:'u',
 export const content=(body='喜欢使用图表和具体示例。',path='preferences/learning.md',layer:MemoryContent['layer']='reference'):MemoryContent=>({
   path,title:'Learning preference',description:'How the user learns',body,layer,
 })
-export async function memoryFixture(overrides: Partial<MemoryOptions>={}) {
+export async function memoryFixture(overrides: Partial<MemoryOptions>={}, schema: 'schema.sql' | 'schema-013.sql'='schema.sql') {
   const db=new PGlite()
-  await db.exec(await readFile(new URL('../../db/schema.sql',import.meta.url),'utf8'))
+  await db.exec(await readFile(new URL('../../db/'+schema,import.meta.url),'utf8'))
   const pool: SqlPool={query:async(sql,params)=>{const result=await db.query<Record<string,unknown>>(sql,params);return{rows:result.rows,rowCount:result.affectedRows??result.rows.length}},
     connect:async()=>({query:pool.query,release(){}})}
   const options:MemoryOptions={resolveScopes:async actor=>actor.tenantId==='t'&&actor.principalId==='u'?[scope]:[],...overrides}

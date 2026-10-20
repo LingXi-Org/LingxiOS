@@ -24,7 +24,7 @@ export function snapshotObligations(value: unknown): DeliveryObligation[] {
     switch (item.kind) {
       case 'external-delivery':
         fields = ['action', 'args', 'expected']
-        if (typeof item.action !== 'string' || !/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(item.action) || item.action.startsWith('task.')
+        if (typeof item.action !== 'string' || !/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(item.action) || item.action.startsWith('task.') || item.action === 'skills.activate'
           || !item.args || typeof item.args !== 'object' || Array.isArray(item.args)) throw new Error('invalid action obligation')
         break
       case 'artifact':

@@ -8,12 +8,16 @@ export interface SkillDefinition {
   body: string
   /** Native actions required by this workflow. Skills never grant them. */
   actions: string[]
+  /** Opt-in authoring obligation. Only the trusted host verifies delivery. */
+  delivery?: { checker: string }
 }
 export type SkillIndex = Omit<SkillDefinition, 'body'> & { hash: string }
 export function skillIndex(skill: SkillDefinition): SkillIndex {
   if (!/^[a-z][a-z0-9_-]{0,63}$/.test(skill.name) || !skill.version || skill.version.length > 128
     || !skill.description || skill.description.length > 1000 || !skill.body || Buffer.byteLength(skill.body) > 64_000
     || !Array.isArray(skill.actions) || skill.actions.some(action => !/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(action))) throw new Error('invalid authored skill')
+  if (skill.delivery !== undefined && (!skill.delivery || typeof skill.delivery !== 'object'
+    || Object.keys(skill.delivery).join(',') !== 'checker' || !/^product:[A-Za-z0-9._:-]{1,128}$/.test(skill.delivery.checker))) throw new Error('invalid skill delivery contract')
   const { body: _body, ...index } = skill
   return { ...structuredClone(index), hash: textSha256(canonicalJson(skill)) }
 }
