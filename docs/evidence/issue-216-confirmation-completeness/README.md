@@ -110,3 +110,19 @@ mutation, authentication change or security-permission change was performed.
 The sole integrator still owns the combined public API release and exact
 published dependency pin. This PR is not evidence that all of issue216 or the
 current production release is accepted.
+
+## Retained failure diagnosis
+
+See [timeout-investigation.md](timeout-investigation.md) for the original task
+trace, budget exclusions and exact limits of the follow-up. The unchanged
+original database is preserved. One real-provider retry in its isolated clone
+committed the tail page using two calls, but the source remained rejected because
+an earlier page had failed review. This does not turn product-live-continuity
+green. New fixed invariant diagnostics have a preserved red test and an 18/18
+owning regression. The original 207-second Abort still lacks operation ownership.
+
+`diagnostic-package-proof.json` identifies the local candidate used for the
+retained-page probe. It was packed locally, not published. `retained-offline.json`
+and `retained-page.json` use `probeCompleted` to distinguish a completed
+investigation from feature acceptance, which remains false. Remote handoff is
+blocked by GitHub HTTP 401; no credentials or security settings were changed.
