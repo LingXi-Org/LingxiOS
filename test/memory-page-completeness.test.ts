@@ -87,3 +87,30 @@ for(const repaired of [false,true]) it(`audits empty extraction coverage and bou
     assert.equal((await f.api.list(identity,scope)).items.length,repaired?1:0)
   } finally {await f.close()}
 })
+
+for(const failure of ['cancelled-repair','missing-coverage-verdict']) it(`leaves ${failure} pending instead of advancing the source`,async()=>{
+  const f=await memoryFixture(),abort=new AbortController()
+  try {
+    await f.source()
+    const {job}=await f.reflection();assert.ok(job)
+    let calls=0,applied=0
+    const context={signal:abort.signal,emit:async()=>{},host:{
+      executeAction:async(_work:WorkItem,action:{action:string;args:Record<string,unknown>})=>{
+        if(action.action.endsWith('.apply'))applied++
+        return {ok:true,executionState:'succeeded',value:await withTransaction(f.pool,db=>
+          executeMemorySynthesis(db,job,action.action.split('.')[1]!,action.args,f.options))}
+      },
+    },model:{structured:async()=>{
+      if(++calls===1)return {value:{changes:[],conflicts:[]}}
+      if(failure==='missing-coverage-verdict')return {value:{approved:true,confidence:1}}
+      if(calls===2)return {value:{approved:true,complete:false,confidence:1}}
+      assert.equal(calls,3);abort.abort(new Error('synthetic cancellation'))
+      return {value:{changes:[],conflicts:[]}}
+    }}} as unknown as WorkProcessorContext
+    await assert.rejects(memorySynthesisProcessor.process(job,context),failure==='cancelled-repair'?/synthetic cancellation/:/invalid memory synthesis verification/)
+    assert.equal(applied,0)
+    const row=(await f.pool.query('SELECT status,segment_cursor FROM lingxios.agent_memory_evidence_scopes')).rows[0]!
+    assert.equal(row['status'],'pending');assert.equal(row['segment_cursor'],0)
+    assert.equal((await f.api.list(identity,scope)).items.length,0)
+  } finally {await f.close()}
+})

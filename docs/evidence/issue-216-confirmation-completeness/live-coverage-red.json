@@ -1,0 +1,78 @@
+{
+  "source": "f0fc87fdf8a85e8d684a03a40024533aac6cb686",
+  "providerHost": "api.siliconflow.cn",
+  "model": "zai-org/GLM-5.2",
+  "productionRequests": 0,
+  "cases": [
+    {
+      "name": "committed-deletion",
+      "passed": true,
+      "receipts": 1,
+      "results": 1,
+      "remaining": 0,
+      "confirmationMarkerCount": 0
+    },
+    {
+      "name": "long-source-review-completeness",
+      "passed": false,
+      "jobs": 3,
+      "status": "processed",
+      "cursor": 6,
+      "segments": 6,
+      "rejectedPages": 0,
+      "middleFacts": true,
+      "tailFacts": false,
+      "allFactsAccepted": false,
+      "maintenance": {
+        "pendingSources": 0,
+        "incompleteSources": 0,
+        "processedSources": 1,
+        "pendingSegments": 0,
+        "rejectedSources": 0,
+        "retryableSources": 0
+      }
+    }
+  ],
+  "requests": [
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 3022
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 1737
+    },
+    {
+      "phase": "long-source",
+      "status": 200,
+      "elapsedMs": 1430
+    },
+    {
+      "phase": "long-source",
+      "status": 200,
+      "elapsedMs": 1794
+    },
+    {
+      "phase": "long-source",
+      "status": 200,
+      "elapsedMs": 1240
+    },
+    {
+      "phase": "long-source",
+      "status": 200,
+      "elapsedMs": 1154
+    }
+  ],
+  "passed": false,
+  "failure": {
+    "type": "AssertionError",
+    "code": "ERR_ASSERTION",
+    "stage": "long-source",
+    "stackLocation": [
+      "    at file://<source>/docs/evidence/issue-216-confirmation-completeness/live-probe.mjs:81:34",
+      "    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)"
+    ]
+  }
+}
