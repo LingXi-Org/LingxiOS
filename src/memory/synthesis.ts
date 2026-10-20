@@ -81,11 +81,11 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
     if (!(await authorizedScopes(options,sourceIdentity(source),client,undefined,'capture')).some(item => sameScope(item,scope))) throw new Error('memory source scope was revoked')
   }
   const evidence: MemoryEvidence[] = []
-  let evidenceBytes=28_000
+  let evidenceBytes=14_000
   for (const row of sources) {
     const start=Number(row['segment_cursor']),total=Number(row['segment_count'])
     const segments=(await client.query(`SELECT segment_no,role,body FROM lingxios.agent_memory_evidence_segments
-      WHERE source_run_id=$1 AND segment_no >= $2 ORDER BY segment_no LIMIT 4`,[row['source_run_id'],start])).rows
+      WHERE source_run_id=$1 AND segment_no >= $2 ORDER BY segment_no LIMIT 2`,[row['source_run_id'],start])).rows
     let userText='',assistantText='',next=start
     for (const segment of segments) {
       const body=String(segment['body']),bytes=Buffer.byteLength(body)+512

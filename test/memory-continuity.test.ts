@@ -18,7 +18,8 @@ it('pages long Chinese source material completely and durably fences page replay
     for (;;) {
       const batch=await invoke('load',{}) as MemoryBatch|null
       if (!batch) break
-      assert.ok(Buffer.byteLength(JSON.stringify(batch.evidence))<40000)
+      assert.ok(Buffer.byteLength(JSON.stringify(batch.evidence))<18000)
+      assert.ok(batch.evidence.every(item=>item.segment.next-item.segment.start<=2),'long sources use at most two segments per proposal')
       parts+=batch.evidence.map(item=>item.userText).join('')
       await invoke('apply',{changes:[],conflicts:[],approved:true,confidence:1})
       assert.ok(++pages<100)
