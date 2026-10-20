@@ -1,4 +1,4 @@
-import { PublicTextWriter, isPublicTextPublicationFailure } from './public-text.js'
+import { PublicTextWriter, isPublicTextPublicationFailure, isPublicTextSafetyFailure } from './public-text.js'
 import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from './wait.js'
 import { inputWaitQuestion } from '../protocol/input-wait.js'
@@ -622,7 +622,8 @@ export class AgentRuntime {
               const requestVersion=(session.request?.revisions.length ?? 0)+1
               const partId='public:'+createHash('sha256').update(JSON.stringify([runId,requestVersion,work.fence,callId,0])).digest('hex')
               this.publications.set(runId,new PublicTextWriter({version:1,requestVersion,fence:work.fence,attemptId:callId,partId,partIndex:0},
-                event=>this.event(work,runId,event),signals.generationSignal()))
+                event=>this.event(work,runId,event),signals.generationSignal(),
+                this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined))
             }
             // Reserve the reply first; optional compaction must not consume its budget.
             if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
@@ -665,7 +666,11 @@ export class AgentRuntime {
           kind: 'model.failed', stage: 'failed', visibility: 'internal',
           data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: errorMessage(error) },
         })
-        if (error instanceof ModelDriverError && error.diagnostics.kind === 'protocol' && budget.consume('tool_protocol', errorMessage(error))) {
+        if (isPublicTextSafetyFailure(error) && budget.consume('response_protocol','public text safety rejected')) {
+          protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return only safe user-facing content. Do not include private reasoning or internal protocol.'}
+          continue
+        }
+        if (!isPublicTextSafetyFailure(error) && error instanceof ModelDriverError && error.diagnostics.kind === 'protocol' && budget.consume('tool_protocol', errorMessage(error))) {
           protocolCorrection = {
             role: 'user',
             content: codeExecution === 'enabled'
@@ -702,7 +707,17 @@ export class AgentRuntime {
       const calls = turn.output.filter(
         (item): item is Extract<ModelItem, { type: 'function_call' }> => 'type' in item && item.type === 'function_call',
       )
-      await this.publications.get(runId)?.end(calls.length ? 'tool' : 'completed')
+      try {
+        await this.publications.get(runId)?.finish(turn.text)
+        if(calls.length)await this.publications.get(runId)?.end('tool')
+      } catch(error) {
+        await this.publications.get(runId)?.end('failed').catch(()=>{})
+        if(isPublicTextSafetyFailure(error)&&budget.consume('response_protocol','public text safety rejected')){
+          protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return safe user-facing content without private reasoning or internal protocol.'}
+          continue
+        }
+        throw error
+      }
       if (calls.length) preview?.discard()
       if (calls.length && liveContext.responseProfile === 'fast') {
         const requestVersion = (session.request?.revisions.length ?? 0) + 1
@@ -869,6 +884,7 @@ export class AgentRuntime {
             `Your previous candidate was withheld because ${violation}. Re-evaluate the current request and respond within protocol.` }
           continue
         }
+        await this.publications.get(runId)?.end('completed')
         session.history.push(...turn.output)
         finalText = turn.text.trim()
         if (finalText) {
@@ -1469,6 +1485,7 @@ export class AgentRuntime {
 }
 
 function publicFailure(error: unknown): string {
+  if (isPublicTextPublicationFailure(error)) return 'The response could not be safely published'
   if (error instanceof HardLimitExceededError) return error.diagnostics?.reason === 'irreducible_context'
     ? 'Required input exceeds the model context limit. Reduce the request or attached material before retrying.'
     : 'The request and conversation exceed the model context limit after bounded recovery.'

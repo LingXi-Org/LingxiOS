@@ -10,9 +10,13 @@
 import type {
   CapabilityGrant, CodeExecutionMode, ModelItem, PromptContext, TurnContext,
 } from '../protocol/types.js'
+import type { PublicTextSafetyInput, PublicTextSafetyDecision } from '../protocol/public-text.js'
 import type { GoalAssessment } from '../outcome/assessment.js'
 
 export interface RuntimePolicy {
+  /** Approve only a known-safe prefix. Pure and synchronous; final-answer validation remains separate. */
+  publicTextSafety?(input: Readonly<PublicTextSafetyInput>, context: TurnContext): PublicTextSafetyDecision
+
   /**
    * Compute the kernel capability grant for this turn. The same computation
    * must be mirrored by the control plane's capability resolver — the kernel
@@ -58,6 +62,12 @@ export interface RuntimePolicy {
  * messages simply, and imposes only universal protocol rules.
  */
 export class DefaultRuntimePolicy implements RuntimePolicy {
+  publicTextSafety(input: Readonly<PublicTextSafetyInput>, _context: TurnContext): PublicTextSafetyDecision {
+    // Structurally separate provider user text is trusted by default. Products
+    // may hold uncertain syntax here without invoking final-answer validation.
+    return { safeThrough: input.text.length }
+  }
+
   kernelCapabilities(context: TurnContext): CapabilityGrant[] {
     return context.grants ?? context.capabilities.map((name) => ({ name }))
   }

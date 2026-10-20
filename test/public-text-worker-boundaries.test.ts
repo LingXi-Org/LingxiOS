@@ -7,12 +7,13 @@ import { PGlite } from '@electric-sql/pglite'
 import { createLingxiOS } from '../src/index.js'
 import { createWorker } from '../src/worker/index.js'
 import { OpenAIChatDriver } from '../src/model/openai.js'
+import { DefaultRuntimePolicy } from '../src/runtime/policy.js'
 import type { ModelDriver } from '../src/model/driver.js'
 import type { SqlPool } from '../src/control-plane/pg-store.js'
 import { nullLogger } from '../src/logging.js'
 import { consumePublicTextAttempts, consumeRunEvent, consumeRunState, createRunView } from '../src/ui/index.js'
 
-for(const scenario of ['default','candidate-json','retry','write-failure'] as const)it(`public worker ${scenario}: channel isolation, attempt settlement and next request`,async()=>{
+for(const scenario of ['default','candidate-json','retry','write-failure','withheld','safety-reject','safety-slow'] as const)it(`public worker ${scenario}: channel isolation, attempt settlement and next request`,async()=>{
   const db=new PGlite(),directory=await mkdtemp(join(tmpdir(),'public-text-boundary-'))
   await db.exec(await readFile(new URL('../../db/schema.sql',import.meta.url),'utf8'))
   let tail=Promise.resolve(),failAppend=scenario==='write-failure',wire=0
@@ -29,13 +30,23 @@ for(const scenario of ['default','candidate-json','retry','write-failure'] as co
     const request=JSON.parse(String(init?.body))
     if(!request.stream)return Response.json({choices:[{finish_reason:'stop',message:{content:'{"missing":[]}'}}],usage:{prompt_tokens:11,completion_tokens:7}})
     wire++
+    if(scenario==='safety-slow')return new Response(new ReadableStream({async start(controller){
+      const send=(delta:Record<string,unknown>,finish=false)=>controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({choices:[{delta,...finish?{finish_reason:'stop'}:{}}],...finish?{usage:{prompt_tokens:11,completion_tokens:7}}:{}})}\n\n`))
+      send({content:'safe'});send({content:' delayed'});await new Promise(resolve=>setTimeout(resolve,1100));send({content:' complete'},true)
+      controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));controller.close()
+    }}))
     const failed=scenario==='retry'&&wire===1
-    const text=scenario==='candidate-json'?JSON.stringify({body:'Hello.',status:'satisfied',gaps:[],checks:[{requirement:'Say hello.',status:'met',basis:'PRIVATE_CANDIDATE_SENTINEL'}]}):failed?'First partial.':'Hello.'
+    const text=scenario==='candidate-json'?JSON.stringify({body:'Hello.',status:'satisfied',gaps:[],checks:[{requirement:'Say hello.',status:'met',basis:'PRIVATE_CANDIDATE_SENTINEL'}]}):scenario==='withheld'&&wire===1?'Rejected by final.':scenario==='safety-reject'&&wire===1?'<think>PRIVATE_REASONING_SENTINEL</think>':failed?'First partial.':'Hello.'
     return new Response(`data: ${JSON.stringify({choices:[{delta:{content:text,reasoning_content:'PRIVATE_REASONING_SENTINEL'},finish_reason:failed?'length':'stop'}],usage:{prompt_tokens:11,completion_tokens:7}})}\n\ndata: [DONE]\n\n`)
   }})
   const model:ModelDriver=scenario==='candidate-json'?{previewFormat:'candidate-json',profile:source.profile,modelId:source.modelId,
     run:request=>source.run(request),structured:request=>source.structured(request),compact:request=>source.compact(request)}:source
-  const worker=createWorker({controlPlane:app,model,logger:nullLogger,kernel:{homesRoot:directory},worker:{id:'boundary-fixture',healthPort:0}})
+  const policy=Object.assign(new DefaultRuntimePolicy(),{
+    publicTextSafety:({text,isFinal}:{text:string;isFinal:boolean;approvedThrough:number})=>text.includes('<think>')
+      ?{safeThrough:0,reject:'unsafe_content' as const}:{safeThrough:scenario==='safety-slow'&&!isFinal?Math.min(text.length,4):text.length},
+    validateAssistantText:(text:string)=>text.startsWith('Rejected by final.')?'Synthetic final policy withheld this answer':null,
+  })
+  const worker=createWorker({controlPlane:app,model,policy,logger:nullLogger,kernel:{homesRoot:directory},worker:{id:'boundary-fixture',healthPort:0}})
   try{
     await app.enqueue({id:identity.runId,...identity,text:'Say hello.',mode:'chat',codeExecution:'disabled'})
     await worker.runNext()
@@ -51,6 +62,15 @@ for(const scenario of ['default','candidate-json','retry','write-failure'] as co
       assert.equal(wire,2);assert.equal(state.message?.body,'Hello.')
       assert.deepEqual(view.publicTextParts?.map(part=>[part.text,part.reason]),[['First partial.','superseded'],['Hello.','completed']])
       assert.notEqual(view.publicTextParts?.[0]?.attemptId,view.publicTextParts?.[1]?.attemptId)
+    }else if(scenario==='withheld'){
+      assert.equal(wire,2);assert.equal(state.message?.body,'Hello.')
+      assert.deepEqual(view.publicTextParts?.map(part=>part.reason),['superseded','completed'])
+    }else if(scenario==='safety-reject'){
+      assert.equal(wire,2);assert.equal(state.message?.body,'Hello.')
+      assert.deepEqual(view.publicTextParts?.map(part=>part.text),['Hello.'])
+    }else if(scenario==='safety-slow'){
+      assert.equal(wire,1);assert.equal(state.message?.body,'safe delayed complete')
+      assert.deepEqual(view.publicTextParts?.map(part=>[part.text,part.reason]),[['safe','interrupted']])
     }else{
       assert.equal(wire,1,'publication failure must not retry the provider')
       assert.equal(view.publicTextParts?.length,0);assert.equal(state.message,null)

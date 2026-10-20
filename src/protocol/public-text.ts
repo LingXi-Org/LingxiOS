@@ -41,3 +41,15 @@ export function publicTextPayload(event: RunEvent): PublicTextDelta | PublicText
 export function publicTextStatus(reason: PublicTextEndReason): PublicTextPart['status'] {
   return reason==='completed'||reason==='tool'?'complete':'incomplete'
 }
+
+/** Trusted synchronous streaming policy. Offsets count UTF-16 code units in text. */
+export interface PublicTextSafetyInput {
+  text: string
+  isFinal: boolean
+  approvedThrough: number
+}
+export interface PublicTextSafetyDecision {
+  /** Monotonic approved prefix; the runtime never publishes the uncertain suffix. */
+  safeThrough: number
+  reject?: 'unsafe_content' | 'unsupported_content'
+}

@@ -22,7 +22,7 @@ it('first chunk waits for durable acknowledgement; later chunks coalesce within 
     await writer.end('tool');assert.equal(committed.at(-1)?.kind,'public.text.ended')
   }finally{release();writer.dispose()}
 })
-it('UTF-8 chunks stay bounded without splitting code points and large buffered input is rejected',async()=>{
+it('UTF-8 chunks stay bounded without splitting code points and excessive public input suspends',async()=>{
   const committed:Event[]=[],writer=new PublicTextWriter(identity,async event=>{committed.push(event)},new AbortController().signal)
   const text='甲🙂'.repeat(2000)
   await writer.push(text);await writer.end('completed')
@@ -30,7 +30,7 @@ it('UTF-8 chunks stay bounded without splitting code points and large buffered i
   assert.ok(chunks.length>1);assert.ok(chunks.every(chunk=>Buffer.byteLength(chunk)<=4096));assert.equal(chunks.join(''),text)
   assert.ok(chunks.every(chunk=>!chunk.includes('\uFFFD')))
   const oversized=new PublicTextWriter(identity,async()=>assert.fail('oversized chunk must not publish'),new AbortController().signal)
-  await assert.rejects(oversized.push('x'.repeat(65_537)),PublicTextPublicationError);oversized.dispose()
+  await oversized.push('x'.repeat(200_001));await oversized.finish('safe complete answer');await oversized.end('completed');oversized.dispose()
 })
 it('failed persistence is nonretryable, exposes no failed buffer, and does not poison the next writer',async()=>{
   const events:Event[]=[],writer=new PublicTextWriter(identity,async()=>{throw new Error('synthetic write failure')},new AbortController().signal)

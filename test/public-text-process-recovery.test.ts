@@ -57,7 +57,8 @@ it('SIGKILL after an acknowledged public chunk preserves history when a fresh HT
     await pool.query("UPDATE lingxios.agent_work_items SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE id=$1",[identity.runId])
     await pool.query("UPDATE lingxios.agent_os_session_leases SET expires_at=NOW()-INTERVAL '1 second' WHERE work_id=$1",[identity.runId])
     const replacement=start()
-    const exited=await Promise.race([replacement.exited,delay(10_000).then(()=>{throw new Error('replacement worker did not finish')})])
+    let timer:ReturnType<typeof setTimeout>|undefined
+    const exited=await Promise.race([replacement.exited,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('replacement worker did not finish')),10_000)})]).finally(()=>clearTimeout(timer))
     assert.equal(exited.code,0,replacement.stderr())
     const state=await app.readRunState(identity),page=await app.readEvents(identity)
     assert.ok(state);assert.equal(state.run.fence,2);assert.equal(state.message?.body,'Recovered answer.')
