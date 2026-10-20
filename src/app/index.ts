@@ -264,8 +264,9 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     const tools = grantedTools(businessTools, await integration.capabilityResolver.resolve(context.work, { database: context.database })).filter(tool => permitsTool(context.work, tool))
     if (actions.some(action => !tools.some(tool => tool.action === action))) throw new Error('required capability was revoked or is unavailable in this mode')
   }
+  const activationTool = skills.some(skill => skill.delivery) ? skillActivationTool(skills, allowed) : undefined
   const extensionTools = [...(skills.length ? [skillTool(skills, allowed)] : []),
-    ...(skills.some(skill => skill.delivery) ? [skillActivationTool(skills, allowed)] : []), ...(presentations.length ? [presentationTool(presentations, allowed)] : [])]
+    ...(activationTool ? [activationTool] : []), ...(presentations.length ? [presentationTool(presentations, allowed)] : [])]
   const readableTools = [...businessTools, ...extensionTools]
   const helperTools = [...extensionTools, ...(readableTools.length ? [observationTool(readableTools, async (context, actions) => {
     if (actions.every(action => businessTools.some(tool => tool.action === action))) await allowed(context, actions)
@@ -285,7 +286,14 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   const integration = {
     tools: [...TASK_TOOLS, ...definitions.map(toolSpecification)],
     actionExecutor: toolExecutor(options.database, definitions, (work, input, signal) => createNativeArtifact(
-      resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), work, input, signal, options.objects), options.memory),
+      resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), work, input, signal, options.objects), options.memory, async (context, selection) => {
+        if (!activationTool) throw new Error('skill delivery activation is unavailable')
+        // Reuse the exact native contract and current capability checks, with the
+        // authoring tool's already-fenced transaction and request identity.
+        const result = await activationTool.execute(context, activationTool.parse(selection))
+        if (!result.ok) throw new Error('skill delivery activation failed')
+        return (result.value as { activation: import('../skills/delivery.js').SkillActivation }).activation
+      }),
     capabilityResolver: { async resolve(work: Omit<WorkItem, 'leaseToken'>, context?: import('../control-plane/stores.js').CapabilityResolutionContext) {
       const database = context?.database ?? options.database
       await authorizeConversationWork(database, work)
