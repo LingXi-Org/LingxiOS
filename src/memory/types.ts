@@ -104,6 +104,8 @@ export interface MemorySnapshot {
   id: string
   /** Server recorded the scope epochs for final per-attempt model admission. */
   admission?: true
+  /** Server-checked request version of this context, never model input. */
+  admissionRequestVersion?: number
   /** Trusted current scope proof; control metadata, never part of model context. */
   sourceEpochs?: import('./forget.js').MemoryEpoch[]
   legacyMemoryInvalidated?: boolean

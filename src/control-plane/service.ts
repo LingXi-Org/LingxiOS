@@ -460,6 +460,7 @@ export class ControlPlaneService {
       })()).then(async snapshot => ({ ...snapshot, session: await this.authorizeSession(work, snapshot.session) }))
     const [context, snapshot, dependencies] = await Promise.all([
       snapshotPromise.then(snapshot => this.deps.contextProvider.loadContext(work, signal, {
+        requestVersion: snapshot.requestVersion,
         legacyMemoryProof: !!snapshot.session && (
           (!!snapshot.session.summary && !snapshot.session.history.some(item => isMemorySummary(item) && 'role' in item && item.content === SUMMARY_PREFIX + snapshot.session!.summary && item.memorySources))
           || snapshot.session.history.some(item => !item.memorySources && 'type' in item

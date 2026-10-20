@@ -126,14 +126,20 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
     admit: (db: SqlQueryable,work: Omit<WorkItem,'leaseToken'>) => admitMemoryModel(db,options,work),
     prepareReview: (work: Omit<WorkItem,'leaseToken'>,action:HostAction) => withTransaction(database,db => prepareMemoryReview(db,options,work,action)),
     recordReview: (work: Omit<WorkItem,'leaseToken'>,action:HostAction,hash:string,review:MemoryReview) => withTransaction(database,db => recordMemoryReview(db,options,work,action,hash,review)),
-    async context(work: Omit<WorkItem, 'leaseToken'>, external?: AbortSignal, profile: 'fast' | 'deep' = 'deep', legacyMemoryProof = true) {
+    async context(work: Omit<WorkItem, 'leaseToken'>, external?: AbortSignal, profile: 'fast' | 'deep' = 'deep', expectedRequestVersion?: number, legacyMemoryProof = true) {
       const started=Date.now()
       const fast = profile === 'fast'
       const signal = AbortSignal.any([AbortSignal.timeout(settings.timeoutMs), ...external ? [external] : []])
       const db = deadlinePool(database, signal, settings.timeoutMs)
       const identity=identityOf(work),scopes=await abortable(authorizedScopes(options,identity,db,signal),signal)
       const epochs=await readMemoryEpochs(db,scopes)
-      const request = (await db.query(`SELECT request_snapshot FROM lingxios.agent_request_snapshots WHERE work_id=$1`,[work.id])).rows[0]?.['request_snapshot'] as
+      const source = (await db.query(`SELECT work.fence,jsonb_array_length(work.steer_inputs)+1 AS request_version,snapshot.request_snapshot
+        FROM lingxios.agent_work_items work LEFT JOIN lingxios.agent_request_snapshots snapshot ON snapshot.work_id=work.id
+        WHERE work.id=$1 AND work.tenant_id=$2`,[work.id,work.tenantId])).rows[0]
+      const requestVersion=Number(source?.['request_version'])
+      if (!source || Number(source['fence'])!==work.fence || !Number.isSafeInteger(requestVersion)
+        || expectedRequestVersion!==undefined && requestVersion!==expectedRequestVersion) throw new Error('memory context request revision is stale')
+      const request = source['request_snapshot'] as
         {originalText:string;revisions:Array<{text:string}>;inheritedRevisions?:Array<{text:string}>}|undefined
       const query = [request?.originalText ?? String(work.meta?.['text'] ?? ''),...request?.inheritedRevisions?.map(item => item.text) ?? [],
         ...request?.revisions.map(item => item.text) ?? []].join('\n').slice(-2000)
@@ -163,10 +169,10 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
       }
       const strategies=!fast && evolution?await withTransaction(db,client=>pinnedEvolution(client,work,scopes)):[]
       const legacyEvidence = legacyMemoryProof ? await legacyMemoryEvidence(db,work) : {}
-      if (epochs.length) await withTransaction(db,client=>rememberMemoryAdmission(client,options,work,epochs))
+      if (epochs.length) await withTransaction(db,client=>rememberMemoryAdmission(client,options,work,epochs,requestVersion))
       return fitMemorySnapshot(snapshotMemories({status:'available',core:roundRobin(core),directory:roundRobin(directory),recalled:roundRobin(recalled),strategies,
         sourceEpochs:epochs,...legacyEvidence,
-        ...(epochs.length ? {admission:true as const} : {}),
+        ...(epochs.length ? {admission:true as const,admissionRequestVersion:requestVersion} : {}),
         omitted:{core:omittedCore,directory:omittedDirectory,recalled:0,strategies:0},
         budget:{ratio:settings.ratio,maxTokens:fast ? Math.min(1024,settings.maxTokens) : settings.maxTokens,
           ...(options.contextBudget?.allocation ? {allocation:options.contextBudget.allocation} : {})},retrieval,

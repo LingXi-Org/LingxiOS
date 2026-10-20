@@ -145,7 +145,7 @@ export class AgentRuntime {
   private readonly eventSeqByRun = new Map<string, number>()
   private readonly eventTails = new Map<string, Promise<void>>()
   private readonly privateMemoryRuns = new Set<string>()
-  private readonly memoryAdmissionRuns = new Set<string>()
+  private readonly memoryAdmissionRuns = new Map<string,number>()
   private readonly hostsByRun = new Map<string, HostPort>()
   private readonly controls = new Map<string, AttemptSignals>()
   private readonly workspaces = new Map<string, WorkspaceState | null>()
@@ -311,7 +311,7 @@ export class AgentRuntime {
     let activeSession: SessionRecord | null = null
     const log = this.logger.child({ runId, workId: work.id, agentId: work.agentId, fence: work.fence })
     const model = executionModel(this.hostFor(work), this.model, work, this.rootModelBudget, event => this.event(work, runId, event),'model',this.fallbackModel,
-      ()=>this.memoryAdmissionRuns.has(runId))
+      ()=>this.memoryAdmissionRuns.get(runId))
 
     try {
       const recoveryStarted = performance.now()
@@ -390,10 +390,10 @@ export class AgentRuntime {
   ): Promise<void> {
     const host = this.hostFor(work)
     const fastModel = this.fastModel ? executionModel(host, this.fastModel, work, this.rootModelBudget,
-      event => this.event(work, runId, event), 'fast-model',undefined,()=>this.memoryAdmissionRuns.has(runId)) : undefined
+      event => this.event(work, runId, event), 'fast-model',undefined,()=>this.memoryAdmissionRuns.get(runId)) : undefined
     const contextBegan = performance.now()
     const context = await (host.loadInitialContext?.(work) ?? host.loadContext(work))
-    if (context.memory?.admission) this.memoryAdmissionRuns.add(runId)
+    if (context.memory?.admission) this.memoryAdmissionRuns.set(runId,context.memory.admissionRequestVersion ?? 0)
     if(context.memory || context.capabilities.includes('memory') || context.tools?.some(tool=>tool.action.startsWith('memory.'))) this.privateMemoryRuns.add(runId)
     await this.event(work, runId, {
       kind: 'input.loaded', stage: 'completed', visibility: 'internal',
@@ -500,7 +500,7 @@ export class AgentRuntime {
       // Dynamic context stays outside conversational history; memory snapshots
       // are recorded separately with the model call for traceability.
       const liveContext = hop === 0 ? context : await this.hostFor(work).loadContext(work)
-      if (liveContext.memory?.admission) this.memoryAdmissionRuns.add(runId)
+      if (liveContext.memory?.admission) this.memoryAdmissionRuns.set(runId,liveContext.memory.admissionRequestVersion ?? 0)
       if (liveContext.responseProfile === 'fast' && !fastModel) throw new Error('automatic response routing requires a fast model configuration')
       const model = liveContext.responseProfile === 'fast' ? fastModel! : deepModel
       // The first deep context after an upgrade supplies the evidence skipped by the fast pass.

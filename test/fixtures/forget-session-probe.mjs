@@ -28,7 +28,7 @@ const usage={available:true,inputTokens:20,outputTokens:5}
 let docId,activeRun,localCalls=0
 const record=(purpose,request)=>calls.push({run:activeRun,purpose,markerCount:count(request.items),
  publicUserCount:JSON.stringify(request.items).includes('PUBLIC_USER_FACT')?1:0,publicFinalCount:JSON.stringify(request.items).includes('PUBLIC_FINAL_FACT')?1:0,
- controlFieldCount:['sourceEpochs','memorySources','legacyMemoryCells','legacyMemoryInvalidated','forgottenAt'].filter(key=>JSON.stringify(request.items).includes(key)).length,
+ controlFieldCount:['admissionRequestVersion','sourceEpochs','memorySources','legacyMemoryCells','legacyMemoryInvalidated','forgottenAt'].filter(key=>JSON.stringify(request.items).includes(key)).length,
  receiptCount:count(request.items.filter(x=>x.type==='function_call_output')),
  summaryCount:count(request.items.filter(x=>typeof x.content==='string'&&x.content.startsWith('Conversation continuity summary'))),
  dynamicMemoryCount:count(request.items.filter(x=>typeof x.content==='string'&&x.content.startsWith('Cognitive memory snapshot')))})

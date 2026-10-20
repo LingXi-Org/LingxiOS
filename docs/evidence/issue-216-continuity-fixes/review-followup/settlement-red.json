@@ -1,0 +1,21 @@
+{
+  "sourceCommit": "cb6f7f672216d57f40def58a6312c4827e5f4b69",
+  "fixture": "exclusive local PostgreSQL, existing image, network none, Unix socket, private tmpfs",
+  "productionRequests": 0,
+  "providerRequests": 0,
+  "sharedDatabaseQueries": 0,
+  "created": true,
+  "cleanup": true,
+  "network": "none",
+  "postgresVersion": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "settledWhileFinalAdmissionPending": true,
+  "persistedSettledBeforeAdmissionReturned": true,
+  "finalAllowed": true,
+  "budget": {
+    "calls": 1,
+    "tokens": 0
+  },
+  "violation": true,
+  "passed": false,
+  "errorClass": "AssertionError"
+}

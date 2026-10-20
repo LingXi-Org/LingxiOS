@@ -41,7 +41,7 @@ it('rejects revoked sources and unproven legacy summaries only with server conta
 
 it('control proof neither enters provider input nor consumes memory body allocation', () => {
   const plain = snapshot()
-  const controlled = { ...plain, admission: true as const, sourceEpochs: Array.from({ length: 12 }, (_, i) => ({
+  const controlled = { ...plain, admission: true as const, admissionRequestVersion: 777, sourceEpochs: Array.from({ length: 12 }, (_, i) => ({
     ...epoch, scopeId: `private-${i}-${'x'.repeat(1000)}`,
   })), legacyMemoryInvalidated: true }
   assert.deepEqual(memorySnapshotBody(fitMemorySnapshot(controlled, 128000)), memorySnapshotBody(fitMemorySnapshot(plain, 128000)))

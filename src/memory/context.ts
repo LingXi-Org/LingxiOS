@@ -7,7 +7,7 @@ export function snapshotMemories(input: Omit<MemorySnapshot,'id'>): MemorySnapsh
 
 /** Do not serialize admission/provenance control data into prompts or charge body budget for it. */
 export function memorySnapshotBody<T extends Omit<MemorySnapshot, 'id'>>(snapshot: T) {
-  const { admission: _admission, sourceEpochs: _epochs, legacyMemoryInvalidated: _legacy,
+  const { admission: _admission, admissionRequestVersion: _version, sourceEpochs: _epochs, legacyMemoryInvalidated: _legacy,
     legacyMemoryCells: _cells, legacyMemoryCellsComplete: _complete, ...body } = snapshot
   return body
 }
