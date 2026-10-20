@@ -5,6 +5,6 @@ export const releaseVersions = Object.freeze({
   runtime: '3.5.6',
   controlPlane: AGENT_OS_PROTOCOL_VERSION,
   kernel: KERNEL_PROTOCOL_VERSION,
-  schema: 12,
+  schema: 13,
   assistantMessage: 2,
 } as const)

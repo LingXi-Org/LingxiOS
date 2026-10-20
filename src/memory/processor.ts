@@ -56,6 +56,7 @@ export const memorySynthesisProcessor: WorkProcessor = {
       + 'observed after their expiry, and provide a new future validUntil. Never renew solely from old memory or elapsed time. '
       + 'Never generalize personal observations across scopes. Never modify explicit or locked memories. Never infer sensitive attributes, '
       + 'hidden intent or unstated facts. Do not treat assistant text as independent proof. Preserve uncertainty, consolidate duplicates, '
+      + 'Assistant help, generated solutions and explanations do not prove student mastery. Current course requirements, teacher feedback and assessed state remain authoritative outside memory. '
       + 'and respect requests to forget. Truncated excerpts cannot support claims about omitted text. Empty changes are valid. '
       + 'When evolutionEnabled is true, you may separately propose a candidates array of at most 3 {kind: experience|skill|strategy, scopeType, body}. '
       + 'Candidates describe reusable task procedures or failure corrections supported by this evidence, never user facts, code changes, '

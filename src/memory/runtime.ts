@@ -6,7 +6,7 @@ import { memoryDocument, memoryEntry, scopeParams } from './store.js'
 import { createSemanticMemory } from './semantic.js'
 import { executeMemorySynthesis, parseMemoryChanges, parseMemoryConflicts } from './synthesis.js'
 import { executeEvolution, freezeEvolutionBenchmark, parseEvolutionCandidates, pinnedEvolution, proposeEvolution } from './evolution.js'
-import { withTransaction } from '../control-plane/pg-store.js'
+import { workItemFromRow, withTransaction } from '../control-plane/pg-store.js'
 import { authorizedScopes, identityOf, memorySettings, sourceIdentity, type MemoryOptions } from './access.js'
 import { createMemoryService } from './service.js'
 import { snapshotMemories, fitMemorySnapshot, roundRobin } from './context.js'
@@ -61,6 +61,13 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
     async execute(context, input) {
       const { candidates, ...memoryInput } = input
       const value = await executeMemorySynthesis(context.database,context.work,method,memoryInput,options)
+      if(semantic && method==='apply' && value && 'outcome' in value && value.outcome==='committed') {
+        const row=(await context.database.query('SELECT * FROM lingxios.agent_work_items WHERE id=$1 AND tenant_id=$2',[context.work.meta?.['sourceRunId'],context.work.tenantId])).rows[0]
+        if(row) {
+          const source=workItemFromRow(row,'',1)
+          for(const scope of await maintenanceScopes(context.work,context.database)) if(scope.scopeType===context.work.meta?.['scopeType'] && scope.scopeId===context.work.meta?.['scopeId']) await semantic.enqueue(source,scope,context.database)
+        }
+      }
       if (method === 'apply' && value && 'outcome' in value && value.outcome === 'committed' && evolution && (candidates as unknown[] | undefined)?.length) {
         const parsed = parseEvolutionCandidates(candidates)
         const scopes = (await maintenanceScopes(context.work,context.database)).filter(scope => scope.scopeType===context.work.meta?.['scopeType'] && scope.scopeId===context.work.meta?.['scopeId'])
@@ -118,6 +125,7 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
     prepareReview: (work: Omit<WorkItem,'leaseToken'>,action:HostAction) => withTransaction(database,db => prepareMemoryReview(db,options,work,action)),
     recordReview: (work: Omit<WorkItem,'leaseToken'>,action:HostAction,hash:string,review:MemoryReview) => withTransaction(database,db => recordMemoryReview(db,options,work,action,hash,review)),
     async context(work: Omit<WorkItem, 'leaseToken'>, external?: AbortSignal, profile: 'fast' | 'deep' = 'deep') {
+      const started=Date.now()
       const fast = profile === 'fast'
       const signal = AbortSignal.any([AbortSignal.timeout(settings.timeoutMs), ...external ? [external] : []])
       const db = deadlinePool(database, signal, settings.timeoutMs)
@@ -127,6 +135,7 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
       const query = [request?.originalText ?? String(work.meta?.['text'] ?? ''),...request?.inheritedRevisions?.map(item => item.text) ?? [],
         ...request?.revisions.map(item => item.text) ?? []].join('\n').slice(-2000)
       const core:MemoryDocument[][]=[],directory:MemoryEntry[][]=[],recalled:MemoryHit[][]=[],retrieval:import('./types.js').MemorySearchResult['retrieval'][]=[]
+      const indices:NonNullable<import('./types.js').MemorySearchResult['index']>[]=[]
       let omittedCore=0,omittedDirectory=0
       for (let index = 0; index < scopes.length; index += settings.concurrency) {
         const batch = await Promise.all(scopes.slice(index, index + settings.concurrency).map(async scope => {
@@ -137,12 +146,13 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
             COALESCE((SELECT jsonb_agg(directory) FROM (SELECT *,COUNT(*) OVER() AS total FROM lingxios.agent_memories
               WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3 AND origin<>'evolved'
                 AND status='active' AND (valid_until IS NULL OR valid_until>NOW()) ORDER BY path LIMIT (CASE WHEN $4::boolean THEN 0 ELSE 64 END)) directory),'[]') AS directory`, [...scopeParams(scope),fast])).rows[0]!
-          const result = fast || options.contextBudget?.optionalRecall
+          const result:import('./types.js').MemorySearchResult = (fast && !options.contextBudget?.allocation) || options.contextBudget?.optionalRecall
             ? { items: [], nextCursor: null, retrieval: 'optional_deferred' as const }
             : await abortable(service.recall(work, scope, query, db, signal), signal)
           return { rows: inventory['core'] as Record<string, unknown>[], entries: inventory['directory'] as Record<string, unknown>[], result }
         }))
         for (const { rows, entries, result } of batch) {
+          if(result.index) indices.push(result.index)
           core.push(rows.map(memoryDocument)); omittedCore+=Number(rows[0]?.['total']??0)-rows.length
           directory.push(entries.map(row => memoryEntry(memoryDocument(row)))); omittedDirectory+=Number(entries[0]?.['total']??0)-entries.length
           recalled.push((result.items as MemoryHit[]).filter(item => item.layer!=='core')); retrieval.push(result.retrieval)
@@ -153,7 +163,9 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
       if (scopes.some(scope => !current.some(candidate => sameScope(scope,candidate)))) throw new Error('memory scope was revoked during retrieval')
       return fitMemorySnapshot(snapshotMemories({status:'available',core:roundRobin(core),directory:roundRobin(directory),recalled:roundRobin(recalled),strategies,
         omitted:{core:omittedCore,directory:omittedDirectory,recalled:0,strategies:0},
-        budget:{ratio:settings.ratio,maxTokens:fast ? Math.min(1024,settings.maxTokens) : settings.maxTokens},retrieval}),Infinity)
+        budget:{ratio:settings.ratio,maxTokens:fast ? Math.min(1024,settings.maxTokens) : settings.maxTokens,
+          ...(options.contextBudget?.allocation ? {allocation:options.contextBudget.allocation} : {})},retrieval,
+        diagnostics:{indices,elapsedMs:Date.now()-started,coreRead:core.flat().length,recalled:recalled.flat().length,injected:0,omissions:[]}}),Infinity)
     },
   }
 }

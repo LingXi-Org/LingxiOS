@@ -586,7 +586,11 @@ export class AgentRuntime {
       const tracePayload = (value: unknown) => this.modelTrace.redact ? this.modelTrace.redact(structuredClone(value)) : value
       const traceExpiresAt = new Date(Date.now() + this.modelTrace.retentionDays * 86_400_000).toISOString()
       await this.event(work, runId, { kind: 'model.started', stage: 'started', visibility: 'internal', data: {
-        hop: hop + 1, callId: modelCallId, ...(memoryForModel ? { memorySnapshotId: memoryForModel.id, memorySnapshot: memoryForModel }
+        hop: hop + 1, callId: modelCallId, ...(memoryForModel ? { memorySnapshotId: memoryForModel.id, memorySnapshot: {
+          status:memoryForModel.status,retrieval:memoryForModel.retrieval,budget:memoryForModel.budget,omitted:memoryForModel.omitted,
+          counts:{core:memoryForModel.core.length,directory:memoryForModel.directory.length,recalled:memoryForModel.recalled.length,strategies:memoryForModel.strategies.length},
+          diagnostics:memoryForModel.diagnostics,
+        } }
           : hadMemory ? { memoryOmittedForBudget: true } : {}),
         model: model.modelId ?? 'unknown', providerConfigSha256: model.configurationFingerprint ?? 'unknown', inputSha256,
         program: promptProgram(session.promptContext.manifest!, execution, model, inputSha256, liveContext.harness?.hash),

@@ -45,6 +45,8 @@ export async function forgetMemoryScope(database: SqlQueryable, scope: MemorySco
     WHERE tenant_id=$1 AND scopes @> $2::jsonb`, [scope.tenantId, JSON.stringify([scope])])
   await database.query(`UPDATE lingxios.agent_memory_evidence_scopes SET status='superseded'
     WHERE source_run_id IN (SELECT source_run_id FROM lingxios.agent_memory_evidence WHERE tenant_id=$1 AND status='superseded')`, [scope.tenantId])
+  await database.query(`DELETE FROM lingxios.agent_memory_evidence_segments WHERE source_run_id IN
+    (SELECT source_run_id FROM lingxios.agent_memory_evidence WHERE tenant_id=$1 AND status='superseded')`,[scope.tenantId])
   for (const table of ['agent_memory_commands','agent_memory_reviews','agent_memory_conflicts']) {
     await database.query(`DELETE FROM lingxios.${table} WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3`,[scope.tenantId,scope.scopeType,scope.scopeId])
   }

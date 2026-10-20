@@ -24,7 +24,7 @@ export async function prepareMemoryReview(database: SqlQueryable,options: Memory
   if (action.runId!==work.id || action.idempotencyKey!==actionKeyOf(action)) throw new Error('invalid memory action identity')
   const input = parseMemoryInput(action.action.split('.')[1] as MemoryMethod,action.args)
   const identity = identityOf(work),scope: MemoryScope = { tenantId: work.tenantId,scopeType: String(input['scopeType']),scopeId: String(input['scopeId']) }
-  await authorizeScope(options,identity,database,scope)
+  await authorizeScope(options,identity,database,scope,'write')
   const [epoch] = await lockMemoryScopes(database,[scope])
   const live=await database.query(`SELECT id,jsonb_array_length(steer_inputs)+1 AS request_version FROM lingxios.agent_work_items WHERE id=$1 AND fence=$2 AND tenant_id=$3 AND agent_id=$4
     AND principal_id=$5 AND status='leased' AND lease_expires_at>NOW() AND cancel_requested_at IS NULL FOR UPDATE`,

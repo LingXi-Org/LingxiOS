@@ -9,6 +9,15 @@ export interface MemoryIdentity {
 }
 
 export interface MemoryScope { tenantId: string; scopeType: string; scopeId: string }
+/** Only the trusted product resolver may grant continuity beyond an IM audience. */
+export interface MemoryScopeGrant extends MemoryScope {
+  continuity?: 'principal' | 'principal_course' | 'course_shared' | 'agent'
+  /** Shared course material can be read without admitting personal evidence into it. */
+  readOnly?: boolean
+  explicitOnly?: boolean
+  /** Former product identity, used only by the checked legacy migration. */
+  legacyScope?: MemoryScope
+}
 export type MemoryLayer = 'core' | 'reference'
 export interface MemorySource {
   sourceRef: string
@@ -36,6 +45,8 @@ export interface MemoryDocument extends MemoryScope {
   sources: MemorySource[]
   validUntil: string | null
   updatedAt: string
+  /** Context-only fragment; the stored document and its version remain complete. */
+  contextFragment?: { offset: number; end: number; total: number; version: number }
 }
 export type MemoryEntry = Omit<MemoryDocument, 'body' | 'sources'>
 export interface MemoryPage<T> { items: T[]; nextCursor: string | null }
@@ -53,7 +64,8 @@ export interface MemoryHistoryHit {
   observedAt: string
 }
 export interface MemorySearchResult extends MemoryPage<MemoryHit | MemoryHistoryHit> {
-  retrieval: 'browse' | 'keyword' | 'hybrid' | 'keyword_embedding_unavailable' | 'optional_timeout' | 'optional_deferred'
+  index?: {key:string;model:string;dimensions:number;matchedCurrent:number}
+  retrieval: 'browse' | 'keyword' | 'hybrid' | 'hybrid_pending' | 'keyword_embedding_unavailable' | 'optional_timeout' | 'optional_deferred'
 }
 export interface MemoryContent {
   path: string
@@ -85,6 +97,8 @@ export interface MemoryDiagnostics {
   conflicts: Array<{ id: string; sourceRunIds: string[]; reason: string; memoryIds: string[] }>
   failedReflections: Array<{ id: string; attempts: number; error: string | null }>
   nextCursor: string | null
+  maintenance?: {pendingSources:number;incompleteSources:number;processedSources:number;pendingSegments:number}
+  index?: {key:string;eligible:number;indexed:number}
 }
 export interface MemorySnapshot {
   id: string
@@ -94,9 +108,12 @@ export interface MemorySnapshot {
   recalled: MemoryHit[]
   strategies: Array<Record<string, unknown>>
   omitted: { core: number; directory: number; recalled: number; strategies: number }
-  budget: { ratio: number; maxTokens: number }
+  budget: { ratio: number; maxTokens: number; allocation?: MemoryAllocation }
   retrieval: MemorySearchResult['retrieval'][]
+  diagnostics?: { indices?: NonNullable<MemorySearchResult['index']>[]; elapsedMs: number; coreRead: number; recalled: number; injected: number;
+    omissions: Array<{ field: string; id: string; reason: 'allocation' | 'fragmented' | 'source_limit' }> }
 }
+export interface MemoryAllocation { core: number; directory: number; recalled: number; strategies: number }
 export interface MemoryReview {
   approved: boolean
   explicit: boolean
