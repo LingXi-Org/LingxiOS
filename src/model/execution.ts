@@ -8,6 +8,7 @@ import type { ModelDriver, ModelUsage } from './driver.js'
 import { abortable } from '../deadline.js'
 import { fitsModel, inputTokens as estimateInputTokens, modelProfile } from './profile.js'
 import { modelFailure, recoveryPolicy, type ModelFailure } from './recovery.js'
+import type { ModelBudgetLimits } from '../control-plane/stores.js'
 
 export interface ModelPricing {
   version: string
@@ -73,12 +74,13 @@ export interface ApprovedModelFallback {
 export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>,
   model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'countTokens' | 'configurationFingerprint' | 'recovery' | 'profile' | 'contextWindowTokens'>, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
-  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model') {
+  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', memoryAdmission?: () => boolean) {
   let sequence = 0, calls = 0, tokens = 0, cost = 0
   const started = Date.now()
   const invoke = async <T extends { model?: string; usage: ModelUsage }>(purpose: ModelCallObservation['purpose'],
     request: { signal?: AbortSignal | undefined; input?: unknown; instructions?: string; prompt?: PromptManifest },
-    operation: (signal: AbortSignal, callId: string, diagnostics: Record<string, unknown>, selected: typeof model) => Promise<T>,
+    operation: (signal: AbortSignal, callId: string, diagnostics: Record<string, unknown>, selected: typeof model,
+      admit?: () => Promise<void>) => Promise<T>,
     callModel = model, fallback?: { model: typeof model; authorize(signal: AbortSignal): Promise<void> }): Promise<T> => {
     const instructionsSha256 = request.instructions === undefined ? undefined : textSha256(request.instructions)
     if (request.prompt && request.prompt.instructionsSha256 !== instructionsSha256) throw new Error('prompt manifest does not match model instructions')
@@ -103,7 +105,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
         : tokens + input + output > limits.maxTokens ? 'tokens' : cost + reservedCost > limits.maxCostMicros ? 'cost' : undefined
       if (dimension) throw new ModelBudgetExceededError('Root work budget limit reached', dimension)
       const callId = attempt === 1 ? logicalCallId : `${logicalCallId}:retry:${attempt}`
-      const reservation = await host.reserveModelCall(work, callId, {
+      const reserved: ModelBudgetLimits = {
         ...limits, maxExecutionMs: limits.wallClockMs,
         deadlineAt: new Date(Date.now() + limits.wallClockMs).toISOString(),
         reservedTokens: input + output, reservedInputTokens: input, reservedOutputTokens: output, reservedCostMicros: reservedCost,
@@ -112,7 +114,8 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
           inputTokens: input,
           outputTokens: output, executionMs: recovery.totalTimeoutMs,
         } } : {}),
-      })
+      }
+      const reservation = await host.reserveModelCall(work, callId, reserved)
       if (!reservation.allowed) throw new ModelBudgetExceededError('Root work budget limit reached', reservation.dimension)
       const remaining = Date.parse(reservation.deadlineAt) - Date.now()
       if (remaining <= 0) throw new ModelBudgetExceededError('Root work execution time exhausted', 'deadline')
@@ -120,15 +123,26 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       const rootTimeout = AbortSignal.timeout(Math.min(2_147_483_647, remaining))
       const signal = AbortSignal.any([logicalSignal, rootTimeout])
       const began = performance.now()
-      await emit?.({
-        kind: 'model.request.started', stage: 'started', visibility: 'internal',
-        data: { callId, logicalCallId, purpose, model: callModel.modelId ?? 'unknown',
-          ...(request.prompt ? { prompt: request.prompt } : {}), ...(instructionsSha256 ? { instructionsSha256 } : {}) } })
       let result: T | undefined, failure: unknown
-      const diagnostics: Record<string, unknown> = {}
-      try { result = await abortable(operation(signal, callId, diagnostics,callModel), signal) } catch (error) { failure = error }
+      const diagnostics: Record<string, unknown> = {providerNotStarted:true}
+      const admit=memoryAdmission?.() ? async () => {
+        signal.throwIfAborted()
+        // Same call id, already reserved: the store only validates the server-owned
+        // context proof in a short transaction. It cannot charge or issue again.
+        const admitted=await host.reserveModelCall(work,callId,{...reserved,memoryAdmission:true})
+        if (!admitted.allowed) throw new ModelBudgetExceededError('Root work budget limit reached',admitted.dimension)
+      } : undefined
+      try {
+        await emit?.({
+          kind: 'model.request.started', stage: 'started', visibility: 'internal',
+          data: { callId, logicalCallId, purpose, model: callModel.modelId ?? 'unknown',
+            ...(request.prompt ? { prompt: request.prompt } : {}), ...(instructionsSha256 ? { instructionsSha256 } : {}) } })
+        delete diagnostics['providerNotStarted']
+        result = await abortable(operation(signal, callId, diagnostics,callModel,admit), signal)
+      } catch (error) { failure = error }
       const classifiedFailure = failure ? modelFailure(failure, request.signal?.aborted) : undefined
-      const usage = result?.usage ?? (failure instanceof ModelDriverError ? failure.diagnostics.usage : undefined)
+      const usage = diagnostics['providerNotStarted'] ? {available:true,inputTokens:0,outputTokens:0}
+        : result?.usage ?? (failure instanceof ModelDriverError ? failure.diagnostics.usage : undefined)
       const inputTokens = usage?.available ? usage.inputTokens : input
       const outputTokens = usage?.available ? usage.outputTokens : output
       const costMicros = Math.ceil((inputTokens * limits.inputCostMicrosPerMillion + outputTokens * limits.outputCostMicrosPerMillion) / 1_000_000)
@@ -153,6 +167,9 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       if (result) return { ...result, callId, logicalCallId, ...(Object.keys(diagnostics).length ? {
         diagnostics: { ...('diagnostics' in result ? result.diagnostics as Record<string, unknown> : {}), ...diagnostics },
       } : {}) }
+      // Admission, publication and cancellation gates are not provider failures:
+      // settle the one reservation but never retry/fallback past a rejected gate.
+      if (diagnostics['providerNotStarted']) throw failure
       if (signal.aborted) throw deadlineFailure(rootTimeout, signal)
       if (attempt >= recovery.maxAttempts) throw failure
       if (fallback && !routed && classifiedFailure && ['authorization','quota','circuit_open','network','timeout','unavailable','rate_limit'].includes(classifiedFailure.category)) {
@@ -174,7 +191,8 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
 
 export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>, source: ModelDriver, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
-  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', approvedFallback?: ApprovedModelFallback): ModelDriver {
+  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', approvedFallback?: ApprovedModelFallback,
+  memoryAdmission?: () => boolean): ModelDriver {
   const model = source.singleAttempt?.() ?? source
   const secondary = approvedFallback?.model.singleAttempt?.() ?? approvedFallback?.model
   if (approvedFallback) {
@@ -188,7 +206,16 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
     }
   }
   const admission = namespace !== 'fast-model' && executionClassOf(work) === 'operation' ? 'background' as const : 'foreground' as const
-  const { invoke, nextCallId } = modelExecution(host, model, work, limits, emit, namespace)
+  const { invoke, nextCallId } = modelExecution(host, model, work, limits, emit, namespace,memoryAdmission)
+  const admittedStart = <T>(selected: ModelDriver,signal: AbortSignal,diagnostics: Record<string,unknown>,
+    admit: (()=>Promise<void>)|undefined,start: (beforeProvider?:()=>void|Promise<void>)=>Promise<T>) => {
+    diagnostics['providerNotStarted']=true
+    const ready=()=>{ signal.throwIfAborted(); delete diagnostics['providerNotStarted'] }
+    // ResourceQuota must obtain capacity before linearizing final admission.
+    if (selected.deferredAdmission) return start(()=>admit ? admit().then(ready) : ready())
+    const send=()=>{ ready(); return start() }
+    return admit ? admit().then(send) : send()
+  }
   const check = ({ prompt: _prompt, signal: _signal, ...input }: { prompt?: PromptManifest; signal?: AbortSignal | undefined }) => {
     if (!fitsModel(model, input)) throw new ModelContextBudgetError()
   }
@@ -216,12 +243,14 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
         throw new Error('approval explanations cannot execute tools')
       }
       check(request)
-      return invoke('agent-turn', request, (signal, callId, diagnostics,selected) => {
-        request.onAttempt?.(callId)
+      return invoke('agent-turn', request, (signal, callId, diagnostics,selected,admit) => {
+        diagnostics['providerNotStarted']=true
+        const gate=request.onAttempt?.(callId)
+        const start=()=>admittedStart(selected as ModelDriver,signal,diagnostics,admit,beforeProvider=>{
         const began = performance.now()
         let firstTextMs: number | undefined
         let active = true
-        const result = (selected as ModelDriver).run({ ...request, admission, signal, onTextDelta: delta => {
+        const result = (selected as ModelDriver).run({ ...request, admission, signal, beforeProvider, onTextDelta: delta => {
             if (!active || signal.aborted) return
             if (delta) firstTextMs ??= performance.now() - began
             request.onTextDelta?.(delta)
@@ -233,17 +262,21 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
         }
         void result.then(finished, finished)
         return result
+        })
+        return gate ? gate.then(start) : start()
       },model,route('agent-turn',request))
     },
     structured: request => {
       check(request)
-      return invoke('structured', request, (signal,_id,_diagnostics,selected) => (selected as ModelDriver).structured({ ...request, admission, signal }),model,route('structured',request))
+      return invoke('structured', request, (signal,_id,diagnostics,selected,admit) =>
+        admittedStart(selected as ModelDriver,signal,diagnostics,admit,beforeProvider=>(selected as ModelDriver).structured({ ...request, admission, signal,beforeProvider })),model,route('structured',request))
     },
     compact: request => {
       const compiled = { ...request, instructions: COMPACTION_PROMPT.instructions, prompt: COMPACTION_PROMPT.manifest }
       check(compiled)
-      return invoke('compaction', compiled, (signal,_id,_diagnostics,selected) => (selected as ModelDriver).compact({ ...compiled,
-        admission: request.admission === 'background' ? 'background' : admission, signal }),model,route('compaction',compiled))
+      return invoke('compaction', compiled, (signal,_id,diagnostics,selected,admit) =>
+        admittedStart(selected as ModelDriver,signal,diagnostics,admit,beforeProvider=>(selected as ModelDriver).compact({ ...compiled,
+          admission: request.admission === 'background' ? 'background' : admission, signal,beforeProvider })),model,route('compaction',compiled))
     },
   }
 }

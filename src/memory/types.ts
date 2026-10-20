@@ -102,6 +102,8 @@ export interface MemoryDiagnostics {
 }
 export interface MemorySnapshot {
   id: string
+  /** Server recorded the scope epochs for final per-attempt model admission. */
+  admission?: true
   status: 'available' | 'unavailable'
   core: MemoryDocument[]
   directory: MemoryEntry[]

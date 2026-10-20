@@ -425,7 +425,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     logger, metrics,
     work: new PgWorkStore(options.database), sessions,
     events: new PgEventStore(options.database, Boolean(integration?.delivery)), actions: new PgActionLedger(options.database),
-    modelBudgets: new PgModelBudgetStore(options.database), modelBudget,
+    modelBudgets: new PgModelBudgetStore(options.database,memory?.admit), modelBudget,
     artifactStager: {
       stage: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal, options.objects),
       stream: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal, options.objects),
