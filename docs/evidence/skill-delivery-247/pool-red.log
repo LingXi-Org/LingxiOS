@@ -8,9 +8,9 @@ not ok 1 - transactional activation and final verification reuse one connection 
   failureType: 'testCodeFailure'
   error: |-
     {"ok":false,"executionState":"no_effect","code":"transaction_rolled_back","diagnostics":{"category":"unknown","retryable":false,"recovery":"none","correlationId":"156ddf50-132d-4682-9b18-4628e378fe76"},"error":"Native tool operation failed"}
-    
+
     false !== true
-    
+
   code: 'ERR_ASSERTION'
   name: 'AssertionError'
   expected: true
