@@ -1,0 +1,1 @@
+{"expectation":"red","countsControl":0,"legacyArrayLeak":1,"expiredTraceLeak":1,"reproduced":true}

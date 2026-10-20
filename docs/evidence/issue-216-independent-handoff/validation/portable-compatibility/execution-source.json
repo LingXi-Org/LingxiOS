@@ -1,0 +1,16 @@
+{
+  "sourceRevision": "e10bcd68afe000c5515eeafa93159513062fd1c8",
+  "revisionIsCallerSupplied": true,
+  "node": "22.23.3",
+  "selectedInputSha256": {
+    "package.json": "4a23d38e6008e1bf81f03227c71943fab925bfc00a456db6216f23be899a27c8",
+    "db/schema.sql": "2bb265989aa2e4f5cf7686d9108e70ab970688a112a8baaa8f03b97f998bdc41",
+    "dist/test/memory-fixture.js": "ddad6e74a100f08f3fea4246af0b3ea84b0209e6f201c312c726658eaa0ef6d2",
+    "dist/src/app/index.js": "188afa7c506d64bc142d890f9bee78b6bb142398b818fd38da733e6c1c0f0178",
+    "dist/src/app/maintenance.js": "1c271ad526df04e67819eb3cd498ebad886391d4388cdba44e9bc521bb06c490",
+    "dist/src/runtime/runtime.js": "cb697238ed4619d376bb1ad37507a3d513f865c1801d105142fbd40bed70feb5",
+    "dist/src/runtime/compaction.js": "620bc7aace6b67fa3d57562f30ea1771547c0be27318415c8b16ec48efc10304",
+    "dist/src/memory/history.js": "6fa20b3b13b92d92bc630a116baf9c6a0c508d881f8246a595948478d8188adb"
+  },
+  "scope": "Synthetic local PGlite and model stub; no provider, production, network service, or worker isolation validation."
+}

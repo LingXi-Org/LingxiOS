@@ -1,0 +1,69 @@
+{
+  "historicalArtifacts": [
+    {
+      "originalLogicalName": "original-red/legacy-core-probe.mjs",
+      "sha256": "5f6c3cc05ab7c3a998a1f1e8631d4e15c5baea9b84e0be8ce739d0bc649aa396",
+      "copied": false
+    },
+    {
+      "originalLogicalName": "original-green/legacy-core-green-probe.mjs",
+      "sha256": "0251a2df455ee4a2265f0e3e3c4e98fa11ff259a65b7aca5c4d8b1735f1880c2",
+      "copied": false
+    },
+    {
+      "originalLogicalName": "original-green/compatibility-probe.mjs",
+      "sha256": "7aca492b6b1ada34f30f7a07bc7fdf0436fb6a1cc4beccee3cb60289faaa9a0a",
+      "copied": false
+    },
+    {
+      "originalLogicalName": "original-red/legacy-core-counts.json",
+      "sha256": "7353f959c4874faa449231808ae49c81702749c1dff527e7d3547d065b677a2d",
+      "copy": "evidence/original-red/legacy-core-counts.json",
+      "byteIdentical": true
+    },
+    {
+      "originalLogicalName": "original-red/source-proof.json",
+      "sha256": "d981568612511acefa132561fa9603ec6a8c90a5a6c0db07659e2985a48e40e8",
+      "copy": "evidence/original-red/source-proof.json",
+      "byteIdentical": true
+    },
+    {
+      "originalLogicalName": "original-green/legacy-core-counts.json",
+      "sha256": "186e165bdf3b02349d43892c4a9dd5f48ac0475dc5d0dad8fc8454563c4237de",
+      "copy": "evidence/original-green/legacy-core-counts.json",
+      "byteIdentical": true
+    },
+    {
+      "originalLogicalName": "original-green/compatibility-counts.json",
+      "sha256": "ad0d366dd1a6f9b2f48b6e1d5519d51a5a3a9e9f375e8656a2be862f1f237bf2",
+      "copy": "evidence/original-green/compatibility-counts.json",
+      "byteIdentical": true
+    },
+    {
+      "originalLogicalName": "original-green/source-proof.json",
+      "sha256": "85a54ff66afcf7ddf4299220b73dfde3f5bf4ddbdefc484b680231c4b5b39693",
+      "copy": "evidence/original-green/source-proof.json",
+      "byteIdentical": true
+    }
+  ],
+  "portabilityChanges": [
+    "Static relative runtime imports replaced by CLI --runtime-root file-URL imports.",
+    "Hardcoded revision and expected red/green counts replaced by --source-revision and --expect.",
+    "Fixed evidence destinations replaced by a fresh --output-dir; private output permissions and no overwrite.",
+    "Maintenance receives an empty temporary homes directory beneath the chosen output directory; it is removed after the expiry probe.",
+    "Fixture finally scope extended to include setup failures, with database close guaranteed even if api.stop rejects; SQL, model fixture, scenarios and scenario assertions unchanged.",
+    "Shared CLI wrapper records selected actual input hashes and Node version; caller-supplied revision is a label rather than git/source attestation.",
+    "CLI wrapper suppresses raw exception messages/stacks; stdout/stderr contain aggregate counts and generic failure types only."
+  ],
+  "historicalExecutionClaim": "Original artifacts retain historical execution attribution. Portable scripts are new; their actual executions are recorded only under validation.",
+  "sourceStages": {
+    "red": "Exact e8 archive independently compiled previously; reused read-only in this task.",
+    "green": "Exact e10 history.ts independently transpiled previously into a private e8 compiled-module stage; unchanged modules reused. Original red bytes preserved. This task does not claim a new full build."
+  },
+  "portableScriptSha256": {
+    "scripts/legacy-summary-probe.mjs": "01730d1f3e11d045b599453a9c217d4b100d0516ed348fccdd4a4f3f6ed5bd53",
+    "scripts/probe-cli.mjs": "cdf1eaa3ab47e43c06a05de109fd3fa05c2c96ef58cf0303d8bbb979479b4439",
+    "scripts/projection-compatibility-probe.mjs": "da780c5af40600eadc27b5f2f8d711799abedd0f6a57f9e39d7d043146c79b6c"
+  },
+  "originalScriptHashesRecheckedUnchanged": true
+}

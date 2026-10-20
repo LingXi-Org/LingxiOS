@@ -1,0 +1,29 @@
+{
+  "head": "e10bcd68afe000c5515eeafa93159513062fd1c8",
+  "cases": [
+    {
+      "case": "available-empty-scopes",
+      "legacyModelSentinelCount": 0,
+      "authorizedUserSentinelCount": 1,
+      "publicAnswerSentinelCount": 1,
+      "explicitCleanSummarySentinelCount": 1,
+      "originalUnchanged": true
+    },
+    {
+      "case": "unavailable",
+      "legacyModelSentinelCount": 0,
+      "authorizedUserSentinelCount": 1,
+      "publicAnswerSentinelCount": 1,
+      "explicitCleanSummarySentinelCount": 1,
+      "originalUnchanged": true
+    },
+    {
+      "case": "no-memory",
+      "legacyModelSentinelCount": 1,
+      "authorizedUserSentinelCount": 1,
+      "publicAnswerSentinelCount": 1,
+      "explicitCleanSummarySentinelCount": 1,
+      "originalUnchanged": true
+    }
+  ]
+}

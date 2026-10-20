@@ -1,0 +1,43 @@
+{
+  "red": {
+    "revision": "e8f4942181802433b52d9d9e6ba946dd2d2f31a2",
+    "files": {
+      "src/memory/history.ts": {
+        "gitBlob": "b58ded5dbc85b28adc929b83dd27d66944458cbe",
+        "sha256": "40eca93e22aaebe4a978b791b87a82229430263ce3768c1304faac7e246f9bab"
+      },
+      "test/memory-fixture.ts": {
+        "gitBlob": "0a587e566e3d4037abf5076749ff90e57637b6ee",
+        "sha256": "23b0a92d60e83ecbb1c7038ebe80c8589ff1c36aff309f74a7938ecbd27cb6e7"
+      }
+    }
+  },
+  "fixed": {
+    "revision": "e10bcd68afe000c5515eeafa93159513062fd1c8",
+    "files": {
+      "src/memory/history.ts": {
+        "gitBlob": "b7271b997f926e6b5d847c481dda9170147730e3",
+        "sha256": "1f95167114e81fb48174bf5b3af0c5c6bde1eaaed3bee3a67d96fe434ed3bd3b"
+      },
+      "test/memory-fixture.ts": {
+        "gitBlob": "0a587e566e3d4037abf5076749ff90e57637b6ee",
+        "sha256": "23b0a92d60e83ecbb1c7038ebe80c8589ff1c36aff309f74a7938ecbd27cb6e7"
+      }
+    }
+  },
+  "integratedCandidate": {
+    "revision": "b8bbef2762c782c75079c3f81113296e95d17bb1",
+    "files": {
+      "src/memory/history.ts": {
+        "gitBlob": "b7271b997f926e6b5d847c481dda9170147730e3",
+        "sha256": "1f95167114e81fb48174bf5b3af0c5c6bde1eaaed3bee3a67d96fe434ed3bd3b"
+      },
+      "test/memory-fixture.ts": {
+        "gitBlob": "0a587e566e3d4037abf5076749ff90e57637b6ee",
+        "sha256": "23b0a92d60e83ecbb1c7038ebe80c8589ff1c36aff309f74a7938ecbd27cb6e7"
+      }
+    }
+  },
+  "candidateExecution": "Not executed in this portable handoff; history and fixture source blob equality is only a static check.",
+  "candidateRemoteStatus": "Parent reported the candidate pushed and its GitHub ref checked; no network verification performed by this handoff."
+}

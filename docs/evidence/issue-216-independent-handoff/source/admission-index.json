@@ -1,0 +1,60 @@
+{
+  "redSource": "cb6f7f672216d57f40def58a6312c4827e5f4b69",
+  "fixedSource": "a942671cb5915a80946e1982de4fda49f9e6de5e",
+  "evidenceHead": "bbbac002c9f2c7aadee55aa29e0c703faff5b953",
+  "attribution": "Separate admission reviewer/author evidence; not executed by this portable handoff.",
+  "sourceTests": {
+    "test/memory-admission-review.test.ts": {
+      "gitBlob": "7febe3174cec5bc02cc5b983dfc117b306821201",
+      "sha256": "243477431e07649d20122f935f9d2a73d3aaac1653dd622e136f5dcd2405cb9c",
+      "headMatchesSource": true
+    },
+    "test/memory-context-budget.test.ts": {
+      "gitBlob": "3c3aa891b97c21402166d1bc9a93becafd25f027",
+      "sha256": "d411580ad4c5328f9ff2035814f63eb3c5fb4f4b31718e7503bb9629d71e12b2",
+      "headMatchesSource": true
+    }
+  },
+  "committedEvidence": {
+    "docs/evidence/issue-216-continuity-fixes/review-followup/final-green.txt": "396319e07d634da8425cc402a5c884b1a22fc88ececd59fb46657cf96cf8c046",
+    "docs/evidence/issue-216-continuity-fixes/review-followup/author-red.txt": "54d5b4295c99dee72552ec7639fd07f198dd50fec5522fe3facdd50c750b7163",
+    "docs/evidence/issue-216-continuity-fixes/review-followup/settlement-red.json": "cbc7f623547cd71ff5ef9a701f071e0a91e3179dd12028241416bd00fa83dc8e",
+    "docs/evidence/issue-216-continuity-fixes/review-followup/request-controls-baseline.txt": "6292135e71d80cbad9e5a1b09d5488e3bbe84913a090387214598f1ffabbc249",
+    "docs/evidence/issue-216-continuity-fixes/review-followup/README.md": "f78f98b6dd6a948d09e3cf726894b01a923eca3bc4891b1529f9c3afabe4324d",
+    "docs/evidence/issue-216-continuity-fixes/review-followup/public-controls.txt": "a9567738295c4197edf2aa4d3416a41c4e56396dbaa54707a1a2c13f11dbd193",
+    "docs/evidence/issue-216-continuity-fixes/review-followup/final-build.txt": "0094a48c607cfb1b79c387529664e14b0b4ab4360503b22264888f6fdb0baa94",
+    "docs/evidence/issue-216-continuity-fixes/review-followup/settlement-green.json": "6b7b7f031b318c85d988a6ca7ee7e732f541c7a1cd1b5ab55e97a56c5a268611"
+  },
+  "independentReviewHashes": [
+    {
+      "logicalArtifact": "issue216-admission-independent-cb6/FAILURE-MODEL.md",
+      "sha256": "ec071c1d9300e98e5c404b1387e86bceefcef3a9fbfea549f642383e0032b680",
+      "copied": false
+    },
+    {
+      "logicalArtifact": "issue216-admission-independent-cb6/receipt.json",
+      "sha256": "189f448ec370d78b0e71e46c8e2a671902bbf876de7c911dcd0482dd32e043a4",
+      "copied": false
+    },
+    {
+      "logicalArtifact": "issue216-admission-independent-cb6/settlement-race-receipt.json",
+      "sha256": "cbc7f623547cd71ff5ef9a701f071e0a91e3179dd12028241416bd00fa83dc8e",
+      "copied": false
+    },
+    {
+      "logicalArtifact": "issue216-admission-independent-a942/REVIEW.md",
+      "sha256": "d8c6468c6cde7acd31bd6ee5a7f51dee171d749e62e0a74888c1b095bf0c4b4d",
+      "copied": false
+    },
+    {
+      "logicalArtifact": "issue216-admission-independent-a942/receipt.json",
+      "sha256": "b3493fd14bd4c953a121d6973adc6f0c513f4b4c149aabd110d407b85fefb2fc",
+      "copied": false
+    },
+    {
+      "logicalArtifact": "issue216-admission-independent-a942/settlement-race-receipt.json",
+      "sha256": "9f10bd13398d4ebc5f046f88fdd82c958e4dd00af43ff8736a625fe57c9dbf33",
+      "copied": false
+    }
+  ]
+}

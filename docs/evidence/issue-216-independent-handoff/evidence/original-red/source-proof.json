@@ -1,0 +1,67 @@
+{
+  "head": "e8f4942181802433b52d9d9e6ba946dd2d2f31a2",
+  "code": "ea1a9b3bbbc4939f6e2ef45d3405224ff88ed61b",
+  "base": "5272111add3867ba6c2f0fb67d0758861fce99c1",
+  "integrationInspected": "0814fadda7bce82973baa15976d0ce37a4d35445",
+  "node": "22.23.3",
+  "source": "exact git archive; independent tsc",
+  "legacyRuntimeTag": {
+    "tag": "v3.5.6",
+    "commit": "f0d3ff3d27d08f297093696916a003b4cd3ca5b6",
+    "file": "src/runtime/runtime.ts",
+    "blob": "c2c11cf3765e7fc255de5dcbca7bbc29685c223e",
+    "line": 589
+  },
+  "files": [
+    {
+      "path": "src/memory/history.ts",
+      "headBlob": "b58ded5dbc85b28adc929b83dd27d66944458cbe",
+      "sha256": "40eca93e22aaebe4a978b791b87a82229430263ce3768c1304faac7e246f9bab"
+    },
+    {
+      "path": "src/memory/context.ts",
+      "headBlob": "344e75fa38e8956af4297dcc7a90b15598b5e8a7",
+      "sha256": "e65c8932c42d9a02f8a9569b35bab7a41832bcfb63248ab26ef00c0edb3d0ce1"
+    },
+    {
+      "path": "src/memory/runtime.ts",
+      "headBlob": "665bf0edf9172bd51577e78d34211f2ef392de13",
+      "sha256": "1458c76a82e9f6cf325cafb198777f7ea49c30eeeba4ec25697d4f354ff9c206"
+    },
+    {
+      "path": "src/runtime/runtime.ts",
+      "headBlob": "05b2a176eeaf66daff46b482832ad924a3df4270",
+      "sha256": "44b463357ac3a193341887af07d7827262454f0f0946652958e908fd2918a776"
+    },
+    {
+      "path": "src/runtime/compaction.ts",
+      "headBlob": "b8b8f4ad6e7d48b837051fb36b02454e2360f1d4",
+      "sha256": "a76f2436c0733b9f9bc2ed82109e58f7ca2b814bb11a8bc20a19b3910b388397"
+    },
+    {
+      "path": "src/app/maintenance.ts",
+      "headBlob": "193e62052c112d07b649c486a143da24deb09812",
+      "sha256": "f1c879abcf47beeedea3951ffab44be5f7efda3006d92c55c9d1430f67230856"
+    },
+    {
+      "path": "src/control-plane/service.ts",
+      "headBlob": "18814016ffc70e233a4a6a6a5540711b7cf867a0",
+      "sha256": "d4f42a980ae70d3ee661166d22f1fd161fe40724efecac95a0f171b1aebca983"
+    },
+    {
+      "path": "test/fixtures/forget-session-probe.mjs",
+      "headBlob": "e61c3fa19d4894829cadb9c3ca781c193287d270",
+      "sha256": "677f960b03b72539191d7331321afcb2c66fc52382ff47008f707ae1614732cf"
+    },
+    {
+      "path": "test/memory-history-projection.test.ts",
+      "headBlob": "d73864cbe61e514950f217067d6b691b95b9f01b",
+      "sha256": "42d19ec79f8221d28d8e0d68265a83ac427a98e3960b4617e0122ccb1c5485df"
+    },
+    {
+      "path": "test/memory-session-forget.test.ts",
+      "headBlob": "b44d539f88586f97206f0c7ea20a2eba102081d7",
+      "sha256": "e6d183fb2bb0e8fe0c34192354f7a00edc60149221ce59422ae7bb3032b9e081"
+    }
+  ]
+}
