@@ -1,0 +1,11 @@
+# Diagnostic privacy failure model
+
+Base: `627e6627e03512f5314e621471eeb6bc50ffadfa`. Written before the correction. Existing independent probes reproduced these paths at runtime emission, actual PostgreSQL event serialization and the JSON logger, not merely UI projection. This work does not alter authorized memory input, durable action/step/session recovery, permissions, provider configuration or schema.
+
+1. A memory action returns `failed` or `unknown` with content in `error`. The user-visible tool receipt and serialized event must contain only a fixed diagnostic; status, reconciliation and approval identity remain useful. The protected action receipt and saved step must retain the original error for authorized recovery.
+2. A generic model error echoes input without any memory capability. Default `model.failed`, terminal completion and logger must not copy the message/cause; privacy must not depend on memory classification. Original exception behavior and billing remain intact.
+3. A driver returns nested free-form diagnostics, or a real OpenAI-compatible response contains an arbitrary `finish_reason`. Events must retain only allowlisted classifications/reasons and bounded numeric metadata, with no arbitrary object/message fields. Unknown finish reasons remain failures, never normalized into success. Usage is still accounted and valid stop/tool/length classifications preserved.
+4. A heartbeat rejects before model execution with a content-bearing Error/cause. Lease loss must still stop the attempt without committing completion, while the logger remains content-free.
+5. Positive controls: normal memory input and successful/failed protected step output keep their content; successful memory events remain sanitized; explicit no-memory raw trace opt-in remains distinguishable from default diagnostics. Do not redact all authorized history to pass a sentinel test.
+
+Use deterministic local synthetic drivers/fetch, actual AgentRuntime, PgEventStore parameter serialization, createLogger sink and existing durable protocol fixtures. No real provider, production, external database or new credentials. Retain baseline red logs and count-only receipts separately from green. Test the existing owning memory/model/runtime suites after the focused fix, without a long soak.
