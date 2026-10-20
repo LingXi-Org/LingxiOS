@@ -55,7 +55,7 @@ missing nested listener ownership (0/2). Both the red subprocess and green run u
 Node 22.23.3. `listener-ownership-red.tap` preserves the additional red check for
 removing only owned subscriptions, including duplicate listeners.
 
-`socket-error-green.tap` passes 11/11 focused tests with zero skips: the real pg
+`socket-error-green.tap` now passes 16/16 focused and wakeup tests with zero skips: the real pg
 client/socket test now rejects normally, acquires a replacement connection within
 the same max-1 pool, and serves the next request. Its diagnostic records the child
 Node version and recovery result. Nested wrappers discard once and clean their
@@ -68,3 +68,19 @@ in 125 ms. The 24 earlier broader regressions and standalone package check are
 historical results for the first commit; exact follow-up CI must qualify the final
 commit before merge. `source-hashes.json` now includes the changed deadline pool,
 SqlClient contract and socket test. No migration or production operation occurred.
+
+### Exact CI type correction
+
+Socket commit `23d39348c50bc0795b56882a1ac813a685b7a85d` failed
+[exact CI 39349188098](https://github.com/LingXi-Org/LingxiOS/actions/runs/39349188098)
+at build: `NotificationClient.on` needed an explicit error-event overload matching
+its extended `SqlClient`. The local build had the same TS2430 error, preserved in
+`socket-build-red.log`; its shell did not stop on failure and TypeScript emitted
+JavaScript, so the runtime tests passed despite failed compilation. Those results
+must not be read as successful typecheck/build evidence.
+
+The one-line overload correction changes no runtime behavior. The subsequent
+`set -e` command completed `npm run build` with exit 0 (`socket-build-green.log`)
+and all 16 socket/context/deadline/listener/wakeup tests with exit 0. Previous
+socket-candidate source hashes remain in `source-hashes-socket.json`; the latest
+hashes include `wakeup.ts`. The final commit still requires its own successful CI.

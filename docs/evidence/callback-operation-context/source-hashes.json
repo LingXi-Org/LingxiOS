@@ -7,6 +7,7 @@
   "src/app/operation-context.ts": "e513574af80654f621563353cd0421903d7e5339d8bb31b5a4f05d82d11a5129",
   "src/control-plane/deadline-pool.ts": "d024f1998c6ef915b8f0dc7a8c5a078de629a234f5e7b32d8ea2ad284f390365",
   "src/control-plane/pg-store.ts": "bbcdf82e9116720a68b0d3a6512ec967520f09fe0876630e955f7c93e5b2a5ab",
+  "src/control-plane/wakeup.ts": "b682d2a118cf49bad50cd0218e69919e12dda6ef849ab078a4c394d9ec598dc1",
   "src/index.ts": "989c2c1cc83d00ac214773d57216fc14f888d32eeba5ed891992cf9b5f6ea528",
   "src/versions.ts": "5c999c1994bef561b2e2caef79129cb9f8bdaedcac61ee4fa0062fe75a49589e",
   "test/database-socket-error.test.ts": "61b5b02925f0599d6056c4c6813acf8fbee75228970b8391ce0f7165e292fccf",
