@@ -33,6 +33,7 @@ try{
  worker=createWorker({controlPlane:app,worker:{id:'real-memory-confirmation'},model,modelBudget})
  const identity={tenantId:'t',agentId:'a',principalId:'u',sessionId:'real-delete'}
  const stable=(await app.memory.scopes(identity))[0]
+ if(process.argv[4]!=='--synthesis-only'){
  await app.memory.initialize(identity,{scope:stable,idempotencyKey:'real-seed',sourceRef:'synthetic-settings',documents:[
   {path:'synthetic.md',title:'Synthetic preference',description:'Synthetic',body:'SYNTHETIC_FORGOTTEN_MARKER 喜欢用树状图整理学习材料。',layer:'core',locked:true}
  ]})
@@ -49,6 +50,7 @@ try{
  assert.equal(deletion.receipts,1);assert.equal(deletion.results,1);assert.equal(deletion.remaining,0);assert.equal(deletion.confirmationMarkerCount,0)
  assert.equal(messages[0].message.envelope.goalOutcome.status,'partial')
  deletion.passed=true
+ }
  phase='long-source'
  const middle='我每周六上午在图书馆做统计实验',tail='我正在筹备名为星河的数学科普展'
  const filler='这是一段普通课程练习过程说明，不代表学生已经掌握相关知识。'.repeat(170)

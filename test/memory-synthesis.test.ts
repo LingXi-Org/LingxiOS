@@ -43,7 +43,7 @@ it('audits coverage of a no-change human page without proposing nonexistent muta
       if(++calls===1)return {value:{changes:[],conflicts:[]}}
       assert.equal(calls,2);assert.match(input.instructions,/coverage/)
       return {value:{approved:true,complete:true,confidence:1}}
-    }}}} as unknown as WorkProcessorContext
+    }}} as unknown as WorkProcessorContext
     await memorySynthesisProcessor.process(job,context)
     assert.equal((await f.db.query<{status:string}>('SELECT status FROM lingxios.agent_memory_evidence_scopes WHERE source_run_id=$1',[source.work.id])).rows[0]?.status,'processed')
     assert.equal((await f.api.list(identity,scope)).items.length,0)
