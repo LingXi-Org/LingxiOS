@@ -10,6 +10,22 @@ import type { WorkItem } from '../src/protocol/types.js'
 import type { WorkProcessorContext } from '../src/runtime/runtime.js'
 import { NoEffectError } from '../src/tools/definition.js'
 
+it('finishes an assistant-only continuation without promoting assistant claims to human facts',async()=>{
+  const f=await memoryFixture()
+  try {
+    const source=await f.source({text:'继续练习。',assistant:'The student has mastered everything.'})
+    await f.db.query('UPDATE lingxios.agent_memory_evidence_scopes SET segment_cursor=1 WHERE source_run_id=$1',[source.work.id])
+    const {job}=await f.reflection();assert.ok(job)
+    const context={signal:new AbortController().signal,emit:async()=>{},host:{executeAction:async(_work:WorkItem,action:{action:string;args:Record<string,unknown>})=>({
+      ok:true,executionState:'succeeded',value:await withTransaction(f.pool,db=>executeMemorySynthesis(db,job,action.action.split('.')[1]!,action.args,f.options)),
+    })},model:{structured:async()=>{throw new Error('assistant-only evidence must not infer human facts')}}} as unknown as WorkProcessorContext
+    await memorySynthesisProcessor.process(job,context)
+    const state=(await f.db.query<{status:string;segment_cursor:number}>('SELECT status,segment_cursor FROM lingxios.agent_memory_evidence_scopes WHERE source_run_id=$1',[source.work.id])).rows[0]!
+    assert.equal(state.status,'processed');assert.equal(state.segment_cursor,2)
+    assert.equal((await f.api.list(identity,scope)).items.length,0)
+  } finally {await f.close()}
+})
+
 it('advances a no-change evidence page without asking a model to approve nonexistent mutations',async()=>{
   const f=await memoryFixture()
   try {

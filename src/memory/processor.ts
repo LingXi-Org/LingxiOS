@@ -25,6 +25,13 @@ export const memorySynthesisProcessor: WorkProcessor = {
     }
     const batch = await action('load', {}, 0) as MemoryBatch | null
     if (!batch) return
+    if (!batch.evidence.some(item=>item.userText.trim())) {
+      // A continuation can contain only assistant output. It cannot establish
+      // a human fact; finish this page through the same fenced transaction.
+      const result=await action('apply',{changes:[],conflicts:[],approved:true,confidence:1},1)
+      await context.emit({kind:'memory.synthesis.completed',stage:'completed',visibility:'internal',data:{result}})
+      return
+    }
     const signal = AbortSignal.any([context.signal, AbortSignal.timeout(90_000)])
     const call = async (purpose: string, instructions: string, input: unknown) => {
       const prompt = compileAuxiliaryPrompt(purpose, instructions)
@@ -51,6 +58,8 @@ export const memorySynthesisProcessor: WorkProcessor = {
       + 'Omit optional kind unless it is a lowercase ASCII identifier matching [a-z_]{1,32}; never use null or a translated label. '
       + 'Core holds only stable preferences, identity explicitly supplied by the user and frequently needed constraints. Put deeper knowledge in reference documents '
       + 'organized by topic and discoverable through relative Markdown links. Consolidate duplicates and correct supported errors. Never invent personality. '
+      + 'Apply effective human revisions before extracting facts. A current document body contains current values only; do not repeat obsolete '
+      + 'values or change logs in the body. Source references and document version history retain the correction provenance. '
       + 'Conflicts have {sourceRunIds,memoryIds,reason}; record contradictions with explicit or locked memory instead of overwriting it. '
       + 'Expired records are context, not current facts. Reconfirm them only with directly supporting new user evidence '
       + 'observed after their expiry, and provide a new future validUntil. Never renew solely from old memory or elapsed time. '

@@ -11,7 +11,7 @@ import { workItemFromRow } from '../control-plane/pg-store.js'
 
 export interface MemoryOptions {
   /** Resolve destinations from the authenticated identity's current product permissions. */
-  resolveScopes(identity: MemoryIdentity, database: SqlQueryable, signal?: AbortSignal): Promise<MemoryScopeGrant[]>
+  resolveScopes(identity: MemoryIdentity, database: SqlQueryable, signal?: AbortSignal, operation?: 'read'|'write'|'capture'): Promise<MemoryScopeGrant[]>
   writePolicy?: MemoryWritePolicy
   embeddings?: EmbeddingOptions
   evolution?: {
@@ -65,7 +65,7 @@ export async function authorizedScopes(options: MemoryOptions, identity: MemoryI
   if (![identity.tenantId,identity.agentId,identity.principalId,identity.sessionId].every(value => typeof value === 'string' && value.trim() && value.length<=1000)) throw new Error('invalid memory identity')
   const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...external ? [external] : []])
   signal.throwIfAborted()
-  const grants = await abortable(options.resolveScopes(identity,database,signal),signal)
+  const grants = await abortable(options.resolveScopes(identity,database,signal,operation),signal)
   if (!Array.isArray(grants) || grants.length > 12) throw new Error('too many memory scopes')
   for (const scope of grants) {
     validateScope(scope)
