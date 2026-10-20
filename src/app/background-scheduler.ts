@@ -97,7 +97,7 @@ export class BackgroundScheduler {
       job.delay = busy ? job.minimum : Math.min(job.maximum, job.delay * 2)
     }).catch(error => {
       job.delay = Math.min(job.maximum, job.delay * 2)
-      if (!this.signal.aborted) this.options.onError?.(name, error)
+      if (!this.signal.aborted) this.options.onError?.(name, new Error('Background operation failed'))
     }).finally(() => {
       job.active.delete(running)
       if (this.stopped) return

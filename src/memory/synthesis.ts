@@ -1,3 +1,4 @@
+import { digest } from '../collaboration/access.js'
 import type { SqlQueryable } from '../control-plane/pg-store.js'
 import type { WorkItem } from '../protocol/types.js'
 import { applyMemoryChanges, memoryDocument, parseDocumentChanges, scopeParams } from './store.js'
@@ -18,6 +19,7 @@ export interface MemoryEvidence {
   assistantText: string
   truncated: boolean
   observedAt: string
+  segment: { start: number; next: number; total: number; sourceComplete: boolean }
 }
 export interface MemoryBatch {
   scope: MemoryScope
@@ -66,7 +68,8 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
   if (!job) throw new Error('memory synthesis lease is unavailable')
   const meta = job['meta'] as Record<string,unknown>
   if (meta['scopeType']!==scope.scopeType || meta['scopeId']!==scope.scopeId || Number(meta['epoch'])!==epoch!.epoch) return method==='load' ? null : { outcome: 'forgotten',changeCount: 0 }
-  const sources = (await client.query(`SELECT e.*,w.thread_id,w.created_at AS source_started_at,w.steer_inputs
+  const sources = (await client.query(`SELECT e.*,s.segment_cursor,w.thread_id,w.created_at AS source_started_at,w.steer_inputs,
+    (SELECT COUNT(*)::integer FROM lingxios.agent_memory_evidence_segments p WHERE p.source_run_id=e.source_run_id) AS segment_count
     FROM lingxios.agent_memory_evidence_scopes s JOIN lingxios.agent_memory_evidence e USING(source_run_id)
     JOIN lingxios.agent_work_items w ON w.id=e.source_run_id
     WHERE s.job_id=$1 AND s.tenant_id=$2 AND s.scope_type=$3 AND s.scope_id=$4 AND s.epoch=$5 AND s.status='pending'
@@ -75,18 +78,41 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
     ORDER BY e.created_at,e.source_run_id LIMIT 20 FOR UPDATE OF s,e,w`,[work.id,...scopeParams(scope),epoch!.epoch,work.agentId,work.principalId])).rows
   if (!sources.length) return method==='load' ? null : { outcome: 'processed',changeCount: 0 }
   for (const source of sources) {
-    if (!(await authorizedScopes(options,sourceIdentity(source),client)).some(item => sameScope(item,scope))) throw new Error('memory source scope was revoked')
+    if (!(await authorizedScopes(options,sourceIdentity(source),client,undefined,'capture')).some(item => sameScope(item,scope))) throw new Error('memory source scope was revoked')
   }
-  const evidence: MemoryEvidence[] = sources.map(row => {
-    const userText = excerpt(String(row['input_text']),1200),assistantText = excerpt(String(row['assistant_text']),600)
-    return { sourceRunId: String(row['source_run_id']),sourceRef: String(row['source_ref']),requestVersion: Number(row['request_version']),
+  const evidence: MemoryEvidence[] = []
+  let evidenceBytes=14_000
+  for (const row of sources) {
+    const start=Number(row['segment_cursor']),total=Number(row['segment_count'])
+    const segments=(await client.query(`SELECT segment_no,role,body FROM lingxios.agent_memory_evidence_segments
+      WHERE source_run_id=$1 AND segment_no >= $2 ORDER BY segment_no LIMIT 2`,[row['source_run_id'],start])).rows
+    let userText='',assistantText='',next=start
+    for (const segment of segments) {
+      const body=String(segment['body']),bytes=Buffer.byteLength(body)+512
+      if (bytes>evidenceBytes) break
+      evidenceBytes-=bytes;next=Number(segment['segment_no'])+1
+      if(segment['role']==='user') userText+=body;else assistantText+=body
+    }
+    // Older unsegmented evidence is explicitly incomplete when its saved source
+    // was truncated. It is never relabelled as a fully processed long source.
+    if (!total) {
+      userText=String(row['input_text']);assistantText=String(row['assistant_text'])
+      const bytes=Buffer.byteLength(userText)+Buffer.byteLength(assistantText)+512
+      if(bytes>evidenceBytes) continue
+      evidenceBytes-=bytes;next=1
+    }
+    if(next===start) continue
+    evidence.push({ sourceRunId: String(row['source_run_id']),sourceRef: String(row['source_ref']),requestVersion: Number(row['request_version']),
       inputSha256: String(row['input_sha256']),userText,assistantText,
-      truncated: userText.length<String(row['input_text']).length || assistantText.length<String(row['assistant_text']).length || row['input_truncated']===true || row['assistant_truncated']===true,
+      segment:{start,next,total:total||1,sourceComplete:total ? row['source_complete']===true : !row['input_truncated']&&!row['assistant_truncated']},
+      truncated:total ? start>0 || next<total || row['source_complete']!==true : row['input_truncated']===true || row['assistant_truncated']===true,
       observedAt: new Date(Math.min(new Date(row['created_at'] as string | Date).getTime(),
         Math.max(new Date(row['source_started_at'] as string | Date).getTime(),
           ...(row['steer_inputs'] as Array<{createdAt:string;author?:{kind:string}}>).filter(item=>!item.author || item.author.kind==='human')
-            .map(item=>Date.parse(item.createdAt)).filter(Number.isFinite)))).toISOString() }
-  })
+            .map(item=>Date.parse(item.createdAt)).filter(Number.isFinite)))).toISOString() })
+  }
+  if(!evidence.length) return method==='load' ? null : {outcome:'incomplete',changeCount:0}
+  const sourceVersions=()=>evidence.map(item=>({id:item.sourceRunId,version:item.requestVersion,hash:item.inputSha256,segment:item.segment}))
   if (method==='load') {
     const terms = memoryQuery(evidence.map(item => item.userText).join(' ').slice(0,2000))
     const rows = (await client.query(`SELECT *,COUNT(*) OVER() AS total FROM lingxios.agent_memories
@@ -100,7 +126,7 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
       currentMemories.push(document); remaining-=bytes
     }
     await client.query(`UPDATE lingxios.agent_work_items SET meta=jsonb_set(meta,'{memorySnapshot}',$2::jsonb) WHERE id=$1`,
-      [work.id,JSON.stringify({ fence: work.fence,epoch: epoch!.epoch,sources: evidence.map(item => ({ id: item.sourceRunId,version: item.requestVersion })),
+      [work.id,JSON.stringify({ fence: work.fence,epoch: epoch!.epoch,sources: sourceVersions(),
         memories: currentMemories.map(item => ({ id: item.id,version: item.version })) })])
     return { scope,epoch: epoch!.epoch,evidence,currentMemories,omittedMemories: Number(rows[0]?.['total'] ?? 0)-currentMemories.length,evolutionEnabled: !!options.evolution }
   }
@@ -109,7 +135,7 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
     || args['confidence']<0 || args['confidence']>1) throw new Error('invalid memory verification')
   const snapshot = meta['memorySnapshot'] as { fence?: number; epoch?: number; sources?: Array<{ id: string; version: number }>; memories?: Array<{ id: string; version: number }> } | undefined
   if (snapshot?.fence!==work.fence || snapshot.epoch!==epoch!.epoch || !snapshot.sources || !snapshot.memories
-    || memoryDigest(snapshot.sources)!==memoryDigest(evidence.map(item => ({ id: item.sourceRunId,version: item.requestVersion })))) throw new Error('memory synthesis requires the loaded snapshot and versions')
+    || digest(snapshot.sources)!==digest(sourceVersions())) throw new Error('memory synthesis requires the loaded snapshot and versions')
   const evidenceById = new Map(evidence.map(item => [item.sourceRunId,item]))
   const checkSources = (ids: string[]) => { if (ids.some(id => !evidenceById.has(id))) throw new Error('memory change uses unknown evidence') }
   const checkMemory = (id: string,version?: number) => {
@@ -130,7 +156,7 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
         return { workId: id,sourceRef: source.sourceRef,authorId: work.principalId!,requestVersion: source.requestVersion,
           inputSha256: source.inputSha256,synthesisWorkId: work.id,observedAt: source.observedAt,confidence: args['confidence'] as number }
       })
-      await applyMemoryChanges(client,scope,[item.change],{ identity,actionId: `${work.id}:${index}`,epoch: epoch!.epoch,explicit: false,sources: refs,resolveScopes:options.resolveScopes,
+      await applyMemoryChanges(client,scope,[item.change],{ identity,actionId: `${work.id}:${memoryDigest(sourceVersions())}:${index}`,epoch: epoch!.epoch,explicit: false,sources: refs,resolveScopes:options.resolveScopes,
         ...options.writePolicy ? { policy: options.writePolicy } : {} })
     }
     for (const conflict of conflicts) {
@@ -140,7 +166,15 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
         [`conflict:${memoryDigest([scope,conflict])}`,...scopeParams(scope),JSON.stringify(conflict.sourceRunIds),JSON.stringify(conflict.memoryIds),reason])
     }
   }
-  await client.query(`UPDATE lingxios.agent_memory_evidence_scopes SET status=$2 WHERE job_id=$1 AND status='pending'`,[work.id,approved?'processed':'rejected'])
+  for (const item of evidence) {
+    const complete=item.segment.sourceComplete && item.segment.next>=item.segment.total
+    await client.query(`UPDATE lingxios.agent_memory_evidence_scopes SET segment_cursor=$3,status=$4,
+      job_id=CASE WHEN $4='pending' AND $5 THEN NULL ELSE job_id END
+      WHERE job_id=$1 AND source_run_id=$2 AND status='pending'`,[work.id,item.sourceRunId,item.segment.next,
+      complete ? approved?'processed':'rejected' : 'pending',item.segment.next<item.segment.total])
+  }
+  await client.query(`UPDATE lingxios.agent_memory_evidence_scopes SET job_id=NULL WHERE job_id=$1 AND status='pending'
+    AND NOT(source_run_id=ANY($2::text[]))`,[work.id,evidence.map(item=>item.sourceRunId)])
   await client.query(`UPDATE lingxios.agent_memory_evidence e SET status=CASE WHEN EXISTS(SELECT 1 FROM lingxios.agent_memory_evidence_scopes s
       WHERE s.source_run_id=e.source_run_id AND s.status='processed') THEN 'processed'
       WHEN EXISTS(SELECT 1 FROM lingxios.agent_memory_evidence_scopes s WHERE s.source_run_id=e.source_run_id AND s.status='pending') THEN 'pending' ELSE 'rejected' END

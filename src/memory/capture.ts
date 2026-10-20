@@ -27,10 +27,10 @@ export async function drainMemoryCapture(pool: SqlPool, options: MemoryOptions, 
           AND r.request_version=jsonb_array_length(w.steer_inputs)+1`, [resultId])).rows[0]
       if (source) {
         const work = workItemFromRow(source, '', 1), message = source['message'] as AssistantMessage
-        const scopes = await authorizedScopes(options, identityOf(work), db, signal)
+        const scopes = await authorizedScopes(options, identityOf(work), db, signal, 'capture')
         const prepared = await prepareMemoryEvidence(db, work, message, scopes, options.writePolicy, signal)
         if (prepared) {
-          const current = await authorizedScopes(options, identityOf(work), db, signal)
+          const current = await authorizedScopes(options, identityOf(work), db, signal, 'capture')
           if (scopes.some(scope => !current.some(item => sameScope(scope, item)))) throw new Error('memory authorization changed')
           await withTransaction(db, async client => {
             // All extension callbacks have finished. Fence the source and queue claim, then filter forgetting epochs.

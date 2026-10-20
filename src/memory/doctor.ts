@@ -37,7 +37,13 @@ export async function diagnoseMemory(database: SqlQueryable,scope: MemoryScope,b
   const failedReflections = (await database.query(`SELECT id,attempts,error FROM lingxios.agent_work_items WHERE tenant_id=$1 AND kind='memory_synthesis'
     AND meta->>'scopeType'=$2 AND meta->>'scopeId'=$3 AND status='failed' ORDER BY updated_at DESC LIMIT 64`,scopeParams(scope))).rows
     .map(row => ({ id: String(row['id']),attempts: Number(row['attempts']),error: row['error']==null?null:String(row['error']) }))
-  return { coreBytes,budgetTokens,overBudget: coreBytes>budgetTokens,duplicates,brokenLinks,
+  const counts=(await database.query(`SELECT COUNT(*) FILTER(WHERE s.status='pending')::integer AS pending,
+    COUNT(*) FILTER(WHERE NOT e.source_complete AND (e.input_truncated OR e.assistant_truncated))::integer AS incomplete,
+    COUNT(*) FILTER(WHERE s.status='processed')::integer AS processed,
+    COALESCE(SUM(GREATEST(0,(SELECT COUNT(*) FROM lingxios.agent_memory_evidence_segments p WHERE p.source_run_id=s.source_run_id)-s.segment_cursor)) FILTER(WHERE s.status='pending'),0)::integer AS segments
+    FROM lingxios.agent_memory_evidence_scopes s JOIN lingxios.agent_memory_evidence e USING(source_run_id)
+    WHERE s.tenant_id=$1 AND s.scope_type=$2 AND s.scope_id=$3 AND s.status<>'superseded'`,scopeParams(scope))).rows[0]!
+  return { maintenance:{pendingSources:Number(counts['pending']),incompleteSources:Number(counts['incomplete']),processedSources:Number(counts['processed']),pendingSegments:Number(counts['segments'])}, coreBytes,budgetTokens,overBudget: coreBytes>budgetTokens,duplicates,brokenLinks,
     expired: page.items.filter(doc => doc.status==='expired' || doc.validUntil && Date.parse(doc.validUntil)<=Date.now()).map(doc => doc.id),
     conflicts,failedReflections,nextCursor: page.nextCursor }
 }

@@ -1,4 +1,5 @@
-import { withTransaction, type SqlPool, type SqlQueryable } from '../control-plane/pg-store.js'
+import { migrateLegacyMemory } from './migration.js'
+import { workItemFromRow, withTransaction, type SqlPool, type SqlQueryable } from '../control-plane/pg-store.js'
 import type { ActionContext, ToolDefinition } from '../tools/definition.js'
 import type { WorkItem } from '../protocol/types.js'
 import { requestSnapshot } from '../app/jobs.js'
@@ -18,11 +19,18 @@ export function createMemoryService(database: SqlPool,options: MemoryOptions,sem
   // Internal context assembler authorizes the complete scope snapshot before AND after calling this.
   const recall = (work: Omit<WorkItem, 'leaseToken'>, scope: MemoryScope, query: string, db: SqlQueryable, signal?: AbortSignal) =>
     semantic ? semantic.recall(work, scope, query, 12, signal) : searchMemories(db, scope, query, 12)
-  const access = (identity: MemoryIdentity,scope: MemoryScope,db: SqlQueryable=database) => authorizeScope(options,identity,db,scope)
+  const access = (identity: MemoryIdentity,scope: MemoryScope,db: SqlQueryable=database, operation: 'read' | 'write' = 'read') => authorizeScope(options,identity,db,scope,operation)
+  const readAuthorized = <T>(identity:MemoryIdentity,scope:MemoryScope,read:(db:SqlQueryable)=>Promise<T>) => withTransaction(database,async db=>{
+    await access(identity,scope,db)
+    const result=await read(db)
+    await access(identity,scope,db)
+    return result
+  })
   const sources = (identity: MemoryIdentity,input: { sourceRef: string; idempotencyKey: string }): MemorySource[] => {
     if (typeof input.sourceRef!=='string' || !input.sourceRef.trim() || input.sourceRef.length>1000
       || typeof input.idempotencyKey!=='string' || !input.idempotencyKey.trim() || input.idempotencyKey.length>2000) throw new Error('memory administration requires a sourceRef and idempotencyKey')
-    return [{ sourceRef:input.sourceRef,authorId:identity.principalId,actionId:input.idempotencyKey,observedAt:new Date().toISOString() }]
+    return [{ sourceRef:input.sourceRef,authorId:identity.principalId,actionId:input.idempotencyKey,observedAt:new Date().toISOString(),
+      ...(identity.workId ? {workId:identity.workId} : {}) }]
   }
   const search = async (identity: MemoryIdentity,scope: MemoryScope,query: MemorySearchQuery,db: SqlQueryable=database,work?: Omit<WorkItem,'leaseToken'>,signal?: AbortSignal) => {
     await access(identity,scope,db)
@@ -40,25 +48,39 @@ export function createMemoryService(database: SqlPool,options: MemoryOptions,sem
     if (ids.length) await db.query(`DELETE FROM lingxios.agent_memory_conflicts WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3
       AND memory_ids ?| $4::text[]`,[...scopeParams(scope),ids])
   }
+  const queueIndex = async (db: SqlQueryable,identity: MemoryIdentity,scope: MemoryScope) => {
+    if(!semantic || !identity.workId) return {queued:0,configured:!!semantic}
+    const row=(await db.query('SELECT * FROM lingxios.agent_work_items WHERE id=$1 AND tenant_id=$2 AND principal_id=$3',
+      [identity.workId,identity.tenantId,identity.principalId])).rows[0]
+    if(!row) throw new Error('memory index source is unavailable')
+    const result=await semantic.enqueue(workItemFromRow(row,'',1),scope,db)
+    return {queued:result.rowCount ?? 0,configured:true}
+  }
   const api = {
+    async reindex(identity: MemoryIdentity,scope: MemoryScope) {
+      return withTransaction(database,async db=>{await access(identity,scope,db);return queueIndex(db,identity,scope)})
+    },
+    migrateLegacy: (identity: MemoryIdentity,input?: {cursor?:string;limit?:number;dryRun?:boolean}) => migrateLegacyMemory(database,options,identity,input),
     scopes: (identity: MemoryIdentity) => authorizedScopes(options,identity,database),
     async list(identity: MemoryIdentity,scope: MemoryScope,query: MemoryListQuery={}) {
-      await access(identity,scope)
-      const page = await listMemories(database,scope,query)
-      return { ...page,items:page.items.map(memoryEntry) }
+      return readAuthorized(identity,scope,async db=>{
+        const page=await listMemories(db,scope,query)
+        return {...page,items:page.items.map(memoryEntry)}
+      })
     },
-    async read(identity: MemoryIdentity,scope: MemoryScope,id: string,version?:number) { await access(identity,scope); return readMemory(database,scope,id,version) },
-    search: (identity: MemoryIdentity,scope: MemoryScope,query: MemorySearchQuery) => search(identity,scope,query),
+    read: (identity:MemoryIdentity,scope:MemoryScope,id:string,version?:number) => readAuthorized(identity,scope,db=>readMemory(db,scope,id,version)),
+    search: (identity: MemoryIdentity,scope: MemoryScope,query: MemorySearchQuery) => readAuthorized(identity,scope,db=>search(identity,scope,query,db)),
     async history(identity: MemoryIdentity,scope: MemoryScope,id: string,query: { limit?: number; cursor?: string }={}) {
-      await access(identity,scope); return memoryVersions(database,scope,id,query.limit,query.cursor)
+      return readAuthorized(identity,scope,db=>memoryVersions(db,scope,id,query.limit,query.cursor))
     },
     async apply(identity: MemoryIdentity,input: MemoryApplyInput) {
       return withTransaction(database,async db => {
-        await access(identity,input.scope,db)
+        await access(identity,input.scope,db,'write')
         const [epoch] = await lockMemoryScopes(db,[input.scope])
         const result = await applyMemoryChanges(db,input.scope,input.changes,{ identity,epoch:epoch!.epoch,actionId:input.idempotencyKey,explicit:true,
           sources:sources(identity,input),resolveScopes:options.resolveScopes,...options.writePolicy?{policy:options.writePolicy}:{} })
         await resolveConflicts(db,input.scope,input.changes)
+        await queueIndex(db,identity,input.scope)
         return result
       })
     },
@@ -68,25 +90,27 @@ export function createMemoryService(database: SqlPool,options: MemoryOptions,sem
     },
     async restore(identity: MemoryIdentity,input: MemoryRestoreInput) {
       return withTransaction(database,async db => {
-        await access(identity,input.scope,db)
+        await access(identity,input.scope,db,'write')
         const [epoch] = await lockMemoryScopes(db,[input.scope])
-        return restoreMemory(db,input.scope,input.id,input.expectedVersion,input.version,{ identity,epoch:epoch!.epoch,actionId:input.idempotencyKey,explicit:true,
+        const result=await restoreMemory(db,input.scope,input.id,input.expectedVersion,input.version,{ identity,epoch:epoch!.epoch,actionId:input.idempotencyKey,explicit:true,
           sources:sources(identity,input),resolveScopes:options.resolveScopes,...options.writePolicy?{policy:options.writePolicy}:{} })
+        await queueIndex(db,identity,input.scope)
+        return result
       })
     },
     async forget(identity: MemoryIdentity,scope: MemoryScope) {
-      return withTransaction(database,async db => { await access(identity,scope,db); return forgetMemoryScope(db,scope) })
+      return withTransaction(database,async db => { await access(identity,scope,db,'write'); return forgetMemoryScope(db,scope) })
     },
     reflect: (identity: MemoryIdentity,scope: MemoryScope) => scheduleMemoryReflection(database,options,{identity,scope}),
     async doctor(identity: MemoryIdentity,scope: MemoryScope,cursor?: string) {
-      await access(identity,scope); return diagnoseMemory(database,scope,settings.maxTokens,cursor)
+      return readAuthorized(identity,scope,async db=>({...await diagnoseMemory(db,scope,settings.maxTokens,cursor),...semantic?{index:await semantic.status(scope,db)}:{}}))
     },
   }
   const tools: ToolDefinition[] = MEMORY_METHODS.map(method => ({
     ...memoryToolSpecification(method),parse:value => parseMemoryInput(method,value),
     async authorize(context,input) {
       if (context.work.kind.startsWith('memory_')) throw new Error('foreground memory tools cannot run as maintenance actions')
-      await access(identityOf(context.work),{tenantId:context.work.tenantId,scopeType:String(input['scopeType']),scopeId:String(input['scopeId'])},context.database)
+      await access(identityOf(context.work),{tenantId:context.work.tenantId,scopeType:String(input['scopeType']),scopeId:String(input['scopeId'])},context.database,['apply','restore','forget','reflect'].includes(method) ? 'write' : 'read')
     },
     async execute(context,input) {
       const identity = identityOf(context.work),scope = {tenantId:context.work.tenantId,scopeType:String(input['scopeType']),scopeId:String(input['scopeId'])}
@@ -112,7 +136,7 @@ export function createMemoryService(database: SqlPool,options: MemoryOptions,sem
           const page = await memoryVersions(db,scope,String(input['id']),input['limit'] as number|undefined,input['cursor'] as string|undefined)
           value={...page,items:page.items.map(item => ({version:item.version,replacedAt:item.replacedAt,snapshot:memoryEntry(item.snapshot)}))}; break
         }
-        case 'doctor': value=await diagnoseMemory(db,scope,settings.maxTokens,input['cursor'] as string|undefined); break
+        case 'doctor': value={...await diagnoseMemory(db,scope,settings.maxTokens,input['cursor'] as string|undefined),...semantic?{index:await semantic.status(scope,db)}:{}}; break
         case 'reflect': {
           value=await scheduleMemoryReflectionInTransaction(db,options,{identity,scope}); break
         }
@@ -127,11 +151,16 @@ export function createMemoryService(database: SqlPool,options: MemoryOptions,sem
     const refs: MemorySource[]=[{sourceRef:request.sourceRef,authorId:request.authorId,workId:work.id,requestVersion:reviewed.requestVersion,
       inputSha256:memoryDigest(reviewed.input.request),actionId:action.idempotencyKey,observedAt:new Date().toISOString()}]
     const write={identity,actionId:action.idempotencyKey,epoch:reviewed.epoch,explicit:reviewed.review.explicit,sources:refs,resolveScopes:options.resolveScopes,...options.writePolicy?{policy:options.writePolicy}:{}}
+    if (!write.explicit && !(await authorizedScopes(options,identity,db,context.signal,'capture')).some(item=>item.scopeType===scope.scopeType && item.scopeId===scope.scopeId)) throw new Error('memory scope requires an explicit human request')
     if (action.action==='memory.forget') return forgetMemoryScope(db,scope)
-    if (action.action==='memory.restore') return restoreMemory(db,scope,String(action.args['id']),Number(action.args['expectedVersion']),Number(action.args['version']),write)
+    if (action.action==='memory.restore') {
+      const result=await restoreMemory(db,scope,String(action.args['id']),Number(action.args['expectedVersion']),Number(action.args['version']),write)
+      await queueIndex(db,identity,scope);return result
+    }
     const changes=action.args['changes'] as MemoryChange[]
     const result=await applyMemoryChanges(db,scope,changes,write)
     if (write.explicit) await resolveConflicts(db,scope,changes)
+    await queueIndex(db,identity,scope)
     return result
   }
   return {api,tools,search,recall}

@@ -421,7 +421,7 @@ it('migrates schema 9 without resetting business data and matches the fresh sche
   try {
     await migrated.exec(await readFile(new URL('../../test/fixtures/schema-9.sql', import.meta.url), 'utf8'))
     await migrated.exec("INSERT INTO lingxios.agent_work_items(id,tenant_id,agent_id,session_id,kind,lane,trigger_ref,status) VALUES('old','t','a','s','turn','interactive','m','succeeded')")
-    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission', '013-distributed-workspaces', '014-terminal-feedback']) {
+    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission', '013-distributed-workspaces', '014-terminal-feedback', '015-memory-continuity']) {
       await migrated.exec(await readFile(new URL(`../../db/migrations/${migration}.sql`, import.meta.url), 'utf8'))
     }
     await fresh.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
@@ -530,4 +530,58 @@ it('reauthorizes IM approvals and prevents cancelled workers from writing shared
     assert.ok((await f.db.query<{ delivered_at: unknown }>('SELECT delivered_at FROM lingxios.agent_run_events WHERE run_id=$1 AND seq=1', [work.id])).rows[0]!['delivered_at'])
     assert.equal(publicEvents, 0)
   } finally { await f.close() }
+})
+
+// Issue 216 failures: stable profiles fork on room/thread/Agent/policy, private
+// profiles leak into shared audiences, or legacy consumers lose their partition.
+it('inherits opted-in personal memory across authorized rooms and Agents but excludes shared audiences', async () => {
+  const grant = { tenantId: 'tenant',scopeType: 'learner',scopeId: 'u',continuity: 'principal' as const }
+  const f = await setup({ memory: { resolveScopes: async actor => actor.principalId === 'u' ? [grant] : [] } })
+  try {
+    const memory = f.control.memory!
+    const actor = async (room: string,agent: string,version = 1) => {
+      const p = { ...structuredClone(policy),conversationId: room,version,defaultAgentId: agent,
+        participants: policy.participants.filter(item => item.id === 'u' || item.id === agent) }
+      await f.control.conversations.sync(p)
+      const run = (await f.control.conversations.ingest(message(`personal-${room}-${version}`,{ conversationId: room,policyVersion: version }))).runs[0]!
+      return { ...run,principalId: 'u',workId: run.runId }
+    }
+    const a = await actor('private-a','lead'), b = await actor('private-b','helper')
+    const scope = (await memory.scopes(a))[0]!
+    const saved = await memory.initialize(a,{ scope,sourceRef: 'settings',idempotencyKey: 'save-private',
+      documents: [{ path: 'preference.md',title: 'Preference',description: 'Output format',body: '先图示再解释。',layer: 'core' }] })
+    assert.deepEqual(await memory.scopes(b),[scope])
+    assert.equal((await memory.read(b,scope,saved.documents[0]!.id))?.body,'先图示再解释。')
+    assert.deepEqual(await memory.scopes(await actor('private-b','helper',2)),[scope])
+    const shared = (await f.control.conversations.ingest(message('shared-personal'))).runs[0]!
+    assert.deepEqual(await memory.scopes({ ...shared,principalId: 'u',workId: shared.runId }),[])
+    const revoked = { ...structuredClone(policy),conversationId: 'private-b',version: 3,participants: policy.participants.map(item=>item.id==='u'?{...item,capabilities:[]}:item) }
+    await f.control.conversations.sync(revoked)
+    await assert.rejects(memory.read(b,scope,saved.documents[0]!.id),/capability/)
+  } finally { await f.close() }
+})
+
+it('moves only proven private legacy records with stable identity and preserves forgetting across reruns',async()=>{
+  let stable=false
+  const legacy={tenantId:'tenant',scopeType:'learner',scopeId:'u'}
+  const f=await setup({memory:{resolveScopes:async()=>[{...legacy,...stable?{continuity:'principal' as const,legacyScope:legacy}:{}}]}})
+  try {
+    const memory=f.control.memory!
+    const run=(await f.control.conversations.ingest(message('migration-private',{audience:{visibility:'participants',participantIds:['u','lead']}}))).runs[0]!
+    const actor={...run,principalId:'u',workId:run.runId}
+    const old=(await memory.scopes(actor))[0]!
+    const doc=(await memory.initialize(actor,{scope:old,sourceRef:'settings',idempotencyKey:'old',
+      documents:[{path:'legacy.md',title:'Preference',description:'Format',body:'图示优先。',layer:'core'}]})).documents[0]!
+    stable=true
+    const scope=(await memory.scopes(actor))[0]!
+    const preview=await memory.migrateLegacy(actor,{dryRun:true})
+    assert.equal(preview.items[0]?.outcome,'eligible')
+    assert.equal(await memory.read(actor,scope,doc.id),null)
+    assert.equal((await memory.migrateLegacy(actor)).items[0]?.outcome,'migrated')
+    assert.equal((await memory.read(actor,scope,doc.id))?.body,'图示优先。')
+    assert.equal((await memory.migrateLegacy(actor)).items.length,0)
+    await memory.apply(actor,{scope,changes:[{action:'delete',id:doc.id,expectedVersion:2}],idempotencyKey:'delete-moved',sourceRef:'settings'})
+    assert.equal((await memory.migrateLegacy(actor)).items.length,0)
+    assert.equal(await memory.read(actor,scope,doc.id),null)
+  } finally {await f.close()}
 })

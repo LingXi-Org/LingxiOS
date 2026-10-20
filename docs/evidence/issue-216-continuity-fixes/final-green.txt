@@ -1,0 +1,196 @@
+(node:1215981) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:1215988) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: bounds core concurrency, defers optional recall and rejects revoked scopes or required recall failures
+ok 1 - bounds core concurrency, defers optional recall and rejects revoked scopes or required recall failures
+  ---
+  duration_ms: 168.817949
+  type: 'test'
+  ...
+# (node:1215996) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: lets the current stable-scope owner delete after historic room revocation without allowing rewrites
+ok 2 - lets the current stable-scope owner delete after historic room revocation without allowing rewrites
+  ---
+  duration_ms: 2151.002875
+  type: 'test'
+  ...
+# (node:1216068) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: rejects native rollback when stable forgetting is the only remaining activation state
+ok 3 - rejects native rollback when stable forgetting is the only remaining activation state
+  ---
+  duration_ms: 2205.603291
+  type: 'test'
+  ...
+# Subtest: keeps empty pre-activation rollback available and rejects epoch or timestamp fences independently
+ok 4 - keeps empty pre-activation rollback available and rejects epoch or timestamp fences independently
+  ---
+  duration_ms: 1369.906993
+  type: 'test'
+  ...
+# (node:1216159) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: pages long Chinese source material completely and durably fences page replay and forgetting
+ok 5 - pages long Chinese source material completely and durably fences page replay and forgetting
+  ---
+  duration_ms: 2155.038238
+  type: 'test'
+  ...
+# Subtest: reserves context space for relevant details and records traceable oversized core fragments
+ok 6 - reserves context space for relevant details and records traceable oversized core fragments
+  ---
+  duration_ms: 1640.60399
+  type: 'test'
+  ...
+# (node:1216271) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: rejects an inventory snapshot when forgetting commits before context returns
+ok 7 - rejects an inventory snapshot when forgetting commits before context returns
+  ---
+  duration_ms: 1923.565195
+  type: 'test'
+  ...
+# Subtest: fences forget at the request-event boundary before the next scripted provider call
+ok 8 - fences forget at the request-event boundary before the next scripted provider call
+  ---
+  duration_ms: 1468.646987
+  type: 'test'
+  ...
+# Subtest: fences forget at the publication-gate boundary before the next scripted provider call
+ok 9 - fences forget at the publication-gate boundary before the next scripted provider call
+  ---
+  duration_ms: 1485.78694
+  type: 'test'
+  ...
+# Subtest: fences forget at the retry boundary before the next scripted provider call
+ok 10 - fences forget at the retry boundary before the next scripted provider call
+  ---
+  duration_ms: 1982.157253
+  type: 'test'
+  ...
+# Subtest: fences forget at the quota-queue boundary before the next scripted provider call
+ok 11 - fences forget at the quota-queue boundary before the next scripted provider call
+  ---
+  duration_ms: 1579.634968
+  type: 'test'
+  ...
+# Subtest: fences forget at the nested-quota-queue boundary before the next scripted provider call
+ok 12 - fences forget at the nested-quota-queue boundary before the next scripted provider call
+  ---
+  duration_ms: 1381.224367
+  type: 'test'
+  ...
+# Subtest: carries the actual AgentRuntime context proof past model.started before provider dispatch
+ok 13 - carries the actual AgentRuntime context proof past model.started before provider dispatch
+  ---
+  duration_ms: 1516.14813
+  type: 'test'
+  ...
+# Subtest: preserves normal attempt accounting and current authorization
+ok 14 - preserves normal attempt accounting and current authorization
+  ---
+  duration_ms: 1580.477253
+  type: 'test'
+  ...
+# Subtest: preserves revoked attempt accounting and current authorization
+ok 15 - preserves revoked attempt accounting and current authorization
+  ---
+  duration_ms: 2426.555421
+  type: 'test'
+  ...
+# Subtest: preserves cancelled-gate attempt accounting and current authorization
+ok 16 - preserves cancelled-gate attempt accounting and current authorization
+  ---
+  duration_ms: 2835.117591
+  type: 'test'
+  ...
+# Subtest: preserves rejected-gate attempt accounting and current authorization
+ok 17 - preserves rejected-gate attempt accounting and current authorization
+  ---
+  duration_ms: 2833.680103
+  type: 'test'
+  ...
+# Subtest: preserves no-memory attempt accounting and current authorization
+ok 18 - preserves no-memory attempt accounting and current authorization
+  ---
+  duration_ms: 2192.004107
+  type: 'test'
+  ...
+# Subtest: uses only server-recorded epochs and never charges a forged final admission
+ok 19 - uses only server-recorded epochs and never charges a forged final admission
+  ---
+  duration_ms: 1806.081155
+  type: 'test'
+  ...
+# Subtest: defines already-admitted calls without resurrecting forgotten memory or admitting a later attempt
+ok 20 - defines already-admitted calls without resurrecting forgotten memory or admitting a later attempt
+  ---
+  duration_ms: 1556.468059
+  type: 'test'
+  ...
+# (node:1217066) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: continues unseen segments after rejected proposals and terminates without retrying rejected windows
+ok 21 - continues unseen segments after rejected proposals and terminates without retrying rejected windows
+  ---
+  duration_ms: 2501.963385
+  type: 'test'
+  ...
+# (node:1217147) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: settles a successful model call with nonnegative latency after the system clock moves backward
+ok 22 - settles a successful model call with nonnegative latency after the system clock moves backward
+  ---
+  duration_ms: 2.378818
+  type: 'test'
+  ...
+# Subtest: retries HTTP 408 inside the runtime boundary and keeps sanitized provider diagnostics
+ok 23 - retries HTTP 408 inside the runtime boundary and keeps sanitized provider diagnostics
+  ---
+  duration_ms: 203.008981
+  type: 'test'
+  ...
+# Subtest: preserves rejection metadata without retrying or logging provider bodies
+ok 24 - preserves rejection metadata without retrying or logging provider bodies
+  ---
+  duration_ms: 1.753004
+  type: 'test'
+  ...
+# Subtest: retains typed total-model and root-budget deadlines after settling the one issued attempt
+ok 25 - retains typed total-model and root-budget deadlines after settling the one issued attempt
+  ---
+  duration_ms: 94.261568
+  type: 'test'
+  ...
+# Subtest: keeps the first model deadline when durable settlement outlives the root deadline
+ok 26 - keeps the first model deadline when durable settlement outlives the root deadline
+  ---
+  duration_ms: 122.480111
+  type: 'test'
+  ...
+# (node:1217155) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: switches only after current authorization and accounts both providers inside one logical attempt budget
+ok 27 - switches only after current authorization and accounts both providers inside one logical attempt budget
+  ---
+  duration_ms: 4.216809
+  type: 'test'
+  ...
+# Subtest: does not reset attempts, bypass authorization, mix prices, or switch after cancellation/protocol failures
+ok 28 - does not reset attempts, bypass authorization, mix prices, or switch after cancellation/protocol failures
+  ---
+  duration_ms: 2.841876
+  type: 'test'
+  ...
+1..28
+# tests 28
+# suites 0
+# pass 28
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 40390.290176

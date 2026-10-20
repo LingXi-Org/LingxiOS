@@ -1,0 +1,334 @@
+(node:1222930) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:1222937) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: durably captures only filtered committed sources, runs hooks without locks, and fences forgetting and cancellation
+ok 1 - durably captures only filtered committed sources, runs hooks without locks, and fences forgetting and cancellation
+  ---
+  duration_ms: 2251.98748
+  type: 'test'
+  ...
+# Subtest: background capture retries without leaking policy exception text to the actual logger sink
+ok 2 - background capture retries without leaking policy exception text to the actual logger sink
+  ---
+  duration_ms: 1539.211542
+  type: 'test'
+  ...
+# (node:1223027) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: freezes a cold tenant benchmark and proposes inactive candidates in the same synthesis action transaction
+ok 3 - freezes a cold tenant benchmark and proposes inactive candidates in the same synthesis action transaction
+  ---
+  duration_ms: 2039.251917
+  type: 'test'
+  ...
+# Subtest: rejects a frozen definition conflict and rolls back memory, evidence, evaluation and the successful receipt
+ok 4 - rejects a frozen definition conflict and rolls back memory, evidence, evaluation and the successful receipt
+  ---
+  duration_ms: 1435.89577
+  type: 'test'
+  ...
+# Subtest: rejects mismatched trusted IDs before any database access
+ok 5 - rejects mismatched trusted IDs before any database access
+  ---
+  duration_ms: 0.60306
+  type: 'test'
+  ...
+# Subtest: captures the trusted benchmark and ID before the caller can mutate nested options
+ok 6 - captures the trusted benchmark and ID before the caller can mutate nested options
+  ---
+  duration_ms: 1507.224886
+  type: 'test'
+  ...
+# Subtest: preserves benchmarkId-only registration requirements and explicit administrative freezing
+ok 7 - preserves benchmarkId-only registration requirements and explicit administrative freezing
+  ---
+  duration_ms: 1520.909603
+  type: 'test'
+  ...
+# Subtest: does not touch the benchmark registry for empty synthesis
+ok 8 - does not touch the benchmark registry for empty synthesis
+  ---
+  duration_ms: 1330.316809
+  type: 'test'
+  ...
+# Subtest: does not touch the benchmark registry for rejected synthesis
+ok 9 - does not touch the benchmark registry for rejected synthesis
+  ---
+  duration_ms: 1355.116749
+  type: 'test'
+  ...
+# Subtest: does not touch the benchmark registry for processed synthesis
+ok 10 - does not touch the benchmark registry for processed synthesis
+  ---
+  duration_ms: 1376.698145
+  type: 'test'
+  ...
+# Subtest: does not touch the benchmark registry for forgotten synthesis
+ok 11 - does not touch the benchmark registry for forgotten synthesis
+  ---
+  duration_ms: 1453.101457
+  type: 'test'
+  ...
+# Subtest: does not touch the benchmark registry for revoked synthesis
+ok 12 - does not touch the benchmark registry for revoked synthesis
+  ---
+  duration_ms: 1471.581306
+  type: 'test'
+  ...
+# Subtest: ordinary cold and warm memory reads and context do not access the registry
+ok 13 - ordinary cold and warm memory reads and context do not access the registry
+  ---
+  duration_ms: 1515.462983
+  type: 'test'
+  ...
+# Subtest: discards the shared action connection when cancel interrupts freezing and permits a later action
+ok 14 - discards the shared action connection when cancel interrupts freezing and permits a later action
+  ---
+  duration_ms: 1543.765109
+  type: 'test'
+  ...
+# Subtest: discards the shared action connection when deadline interrupts freezing and permits a later action
+ok 15 - discards the shared action connection when deadline interrupts freezing and permits a later action
+  ---
+  duration_ms: 1872.317628
+  type: 'test'
+  ...
+# (node:1223396) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: requires a private reviewer, protects explicit memory, binds reviews to versions and supports native read pagination
+ok 16 - requires a private reviewer, protects explicit memory, binds reviews to versions and supports native read pagination
+  ---
+  duration_ms: 2292.726509
+  type: 'test'
+  ...
+# Subtest: applies privacy policy before searchable history capture without rejecting the committed user result
+ok 17 - applies privacy policy before searchable history capture without rejecting the committed user result
+  ---
+  duration_ms: 1528.314159
+  type: 'test'
+  ...
+# Subtest: runs native memory writes through the budgeted independent reviewer and preserves explicit rejection
+ok 18 - runs native memory writes through the budgeted independent reviewer and preserves explicit rejection
+  ---
+  duration_ms: 1713.004673
+  type: 'test'
+  ...
+# Subtest: isolates searchable history by principal, rechecks original session permissions and prevents forgotten evidence from returning
+ok 19 - isolates searchable history by principal, rechecks original session permissions and prevents forgotten evidence from returning
+  ---
+  duration_ms: 1555.705007
+  type: 'test'
+  ...
+# Subtest: resets only schema-8 memory, retains product records and frozen benchmarks, and rejects live workers and reapplication
+ok 20 - resets only schema-8 memory, retains product records and frozen benchmarks, and rejects live workers and reapplication
+  ---
+  duration_ms: 1452.212865
+  type: 'test'
+  ...
+# (node:1223656) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: MemoryWorkStore lease state machine
+    # Subtest: recognizes children of the current request even when they finish before the parent waits
+    ok 1 - recognizes children of the current request even when they finish before the parent waits
+      ---
+      duration_ms: 2.308732
+      type: 'test'
+      ...
+    # Subtest: rejects a completion outcome superseded by steering at the store boundary
+    ok 2 - rejects a completion outcome superseded by steering at the store boundary
+      ---
+      duration_ms: 0.869762
+      type: 'test'
+      ...
+    # Subtest: claims by lane priority, then priority, then age
+    ok 3 - claims by lane priority, then priority, then age
+      ---
+      duration_ms: 0.530881
+      type: 'test'
+      ...
+    # Subtest: advances the fence on every lease and dedupes enqueue by id
+    ok 4 - advances the fence on every lease and dedupes enqueue by id
+      ---
+      duration_ms: 0.57678
+      type: 'test'
+      ...
+    # Subtest: enforces session exclusivity: one live lease per session key
+    ok 5 - enforces session exclusivity: one live lease per session key
+      ---
+      duration_ms: 0.534836
+      type: 'test'
+      ...
+    # Subtest: allows an idle session to move to another worker and advances its home epoch
+    ok 6 - allows an idle session to move to another worker and advances its home epoch
+      ---
+      duration_ms: 0.304178
+      type: 'test'
+      ...
+    # Subtest: rejects stale fences and wrong tokens
+    ok 7 - rejects stale fences and wrong tokens
+      ---
+      duration_ms: 0.312491
+      type: 'test'
+      ...
+    # Subtest: transports cancel, preempt, and steer through heartbeats
+    ok 8 - transports cancel, preempt, and steer through heartbeats
+      ---
+      duration_ms: 0.374845
+      type: 'test'
+      ...
+    # Subtest: cancels queued work immediately
+    ok 9 - cancels queued work immediately
+      ---
+      duration_ms: 0.319031
+      type: 'test'
+      ...
+    # Subtest: yields only preempted work, advancing the fence and counting the preemption
+    ok 10 - yields only preempted work, advancing the fence and counting the preemption
+      ---
+      duration_ms: 0.522427
+      type: 'test'
+      ...
+    # Subtest: honors availableAt scheduling
+    ok 11 - honors availableAt scheduling
+      ---
+      duration_ms: 0.147963
+      type: 'test'
+      ...
+    1..11
+ok 21 - MemoryWorkStore lease state machine
+  ---
+  duration_ms: 8.111162
+  type: 'suite'
+  ...
+# Subtest: MemorySessionStore optimistic concurrency
+    # Subtest: creates at revision 0 and conflicts on stale revisions
+    ok 1 - creates at revision 0 and conflicts on stale revisions
+      ---
+      duration_ms: 0.625344
+      type: 'test'
+      ...
+    1..1
+ok 22 - MemorySessionStore optimistic concurrency
+  ---
+  duration_ms: 0.70305
+  type: 'suite'
+  ...
+# Subtest: MemoryEventStore
+    # Subtest: dedupes on (runId, seq) and lists ranges in order
+    ok 1 - dedupes on (runId, seq) and lists ranges in order
+      ---
+      duration_ms: 0.641999
+      type: 'test'
+      ...
+    1..1
+ok 23 - MemoryEventStore
+  ---
+  duration_ms: 0.703621
+  type: 'suite'
+  ...
+# Subtest: MemoryActionLedger
+    # Subtest: returns the first recorded result for duplicate keys
+    ok 1 - returns the first recorded result for duplicate keys
+      ---
+      duration_ms: 0.373724
+      type: 'test'
+      ...
+    1..1
+ok 24 - MemoryActionLedger
+  ---
+  duration_ms: 0.432572
+  type: 'suite'
+  ...
+# (node:1223664) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: finishes an assistant-only continuation without promoting assistant claims to human facts
+ok 25 - finishes an assistant-only continuation without promoting assistant claims to human facts
+  ---
+  duration_ms: 1983.831995
+  type: 'test'
+  ...
+# Subtest: advances a no-change evidence page without asking a model to approve nonexistent mutations
+ok 26 - advances a no-change evidence page without asking a model to approve nonexistent mutations
+  ---
+  duration_ms: 1514.505744
+  type: 'test'
+  ...
+# Subtest: repairs one invalid or protected proposal before verification without relaxing writes
+ok 27 - repairs one invalid or protected proposal before verification without relaxing writes
+  ---
+  duration_ms: 1481.342716
+  type: 'test'
+  ...
+# Subtest: retires permanently revoked sources but preserves transient failures for a later retry
+ok 28 - retires permanently revoked sources but preserves transient failures for a later retry
+  ---
+  duration_ms: 1465.998415
+  type: 'test'
+  ...
+# Subtest: batches five committed interactions, keeps per-scope progress and learns with two independent model calls
+ok 29 - batches five committed interactions, keeps per-scope progress and learns with two independent model calls
+  ---
+  duration_ms: 1549.313663
+  type: 'test'
+  ...
+# Subtest: uses persisted idle timestamps, bounds batches and retries, and never schedules uncommitted sources
+ok 30 - uses persisted idle timestamps, bounds batches and retries, and never schedules uncommitted sources
+  ---
+  duration_ms: 1721.491483
+  type: 'test'
+  ...
+# Subtest: protects explicit memory, records conflicts, rejects unknown evidence and stale leases, and fences forgetting
+ok 31 - protects explicit memory, records conflicts, rejects unknown evidence and stale leases, and fences forgetting
+  ---
+  duration_ms: 1472.308481
+  type: 'test'
+  ...
+# Subtest: rechecks source permissions and request revisions between proposal and apply
+ok 32 - rechecks source permissions and request revisions between proposal and apply
+  ---
+  duration_ms: 1469.120124
+  type: 'test'
+  ...
+# Subtest: does not renew expired knowledge from an old request committed after expiry
+ok 33 - does not renew expired knowledge from an old request committed after expiry
+  ---
+  duration_ms: 1495.526499
+  type: 'test'
+  ...
+# (node:1223959) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: stores structured documents, searches Chinese/English and browses paths across sessions without a worker lease
+ok 34 - stores structured documents, searches Chinese/English and browses paths across sessions without a worker lease
+  ---
+  duration_ms: 1853.09885
+  type: 'test'
+  ...
+# Subtest: atomically updates, moves, merges and restores versions, and diagnoses broken links and conflicts
+ok 35 - atomically updates, moves, merges and restores versions, and diagnoses broken links and conflicts
+  ---
+  duration_ms: 1491.217402
+  type: 'test'
+  ...
+# Subtest: validates paths, byte limits, versioned changes and content policy on body and metadata
+ok 36 - validates paths, byte limits, versioned changes and content policy on body and metadata
+  ---
+  duration_ms: 1437.098463
+  type: 'test'
+  ...
+# Subtest: keeps complete core records ahead of reference context and reports all budget omissions deterministically
+ok 37 - keeps complete core records ahead of reference context and reports all budget omissions deterministically
+  ---
+  duration_ms: 1350.402029
+  type: 'test'
+  ...
+1..37
+# tests 47
+# suites 4
+# pass 47
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 52060.520755
