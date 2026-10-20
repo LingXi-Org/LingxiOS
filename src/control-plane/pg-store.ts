@@ -32,6 +32,9 @@ export interface SqlPool extends SqlQueryable {
 }
 
 export interface SqlClient extends SqlQueryable {
+  /** Optional public driver events. Wrappers preserve these without owning unrelated listeners. */
+  on?(event: 'error', listener: (error: Error) => void): unknown
+  off?(event: 'error', listener: (error: Error) => void): unknown
   /** An error discards the connection, including any unfinished transaction. */
   release(error?: Error): void
 }

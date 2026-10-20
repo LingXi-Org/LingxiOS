@@ -12,7 +12,8 @@ export function sqlOperation(sql: string): 'write' | 'read' | 'transaction' {
 export function deadlinePool(pool: SqlPool, signal?: AbortSignal, timeoutMs = 30_000, metrics?: MetricsRegistry): SqlPool {
   return {
     async connect() {
-      const scope = scopedSignal([signal], timeoutMs), bounded = scope.signal
+      const connectionFailure = new AbortController()
+      const scope = scopedSignal([signal, connectionFailure.signal], timeoutMs), bounded = scope.signal
       bounded.throwIfAborted()
       const acquiring = performance.now()
       let pending: Promise<SqlClient>
@@ -29,17 +30,37 @@ export function deadlinePool(pool: SqlPool, signal?: AbortSignal, timeoutMs = 30
         .observe((performance.now() - acquiring) / 1000)
       let transactionStarted: number | undefined
       let released = false
+      const forwards: Array<(error: Error) => void> = []
+      const driverEvents = !!client.on && !!client.off
+      const failed = (error: Error) => connectionFailure.abort(error)
       const release = (error?: Error) => {
         if (released) return
         released = true
         bounded.removeEventListener('abort',cancel)
         scope.dispose()
+        if (driverEvents) {
+          client.off!('error',failed)
+          for (const listener of forwards) client.off!('error',listener)
+          forwards.length = 0
+        }
         client.release(error)
       }
       const cancel = () => release(bounded.reason instanceof Error ? bounded.reason : new Error('database deadline exceeded'))
       bounded.addEventListener('abort',cancel,{ once: true })
+      // pg rejects the pending query AND emits error on its checked-out Client.
+      // Own that event at the raw-client boundary, including while between SQL.
+      if (driverEvents) client.on!('error',failed)
       if (bounded.aborted) cancel()
-      return { async query(sql, params) {
+      return { ...(driverEvents ? {
+        on(event: 'error', listener: (error: Error) => void) {
+          if (released) throw new Error('database connection is closed')
+          forwards.push(listener); client.on!(event,listener)
+        },
+        off(event: 'error', listener: (error: Error) => void) {
+          const index = forwards.lastIndexOf(listener)
+          if (index >= 0) { forwards.splice(index,1); client.off!(event,listener) }
+        },
+      } : {}), async query(sql, params) {
         bounded.throwIfAborted()
         if (released) throw new Error('database connection is closed')
         const began = performance.now()

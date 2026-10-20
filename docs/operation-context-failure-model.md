@@ -19,6 +19,9 @@ Failure cases, recorded before implementation:
 - Scoped PostgreSQL timeout settings leak into a later ordinary operation.
 - Changed membership/tenant identity bypasses authorization on replay.
 - Completed calls retain signal listeners or change calls without a context.
+- A checked-out PostgreSQL client emits a socket `error` in addition to rejecting
+  its query. Missing event ownership crashes the process despite caller catch;
+  nested wrappers must propagate failure and remove only their own listeners.
 
 The real PostgreSQL check uses one disposable database and a one-connection
 application pool. A separate test-only observer holds a table lock, observes the

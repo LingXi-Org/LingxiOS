@@ -40,3 +40,31 @@ PostgreSQL socket-polling platform limits and explicit unsupported-settings
 failure are described in `docs/operation-context-failure-model.md`. The product
 must pass its callback context and formally pin the published package before
 claiming its callback chain is fixed. This branch is not merged or published.
+
+## Socket-error review follow-up
+
+Independent review of initial commit `c4d486d1f7b093a03fe3c5014b4abaddad80ebc9`
+found that pg emits an `error` event as well as rejecting a query after a checked-out
+socket disconnect. The initial checks and CI for that commit did **not** cover or
+qualify this correction. Their evidence remains above; initial source hashes are
+preserved in `source-hashes-initial.json`.
+
+Before this follow-up implementation, `socket-error-red.tap` reproduced process
+exit 1 from an unhandled event after the local protocol server received SQL, and
+missing nested listener ownership (0/2). Both the red subprocess and green run use
+Node 22.23.3. `listener-ownership-red.tap` preserves the additional red check for
+removing only owned subscriptions, including duplicate listeners.
+
+`socket-error-green.tap` passes 11/11 focused tests with zero skips: the real pg
+client/socket test now rejects normally, acquires a replacement connection within
+the same max-1 pool, and serves the next request. Its diagnostic records the child
+Node version and recovery result. Nested wrappers discard once and clean their
+own error subscriptions without disturbing unrelated subscribers. Optional public
+`SqlClient.on/off('error')` hooks preserve clients that do not expose events.
+
+`postgres-socket-green.json` reruns all 16 real PostgreSQL cases on this candidate:
+all passed, blocked backends exited in 93.48–100.61 ms and the deadline sleep ended
+in 125 ms. The 24 earlier broader regressions and standalone package check are
+historical results for the first commit; exact follow-up CI must qualify the final
+commit before merge. `source-hashes.json` now includes the changed deadline pool,
+SqlClient contract and socket test. No migration or production operation occurred.
