@@ -72,6 +72,7 @@ import { verifyGraphResults } from '../collaboration/graphs.js'
 import { enqueueChild, requestSnapshot } from './jobs.js'
 import { ChildAdmissionRejectedError, recordChildBudgetDenials } from '../model/child-admission.js'
 import { BackgroundScheduler, backgroundOptions, backgroundPool, type BackgroundOptions } from './background-scheduler.js'
+import { withRuntimeOperation, type RuntimeOperationContext } from './operation-context.js'
 
 export interface LingxiOSOptions {
   /** Declare background ownership explicitly for context-only worker clients. Defaults to active. */
@@ -637,11 +638,12 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     },
     memory: memory?.api,
     conversations: {
-      sync: (policy: import('../collaboration/types.js').ConversationPolicy) => syncConversation(options.database, policy),
+      sync: (policy: import('../collaboration/types.js').ConversationPolicy, operation?: RuntimeOperationContext) =>
+        withRuntimeOperation(options.database, operation, database => syncConversation(database, policy)),
       registerThread: (scope: import('../collaboration/types.js').ConversationIdentity & { threadId: string; policyVersion: number }) => registerThread(options.database, scope),
       ingest: (input: import('../collaboration/types.js').IMMessageInput,
-        policy: Pick<RequestInput, 'mode' | 'codeExecution' | 'deliveryMode' | 'obligations' | 'executionClass'> = {}) =>
-        ingestMessage(options.database, input, policyMeta(policy)),
+        policy: Pick<RequestInput, 'mode' | 'codeExecution' | 'deliveryMode' | 'obligations' | 'executionClass'> = {}, operation?: RuntimeOperationContext) =>
+        withRuntimeOperation(options.database, operation, database => ingestMessage(database, input, policyMeta(policy))),
     },
     ...createCollaborationAPI(options.database),
     metrics: () => metrics.expose(),
@@ -649,7 +651,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     readOperations: () => readOperations(options.database),
     readDiagnostics: (identity: RunIdentity) => readDiagnostics(options.database, identity),
     readRun: (identity: RunIdentity, transaction: SqlQueryable = options.database) => readRun(transaction, identity),
-    readRunState: (identity: RunIdentity) => readRunState(options.database,identity),
+    readRunState: (identity: RunIdentity, operation?: RuntimeOperationContext) =>
+      withRuntimeOperation(options.database, operation, database => readRunState(database,identity)),
     /** Mount behind product authentication; derive identity from the session, never from model/request JSON. */
     streamRun: realtime.response,
     freezeEvolutionBenchmark: (tenantId: string, benchmark: EvolutionBenchmark) => freezeEvolutionBenchmark(options.database,tenantId,benchmark),
@@ -676,7 +679,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       if (options.performance?.notifications !== false) { workWakeup.notify(); runWakeup.notify() }
       return result
     },
-    readApproval: (identity: ApprovalLookup) => readApproval(options.database, identity),
+    readApproval: (identity: ApprovalLookup, operation?: RuntimeOperationContext) =>
+      withRuntimeOperation(options.database, operation, database => readApproval(database, identity)),
     decideApproval: (decision: ApprovalDecision) => decideApproval(options.database, decision),
     async reconcileAction(input: RunIdentity & { actionKey: string }) {
       if (!input.principalId?.trim()) throw new Error('authenticated principal is required')
@@ -798,18 +802,20 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       )
       return (rows[0]?.['goal_outcome'] as GoalOutcome | undefined) ?? null
     },
-    async readEvents(identity: MessageIdentity, afterSeq = 0): Promise<{ events: RunEvent[]; nextSeq: number }> {
-      await authorizeRunRead(options.database, identity)
-      if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new Error('event cursor must be a non-negative safe integer')
-      const { rows } = await options.database.query(`SELECT event.* FROM lingxios.agent_run_events event
-        JOIN lingxios.agent_work_items work ON work.id=event.run_id
-          AND work.tenant_id=event.tenant_id AND work.agent_id=event.agent_id
-        WHERE ${resultReadScope}
-          AND event.visibility='user' AND event.seq>$7 ORDER BY event.seq LIMIT 100`,
-      [...resultReadParams(identity), afterSeq])
-      const events = rows.map(row => ({ runId: String(row['run_id']), seq: Number(row['seq']), kind: String(row['kind']),
-        stage: row['stage'] as RunEvent['stage'], visibility: 'user' as const, data: row['data'] as Record<string, unknown> }))
-      return { events, nextSeq: events.at(-1)?.seq ?? afterSeq }
+    async readEvents(identity: MessageIdentity, afterSeq = 0, operation?: RuntimeOperationContext): Promise<{ events: RunEvent[]; nextSeq: number }> {
+      return withRuntimeOperation(options.database, operation, async database => {
+        await authorizeRunRead(database, identity)
+        if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new Error('event cursor must be a non-negative safe integer')
+        const { rows } = await database.query(`SELECT event.* FROM lingxios.agent_run_events event
+          JOIN lingxios.agent_work_items work ON work.id=event.run_id
+            AND work.tenant_id=event.tenant_id AND work.agent_id=event.agent_id
+          WHERE ${resultReadScope}
+            AND event.visibility='user' AND event.seq>$7 ORDER BY event.seq LIMIT 100`,
+        [...resultReadParams(identity), afterSeq])
+        const events = rows.map(row => ({ runId: String(row['run_id']), seq: Number(row['seq']), kind: String(row['kind']),
+          stage: row['stage'] as RunEvent['stage'], visibility: 'user' as const, data: row['data'] as Record<string, unknown> }))
+        return { events, nextSeq: events.at(-1)?.seq ?? afterSeq }
+      })
     },
     async readUsage(identity: MessageIdentity) {
       await authorizeRunRead(options.database, identity)
@@ -837,7 +843,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         resultReadParams(identity))
       return rows[0]?.['state'] as 'pending' | 'delivered' | 'failed' | 'not_observed' | undefined ?? null
     },
-    readTerminal: (identity: RunIdentity) => readTerminalFeedback(options.database, identity),
+    readTerminal: (identity: RunIdentity, operation?: RuntimeOperationContext) =>
+      withRuntimeOperation(options.database, operation, database => readTerminalFeedback(database, identity)),
     retryDelivery: (identity: RunIdentity, channel: 'message' | 'events' | 'usage' | 'terminal' = 'message') => retryDelivery(options.database,identity,channel),
     async listenControlPlane(input: { serviceToken: string; port: number; host?: string }) {
       if (stopped) throw new Error('application has stopped')

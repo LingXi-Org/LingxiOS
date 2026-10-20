@@ -1,0 +1,98 @@
+{
+  "baseCommit": "a02e7aab414364f716ff91d6fd0821b42dddabdd",
+  "phase": "before implementation",
+  "exitCode": 1,
+  "evidence": {
+    "node": "v22.23.3",
+    "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+    "applicationPoolMax": 1,
+    "productionOperations": 0,
+    "providerCalls": 0,
+    "results": [
+      {
+        "name": "readRunState",
+        "outcome": "pending",
+        "frontendReady": false,
+        "serverStopped": false,
+        "elapsedMs": 401.66,
+        "passed": false
+      },
+      {
+        "name": "readEvents",
+        "outcome": "pending",
+        "frontendReady": false,
+        "serverStopped": false,
+        "elapsedMs": 409.4,
+        "passed": false
+      },
+      {
+        "name": "readApproval",
+        "outcome": "pending",
+        "frontendReady": false,
+        "serverStopped": false,
+        "elapsedMs": 406.75,
+        "passed": false
+      },
+      {
+        "name": "readTerminal",
+        "outcome": "pending",
+        "frontendReady": false,
+        "serverStopped": false,
+        "elapsedMs": 405.47,
+        "passed": false
+      },
+      {
+        "name": "conversations.sync",
+        "outcome": "pending",
+        "frontendReady": false,
+        "serverStopped": false,
+        "elapsedMs": 402.24,
+        "passed": false
+      },
+      {
+        "name": "conversations.ingest",
+        "outcome": "pending",
+        "frontendReady": false,
+        "serverStopped": false,
+        "elapsedMs": 401.11,
+        "passed": false
+      },
+      {
+        "name": "readRunState:pre-aborted",
+        "rejected": false,
+        "acquisitions": 2,
+        "passed": false
+      },
+      {
+        "name": "readEvents:pre-aborted",
+        "rejected": false,
+        "acquisitions": 2,
+        "passed": false
+      },
+      {
+        "name": "readApproval:pre-aborted",
+        "rejected": false,
+        "acquisitions": 1,
+        "passed": false
+      },
+      {
+        "name": "readTerminal:pre-aborted",
+        "rejected": false,
+        "acquisitions": 2,
+        "passed": false
+      },
+      {
+        "name": "conversations.sync:pre-aborted",
+        "rejected": false,
+        "acquisitions": 1,
+        "passed": false
+      },
+      {
+        "name": "conversations.ingest:pre-aborted",
+        "rejected": false,
+        "acquisitions": 1,
+        "passed": false
+      }
+    ]
+  }
+}

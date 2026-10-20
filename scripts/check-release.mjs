@@ -72,6 +72,7 @@ try {
     ['gate_recovery', 'test-worker-recovery.mjs', 'LINGXIOS_WORKER_TEST_DATABASE_URL'],
     ['gate_workspace', 'test-distributed-workspace.mjs', 'LINGXIOS_WORKSPACE_TEST_DATABASE_URL'],
     ['gate_capacity', 'test-capacity.mjs', 'LINGXIOS_CAPACITY_TEST_DATABASE_URL'],
+    ['gate_operations', 'test-operation-context.mjs', 'LINGXIOS_OPERATION_TEST_DATABASE_URL'],
   ]) {
     await admin.query(`CREATE DATABASE ${database}`)
     await run(process.execPath, [`scripts/${script}`], { env: { [variable]: `postgresql://postgres:${password}@127.0.0.1:${port}/${database}` } })

@@ -1,0 +1,115 @@
+{
+  "baseCommit": "a02e7aab414364f716ff91d6fd0821b42dddabdd",
+  "phase": "candidate implementation",
+  "exitCode": 0,
+  "evidence": {
+    "node": "v22.23.3",
+    "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+    "applicationPoolMax": 1,
+    "productionOperations": 0,
+    "providerCalls": 0,
+    "results": [
+      {
+        "name": "readRunState",
+        "outcome": "rejected",
+        "frontendReady": true,
+        "serverStopped": true,
+        "elapsedMs": 104.17,
+        "passed": true
+      },
+      {
+        "name": "readEvents",
+        "outcome": "rejected",
+        "frontendReady": true,
+        "serverStopped": true,
+        "elapsedMs": 100.37,
+        "passed": true
+      },
+      {
+        "name": "readApproval",
+        "outcome": "rejected",
+        "frontendReady": true,
+        "serverStopped": true,
+        "elapsedMs": 101.1,
+        "passed": true
+      },
+      {
+        "name": "readTerminal",
+        "outcome": "rejected",
+        "frontendReady": true,
+        "serverStopped": true,
+        "elapsedMs": 100.57,
+        "passed": true
+      },
+      {
+        "name": "conversations.sync",
+        "outcome": "rejected",
+        "frontendReady": true,
+        "serverStopped": true,
+        "elapsedMs": 99.54,
+        "passed": true
+      },
+      {
+        "name": "conversations.ingest",
+        "outcome": "rejected",
+        "frontendReady": true,
+        "serverStopped": true,
+        "elapsedMs": 99.19,
+        "passed": true
+      },
+      {
+        "name": "readRunState:pre-aborted",
+        "rejected": true,
+        "acquisitions": 0,
+        "passed": true
+      },
+      {
+        "name": "readEvents:pre-aborted",
+        "rejected": true,
+        "acquisitions": 0,
+        "passed": true
+      },
+      {
+        "name": "readApproval:pre-aborted",
+        "rejected": true,
+        "acquisitions": 0,
+        "passed": true
+      },
+      {
+        "name": "readTerminal:pre-aborted",
+        "rejected": true,
+        "acquisitions": 0,
+        "passed": true
+      },
+      {
+        "name": "conversations.sync:pre-aborted",
+        "rejected": true,
+        "acquisitions": 0,
+        "passed": true
+      },
+      {
+        "name": "conversations.ingest:pre-aborted",
+        "rejected": true,
+        "acquisitions": 0,
+        "passed": true
+      },
+      {
+        "name": "session-reset-and-shared-absolute-deadline",
+        "passed": true
+      },
+      {
+        "name": "ingress-abort-rolls-back-inserted-message-and-work",
+        "passed": true
+      },
+      {
+        "name": "server-sleep-deadline",
+        "elapsedMs": 124,
+        "passed": true
+      },
+      {
+        "name": "unknown-commit-idempotent-replay-and-current-authorization",
+        "passed": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,74 @@
+(node:808294) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:808301) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: discards late acquisitions and unfinished database transactions instead of returning them to the pool
+ok 1 - discards late acquisitions and unfinished database transactions instead of returning them to the pool
+  ---
+  duration_ms: 3.784297
+  type: 'test'
+  ...
+# Subtest: cancels every host read while allowing bounded billing settlement after attempt cancellation
+ok 2 - cancels every host read while allowing bounded billing settlement after attempt cancellation
+  ---
+  duration_ms: 0.9484
+  type: 'test'
+  ...
+# (node:808309) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: exports an operation context compatible with delivery callbacks and the existing transaction read
+ok 3 - exports an operation context compatible with delivery callbacks and the existing transaction read
+  ---
+  duration_ms: 0.628297
+  type: 'test'
+  ...
+# (node:808317) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: rejects cancelled, expired and malformed contexts without acquiring a connection
+ok 4 - rejects cancelled, expired and malformed contexts without acquiring a connection
+  ---
+  duration_ms: 1.892624
+  type: 'test'
+  ...
+# Subtest: preserves stricter server timeouts, restores session settings and releases signal listeners
+ok 5 - preserves stricter server timeouts, restores session settings and releases signal listeners
+  ---
+  duration_ms: 2.581503
+  type: 'test'
+  ...
+# Subtest: rejects a lost commit acknowledgement, discards the connection and never pretends rollback proved no write
+ok 6 - rejects a lost commit acknowledgement, discards the connection and never pretends rollback proved no write
+  ---
+  duration_ms: 1.066909
+  type: 'test'
+  ...
+# (node:808325) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: scopes cancellation and deadlines without retaining completed operations on their parents
+ok 7 - scopes cancellation and deadlines without retaining completed operations on their parents
+  ---
+  duration_ms: 15.443158
+  type: 'test'
+  ...
+# Subtest: releases pool parent subscriptions on success, acquisition failure and cancellation
+ok 8 - releases pool parent subscriptions on success, acquisition failure and cancellation
+  ---
+  duration_ms: 5.005068
+  type: 'test'
+  ...
+# Subtest: releases HTTP request parent subscriptions on success, error, synchronous throw and cancellation
+ok 9 - releases HTTP request parent subscriptions on success, error, synchronous throw and cancellation
+  ---
+  duration_ms: 16.003755
+  type: 'test'
+  ...
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 387.811992

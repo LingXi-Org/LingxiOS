@@ -1,0 +1,167 @@
+(node:808333) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:808340) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: committed agent mentions create public turns without waiting or resuming their sender
+ok 1 - committed agent mentions create public turns without waiting or resuming their sender
+  ---
+  duration_ms: 2333.228646
+  type: 'test'
+  ...
+# Subtest: agent mention limits, unsigned messages and revoked recipients never enqueue extra work
+ok 2 - agent mention limits, unsigned messages and revoked recipients never enqueue extra work
+  ---
+  duration_ms: 1569.086634
+  type: 'test'
+  ...
+# Subtest: bounds an all-member mention by the chain budget even in a large supported room
+ok 3 - bounds an all-member mention by the chain budget even in a large supported room
+  ---
+  duration_ms: 1584.216421
+  type: 'test'
+  ...
+# Subtest: delivers and replays the same frozen citation excerpts after the source changes
+ok 4 - delivers and replays the same frozen citation excerpts after the source changes
+  ---
+  duration_ms: 1591.273839
+  type: 'test'
+  ...
+# Subtest: binds IM ownership, audiences, targeted reply slots, causal identities and execution sessions
+ok 5 - binds IM ownership, audiences, targeted reply slots, causal identities and execution sessions
+  ---
+  duration_ms: 1477.072737
+  type: 'test'
+  ...
+# Subtest: keeps public IM result reads bound to the frozen audience and exact thread
+ok 6 - keeps public IM result reads bound to the frozen audience and exact thread
+  ---
+  duration_ms: 1721.771094
+  type: 'test'
+  ...
+# Subtest: merges independent state fields, preserves tombstone versions and audits deduplicated conflicts
+ok 7 - merges independent state fields, preserves tombstone versions and audits deduplicated conflicts
+  ---
+  duration_ms: 1483.131973
+  type: 'test'
+  ...
+# {"ts":"2026-10-20T00:33:30.094Z","level":"warn","msg":"deliveries failed","error":"outbox scan or delivery failed; durable intent retained"}
+# Subtest: runs a durable diamond DAG through state actions, fan-in, verified result and deduplicated IM delivery
+ok 8 - runs a durable diamond DAG through state actions, fan-in, verified result and deduplicated IM delivery
+  ---
+  duration_ms: 2621.726256
+  type: 'test'
+  ...
+# Subtest: rejects cycles, blocks failed dependencies, resumes the parent and fences cancelled branches
+ok 9 - rejects cycles, blocks failed dependencies, resumes the parent and fences cancelled branches
+  ---
+  duration_ms: 1821.848129
+  type: 'test'
+  ...
+# Subtest: partitions IM memory by principal and revokes restored sessions
+ok 10 - partitions IM memory by principal and revokes restored sessions
+  ---
+  duration_ms: 1873.663395
+  type: 'test'
+  ...
+# Subtest: discovers effective memory scopes through the public app and reauthorizes their use
+ok 11 - discovers effective memory scopes through the public app and reauthorizes their use
+  ---
+  duration_ms: 1804.129014
+  type: 'test'
+  ...
+# Subtest: migrates schema 9 without resetting business data and matches the fresh schema
+ok 12 - migrates schema 9 without resetting business data and matches the fresh schema
+  ---
+  duration_ms: 3249.883287
+  type: 'test'
+  ...
+# Subtest: resumes an exact wait set after early completion and rejects stale fences and widened delegate capabilities
+ok 13 - resumes an exact wait set after early completion and rejects stale fences and widened delegate capabilities
+  ---
+  duration_ms: 1658.739629
+  type: 'test'
+  ...
+# Subtest: isolates tenants and direct audiences, rejects malformed state and rechecks speak and execute revocation
+ok 14 - isolates tenants and direct audiences, rejects malformed state and rechecks speak and execute revocation
+  ---
+  duration_ms: 1642.28637
+  type: 'test'
+  ...
+# Subtest: reauthorizes IM approvals and prevents cancelled workers from writing shared state
+ok 15 - reauthorizes IM approvals and prevents cancelled workers from writing shared state
+  ---
+  duration_ms: 1451.316568
+  type: 'test'
+  ...
+# (node:809101) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: commits child lineage atomically, resumes a child that finished before parking, propagates revisions and freezes model prices
+ok 16 - commits child lineage atomically, resumes a child that finished before parking, propagates revisions and freezes model prices
+  ---
+  duration_ms: 2193.20779
+  type: 'test'
+  ...
+# Subtest: durable operation handoff releases the original conversation, then resumes without a sweep
+ok 17 - durable operation handoff releases the original conversation, then resumes without a sweep
+  ---
+  duration_ms: 1449.656601
+  type: 'test'
+  ...
+# (node:809208) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: stops on explicit authorization denial while dependency failures keep a bounded durable retry
+ok 18 - stops on explicit authorization denial while dependency failures keep a bounded durable retry
+  ---
+  duration_ms: 1855.855776
+  type: 'test'
+  ...
+# Subtest: drains ordered events and lets a fresh healthy lane run while an earlier flush is stalled
+ok 19 - drains ordered events and lets a fresh healthy lane run while an earlier flush is stalled
+  ---
+  duration_ms: 1369.724079
+  type: 'test'
+  ...
+# Subtest: aborts hung delivery, persists exhaustion, and continues other streams without reordering one stream
+ok 20 - aborts hung delivery, persists exhaustion, and continues other streams without reordering one stream
+  ---
+  duration_ms: 1362.469899
+  type: 'test'
+  ...
+# (node:809300) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: reports terminal delivery independently and excludes superseded feedback from pending gauges
+ok 21 - reports terminal delivery independently and excludes superseded feedback from pending gauges
+  ---
+  duration_ms: 1806.686102
+  type: 'test'
+  ...
+# Subtest: atomically persists terminal feedback without a result and rejects stale lease or request completion
+ok 22 - atomically persists terminal feedback without a result and rejects stale lease or request completion
+  ---
+  duration_ms: 1393.937828
+  type: 'test'
+  ...
+# Subtest: aggregates one notification per root version while suppressing background and superseded children
+ok 23 - aggregates one notification per root version while suppressing background and superseded children
+  ---
+  duration_ms: 1312.806144
+  type: 'test'
+  ...
+# {"ts":"2026-10-20T00:33:58.453Z","level":"warn","msg":"terminal feedback failed","error":"outbox scan or delivery failed; durable intent retained"}
+# {"ts":"2026-10-20T00:33:58.536Z","level":"warn","msg":"terminal feedback failed","error":"outbox scan or delivery failed; durable intent retained"}
+# Subtest: reopens durable terminal delivery, reauthorizes each attempt and preserves its stable identity
+ok 24 - reopens durable terminal delivery, reauthorizes each attempt and preserves its stable identity
+  ---
+  duration_ms: 1811.36487
+  type: 'test'
+  ...
+1..24
+# tests 24
+# suites 0
+# pass 24
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 43024.093472
