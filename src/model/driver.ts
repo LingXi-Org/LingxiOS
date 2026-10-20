@@ -38,9 +38,9 @@ export interface ModelTurnRequest {
   items: readonly ModelItem[]
   signal?: AbortSignal | undefined
   /** Raw assistant content; never deliver without a declared format and trusted preview policy. */
-  onTextDelta?: ((delta: string) => void) | undefined
+  onTextDelta?: (((delta: string) => void) | ((delta: string) => Promise<void>)) | undefined
   /** Runtime-owned retry boundary; clears any draft from the preceding provider attempt. */
-  onAttempt?: ((callId: string) => void) | undefined
+  onAttempt?: (((callId: string) => void) | ((callId: string) => Promise<void>)) | undefined
 }
 
 export interface StructuredCallRequest {

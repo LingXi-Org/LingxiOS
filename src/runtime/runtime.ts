@@ -1,3 +1,4 @@
+import { PublicTextWriter, PublicTextPublicationError } from './public-text.js'
 import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from './wait.js'
 import { inputWaitQuestion } from '../protocol/input-wait.js'
@@ -155,6 +156,8 @@ export class AgentRuntime {
     return candidate
   }
 
+  private readonly publications = new Map<string, PublicTextWriter>()
+  private readonly modelAttempts = new Map<string, string>()
   private readonly previews = new Map<string, { buffer: PreviewBuffer; stop: AbortController; task: Promise<void> }>()
 
   private hostFor(work: WorkItem): HostPort { return this.hostsByRun.get(work.id) ?? this.host }
@@ -306,7 +309,7 @@ export class AgentRuntime {
         kind: 'run.started', stage: 'started', visibility: 'user',
         data: {
           kind: work.kind, lane: work.lane, attempts: work.attempts ?? 1, preemptions: work.preemptions ?? 0,
-          sourceRef: work.triggerRef,
+          sourceRef: work.triggerRef, fence: work.fence, ...(work.requestVersion ? {requestVersion:work.requestVersion} : {}),
           ...(work.availableAt ? { queueWaitMs: Math.max(0, Date.now() - Date.parse(work.availableAt)) } : {}),
         },
       })
@@ -342,6 +345,7 @@ export class AgentRuntime {
       await this.finishWithError(work, runId, signals, activeSession, error)
       return
     } finally {
+      this.publications.get(runId)?.dispose(); this.publications.delete(runId); this.modelAttempts.delete(runId)
       const preview = this.previews.get(runId)
       preview?.buffer.close()
       if (preview) {
@@ -597,7 +601,8 @@ export class AgentRuntime {
       } })
       let turn
       let parser = new CandidateBodyParser()
-      const preview = liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
+      const publishes = liveContext.publicTextAllowed && model.previewFormat === 'user-text'
+      const preview = !publishes && liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
       let providerBegan = performance.now()
       let firstBody = false
       try {
@@ -609,7 +614,16 @@ export class AgentRuntime {
           tools: modelTools,
           codeExecution,
           signal: signals.generationSignal(),
-          onAttempt: callId => {
+          onAttempt: async callId => {
+            await this.publications.get(runId)?.end('superseded')
+            this.publications.delete(runId)
+            this.modelAttempts.set(runId,callId)
+            if (publishes) {
+              const requestVersion=(session.request?.revisions.length ?? 0)+1
+              const partId='public:'+createHash('sha256').update(JSON.stringify([runId,requestVersion,work.fence,callId,0])).digest('hex')
+              this.publications.set(runId,new PublicTextWriter({version:1,requestVersion,fence:work.fence,attemptId:callId,partId,partIndex:0},
+                event=>this.event(work,runId,event),signals.generationSignal()))
+            }
             // Reserve the reply first; optional compaction must not consume its budget.
             if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
               && estimateTokens(session.history, model) + overheadTokens >= backgroundLimit) {
@@ -622,7 +636,12 @@ export class AgentRuntime {
             if (preview) preview.reset(callId, (session.request?.revisions.length ?? 0) + 1)
             else this.previews.get(runId)?.buffer.discard()
           },
-          onTextDelta: delta => {
+          onTextDelta: async delta => {
+            if (publishes) {
+              if (signals.hasSteer() || signals.lifecycle.signal.aborted) return
+              await this.publications.get(runId)?.push(delta)
+              return
+            }
             if (!preview || signals.hasSteer() || signals.lifecycle.signal.aborted) return
             const body = model.previewFormat === 'user-text' ? delta : parser.push(delta)
             if (parser.invalid) { preview.discard(); return }
@@ -635,6 +654,7 @@ export class AgentRuntime {
           },
         })
       } catch (error) {
+        await this.publications.get(runId)?.end(signals.hasSteer() ? 'superseded' : signals.lifecycle.signal.aborted ? 'cancelled' : 'failed').catch(()=>{})
         preview?.discard()
         if (signals.hasSteer() && !signals.lifecycle.signal.aborted) continue
         if (error instanceof ModelBudgetExceededError && pendingCompaction) {
@@ -682,6 +702,7 @@ export class AgentRuntime {
       const calls = turn.output.filter(
         (item): item is Extract<ModelItem, { type: 'function_call' }> => 'type' in item && item.type === 'function_call',
       )
+      await this.publications.get(runId)?.end(calls.length ? 'tool' : 'completed')
       if (calls.length) preview?.discard()
       if (calls.length && liveContext.responseProfile === 'fast') {
         const requestVersion = (session.request?.revisions.length ?? 0) + 1
@@ -1059,7 +1080,7 @@ export class AgentRuntime {
             hostToolPartIndices.set(action.idempotencyKey, partIndex)
             await this.event(work, runId, {
               kind: 'tool.started', stage: 'started', visibility: 'user',
-              data: { toolCallId, partIndex, name: action.action },
+              data: { toolCallId, partIndex, name: action.action, requestVersion: (session.request?.revisions.length ?? 0)+1, fence:work.fence, attemptId:this.modelAttempts.get(runId) },
             })
             return
           }
@@ -1079,7 +1100,7 @@ export class AgentRuntime {
                 : { status: 'failed', error: result.error ?? 'host action failed' }
           await this.event(work, runId, {
             kind: 'tool.completed', stage: result.ok || result.approval ? 'completed' : 'failed', visibility: 'user',
-            data: { toolCallId, partIndex, result: toolResult, isError: !result.ok && !result.approval },
+            data: { toolCallId, partIndex, result: toolResult, isError: !result.ok && !result.approval, requestVersion: (session.request?.revisions.length ?? 0)+1, fence:work.fence, attemptId:this.modelAttempts.get(runId) },
           })
         },
       }
@@ -1437,7 +1458,7 @@ export class AgentRuntime {
       log.error('terminal event emission failed', { error: eventError })
     })
     const terminalReason = cancelled ? 'cancelled' : error instanceof HardLimitExceededError || error instanceof ModelContextBudgetError ? 'context_limit'
-      : error instanceof ModelBudgetExceededError ? 'budget_limit' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
+      : error instanceof ModelBudgetExceededError ? 'budget_limit' : error instanceof PublicTextPublicationError ? 'execution_failed' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
     await this.hostFor(work).completeWork(work, { status, terminalReason, error: publicFailure(error), goalOutcome: {
       status: 'blocked', verification: 'inconclusive', requestVersion: (session?.request?.revisions.length ?? 0) + 1,
       gaps: [cancelled ? 'Execution was cancelled' : publicFailure(error)],

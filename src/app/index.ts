@@ -1,3 +1,4 @@
+import { publicTextPublication, readPublicTextAttempts, type PublicTextAttempt } from './public-text.js'
 import { DEFAULT_MODEL_BUDGET } from '../model/execution.js'
 import { readTerminalFeedback, terminalFeedback } from './terminal.js'
 import { classifyToolFailure } from '../tools/failure.js'
@@ -321,9 +322,9 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         if (discovered.rows.length > 1024) throw new Error('too many materialized tool schemas')
         discoveredTools = discovered.rows.map(row => String(row['name']))
       }
-      const previewVersion = options.realtime?.allowDraft ? Number((await options.database.query(
+      const previewVersion = (options.realtime?.allowDraft || options.realtime?.allowPublicText) ? Number((await options.database.query(
         'SELECT jsonb_array_length(steer_inputs)+1 AS version FROM lingxios.agent_work_items WHERE id=$1', [work.id])).rows[0]?.['version']) : 1
-      return { ...context, previewAllowed: await realtime.allowed(work, previewVersion), ...(discoveredTools ? { discoveredTools } : {}),
+      return { ...context, publicTextAllowed: await publicText.allowed(work, previewVersion), previewAllowed: await realtime.allowed(work, previewVersion), ...(discoveredTools ? { discoveredTools } : {}),
         ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await optionalMemoryContext(work, signal, context.responseProfile) } : {}) }
     } },
     ...(options.delivery ? { delivery: options.delivery } : {}),
@@ -396,6 +397,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     } finally { active = false; scope.dispose() }
   }
 
+  const publicText = publicTextPublication(options.database, options.realtime?.allowPublicText)
   const service = new ControlPlaneService({
     ...(options.responsePolicy ? { responsePolicy: options.responsePolicy } : {}),
     authorizeWork: async work => { await authorizeConversationWork(options.database, work) },
@@ -424,7 +426,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     },
     logger, metrics,
     work: new PgWorkStore(options.database), sessions,
-    events: new PgEventStore(options.database, Boolean(integration?.delivery)), actions: new PgActionLedger(options.database),
+    events: new PgEventStore(options.database, Boolean(integration?.delivery), publicText.append), actions: new PgActionLedger(options.database),
     modelBudgets: new PgModelBudgetStore(options.database), modelBudget,
     artifactStager: {
       stage: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal, options.objects),
@@ -802,7 +804,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       )
       return (rows[0]?.['goal_outcome'] as GoalOutcome | undefined) ?? null
     },
-    async readEvents(identity: MessageIdentity, afterSeq = 0, operation?: RuntimeOperationContext): Promise<{ events: RunEvent[]; nextSeq: number }> {
+    async readEvents(identity: MessageIdentity, afterSeq = 0, operation?: RuntimeOperationContext): Promise<{ events: RunEvent[]; nextSeq: number; publicTextAttempts?: PublicTextAttempt[] }> {
       return withRuntimeOperation(options.database, operation, async database => {
         await authorizeRunRead(database, identity)
         if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new Error('event cursor must be a non-negative safe integer')
@@ -814,7 +816,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         [...resultReadParams(identity), afterSeq])
         const events = rows.map(row => ({ runId: String(row['run_id']), seq: Number(row['seq']), kind: String(row['kind']),
           stage: row['stage'] as RunEvent['stage'], visibility: 'user' as const, data: row['data'] as Record<string, unknown> }))
-        return { events, nextSeq: events.at(-1)?.seq ?? afterSeq }
+        return { events, nextSeq: events.at(-1)?.seq ?? afterSeq, publicTextAttempts: await readPublicTextAttempts(database,identity.runId,events.map(event=>Math.floor((event.seq-1)/100_000)+1)) }
       })
     },
     async readUsage(identity: MessageIdentity) {

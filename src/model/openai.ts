@@ -348,7 +348,7 @@ export class OpenAIChatDriver implements ModelDriver {
     return Math.floor(Math.random() * cap)
   }
 
-  private async consumeStream(response: Response, onTextDelta?: (delta: string) => void): Promise<StreamAccumulator> {
+  private async consumeStream(response: Response, onTextDelta?: ModelTurnRequest['onTextDelta']): Promise<StreamAccumulator> {
     if (!response.body) throw new ModelDriverError('model provider returned no response body', { finishReasons: [] })
     const accumulator: StreamAccumulator = { text: '', toolCalls: new Map(), finishReasons: [] }
     try {
@@ -378,7 +378,7 @@ export class OpenAIChatDriver implements ModelDriver {
         const content = choice.delta?.content
         if (typeof content === 'string' && content.length > 0) {
           accumulator.text += content
-          onTextDelta?.(content)
+          await onTextDelta?.(content)
         }
         for (const toolCall of choice.delta?.tool_calls ?? []) {
           const index = toolCall.index ?? 0

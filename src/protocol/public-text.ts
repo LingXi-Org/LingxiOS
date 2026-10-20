@@ -1,0 +1,43 @@
+import type { RunEvent } from './types.js'
+import { RUN_SEQUENCE_SPAN } from './constants.js'
+
+export type PublicTextEndReason = 'completed' | 'tool' | 'failed' | 'cancelled' | 'superseded' | 'interrupted'
+export interface PublicTextIdentity {
+  version: 1
+  requestVersion: number
+  fence: number
+  attemptId: string
+  partId: string
+  partIndex: number
+}
+export interface PublicTextDelta extends PublicTextIdentity { chunkIndex: number; text: string }
+export interface PublicTextEnded extends PublicTextIdentity { chunkCount: number; reason: PublicTextEndReason }
+/** Published commentary, independent of the verified final answer and ephemeral draft. */
+export interface PublicTextPart extends PublicTextIdentity {
+  runId: string
+  text: string
+  firstSeq: number
+  lastSeq: number
+  chunkCount: number
+  /** Explicit public.text.ended sequence; null for lifecycle-derived termination. */
+  endedSeq: number | null
+  status: 'running' | 'complete' | 'incomplete'
+  reason: PublicTextEndReason | null
+}
+const reasons = new Set<PublicTextEndReason>(['completed','tool','failed','cancelled','superseded','interrupted'])
+const integer = (value: unknown, min: number) => Number.isSafeInteger(value) && (value as number) >= min
+const identifier = (value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= 1000
+export function publicTextPayload(event: RunEvent): PublicTextDelta | PublicTextEnded | null {
+  if (!['public.text.delta','public.text.ended'].includes(event.kind)) return null
+  const d=event.data, delta=event.kind==='public.text.delta'
+  const keys=['version','requestVersion','fence','attemptId','partId','partIndex',...(delta?['chunkIndex','text']:['chunkCount','reason'])]
+  if(event.visibility!=='user'||d['version']!==1||!integer(d['requestVersion'],1)||!integer(d['fence'],1)
+    || d['fence']!==Math.floor((event.seq-1)/RUN_SEQUENCE_SPAN)+1||!identifier(d['attemptId'])||!identifier(d['partId'])
+    ||!integer(d['partIndex'],0)||Object.keys(d).some(key=>!keys.includes(key))
+    ||(delta? !integer(d['chunkIndex'],0)||typeof d['text']!=='string'||!d['text'].length||new TextEncoder().encode(d['text']).length>16384
+      :!integer(d['chunkCount'],1)||!reasons.has(d['reason'] as PublicTextEndReason))) throw new Error('invalid public text event')
+  return d as unknown as PublicTextDelta | PublicTextEnded
+}
+export function publicTextStatus(reason: PublicTextEndReason): PublicTextPart['status'] {
+  return reason==='completed'||reason==='tool'?'complete':'incomplete'
+}

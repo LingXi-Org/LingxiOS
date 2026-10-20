@@ -216,15 +216,15 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
         throw new Error('approval explanations cannot execute tools')
       }
       check(request)
-      return invoke('agent-turn', request, (signal, callId, diagnostics,selected) => {
-        request.onAttempt?.(callId)
+      return invoke('agent-turn', request, async (signal, callId, diagnostics,selected) => {
+        await request.onAttempt?.(callId)
         const began = performance.now()
         let firstTextMs: number | undefined
         let active = true
         const result = (selected as ModelDriver).run({ ...request, admission, signal, onTextDelta: delta => {
             if (!active || signal.aborted) return
             if (delta) firstTextMs ??= performance.now() - began
-            request.onTextDelta?.(delta)
+            return request.onTextDelta?.(delta)
           } })
         const finished = () => {
           active = false
