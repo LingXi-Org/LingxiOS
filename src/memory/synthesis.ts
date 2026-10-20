@@ -171,7 +171,7 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
     await client.query(`UPDATE lingxios.agent_memory_evidence_scopes SET segment_cursor=$3,status=$4,
       job_id=CASE WHEN $4='pending' AND $5 THEN NULL ELSE job_id END
       WHERE job_id=$1 AND source_run_id=$2 AND status='pending'`,[work.id,item.sourceRunId,item.segment.next,
-      approved ? complete?'processed':'pending' : 'rejected',item.segment.next<item.segment.total])
+      complete ? approved?'processed':'rejected' : 'pending',item.segment.next<item.segment.total])
   }
   await client.query(`UPDATE lingxios.agent_memory_evidence_scopes SET job_id=NULL WHERE job_id=$1 AND status='pending'
     AND NOT(source_run_id=ANY($2::text[]))`,[work.id,evidence.map(item=>item.sourceRunId)])
