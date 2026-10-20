@@ -15,7 +15,7 @@ import type { HostAction } from '../protocol/types.js'
 import type { MemoryDocument, MemoryEntry, MemoryHit, MemoryReview } from './types.js'
 import { abortable } from '../deadline.js'
 import { deadlinePool } from '../control-plane/deadline-pool.js'
-import { sameScope } from './access.js'
+import { readMemoryEpochs, rememberMemoryAdmission, admitMemoryModel } from './admission.js'
 export type { MemoryOptions } from './access.js'
 
 export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, budget?: RootModelBudgetOptions) {
@@ -122,6 +122,7 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
     },
   })
   return { tools:[...service.tools,...tools],api:service.api,
+    admit: (db: SqlQueryable,work: Omit<WorkItem,'leaseToken'>) => admitMemoryModel(db,options,work),
     prepareReview: (work: Omit<WorkItem,'leaseToken'>,action:HostAction) => withTransaction(database,db => prepareMemoryReview(db,options,work,action)),
     recordReview: (work: Omit<WorkItem,'leaseToken'>,action:HostAction,hash:string,review:MemoryReview) => withTransaction(database,db => recordMemoryReview(db,options,work,action,hash,review)),
     async context(work: Omit<WorkItem, 'leaseToken'>, external?: AbortSignal, profile: 'fast' | 'deep' = 'deep') {
@@ -130,6 +131,7 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
       const signal = AbortSignal.any([AbortSignal.timeout(settings.timeoutMs), ...external ? [external] : []])
       const db = deadlinePool(database, signal, settings.timeoutMs)
       const identity=identityOf(work),scopes=await abortable(authorizedScopes(options,identity,db,signal),signal)
+      const epochs=await readMemoryEpochs(db,scopes)
       const request = (await db.query(`SELECT request_snapshot FROM lingxios.agent_request_snapshots WHERE work_id=$1`,[work.id])).rows[0]?.['request_snapshot'] as
         {originalText:string;revisions:Array<{text:string}>;inheritedRevisions?:Array<{text:string}>}|undefined
       const query = [request?.originalText ?? String(work.meta?.['text'] ?? ''),...request?.inheritedRevisions?.map(item => item.text) ?? [],
@@ -159,9 +161,9 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
         }
       }
       const strategies=!fast && evolution?await withTransaction(db,client=>pinnedEvolution(client,work,scopes)):[]
-      const current = await abortable(authorizedScopes(options,identity,db,signal),signal)
-      if (scopes.some(scope => !current.some(candidate => sameScope(scope,candidate)))) throw new Error('memory scope was revoked during retrieval')
+      if (epochs.length) await withTransaction(db,client=>rememberMemoryAdmission(client,options,work,epochs))
       return fitMemorySnapshot(snapshotMemories({status:'available',core:roundRobin(core),directory:roundRobin(directory),recalled:roundRobin(recalled),strategies,
+        ...(epochs.length ? {admission:true as const} : {}),
         omitted:{core:omittedCore,directory:omittedDirectory,recalled:0,strategies:0},
         budget:{ratio:settings.ratio,maxTokens:fast ? Math.min(1024,settings.maxTokens) : settings.maxTokens,
           ...(options.contextBudget?.allocation ? {allocation:options.contextBudget.allocation} : {})},retrieval,

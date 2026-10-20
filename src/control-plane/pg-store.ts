@@ -660,17 +660,33 @@ export class PgActionLedger implements ActionLedgerStore {
 }
 
 export class PgModelBudgetStore implements ModelBudgetStore {
-  constructor(private readonly pool: SqlPool) {}
+  constructor(private readonly pool: SqlPool,
+    private readonly admitMemory?: (db: SqlQueryable,work: Omit<WorkItem,'leaseToken'>) => Promise<void>) {}
 
   async reserve(rootWorkId: string, callId: string, limits: ModelBudgetLimits, proof?: import('./stores.js').StoreLeaseProof): Promise<ModelBudgetReservation> {
     return withTransaction(this.pool, async client => {
       if (proof) {
-        const owner = await client.query(`SELECT id FROM lingxios.agent_work_items
+        const owner = await client.query(`SELECT * FROM lingxios.agent_work_items
           WHERE id=$1 AND fence=$2 AND lease_token_hash=$3 AND status='leased'
             AND lease_expires_at>NOW() AND cancel_requested_at IS NULL FOR UPDATE`,
           [proof.workId, proof.fence, proof.leaseTokenHash])
         if (!owner.rows.length) throw new Error('model reservation requires a live uncancelled attempt')
+        if (limits.memoryAdmission) {
+          if (limits.memoryAdmission!==true || !this.admitMemory) throw new Error('memory model admission is unavailable')
+          const issued=await client.query(`SELECT 1 FROM lingxios.agent_model_budget_calls
+            WHERE root_work_id=$1 AND call_id=$2 AND work_id=$3 AND fence=$4 AND lease_token_hash=$5 AND input_tokens IS NULL`,
+            [rootWorkId,callId,proof.workId,proof.fence,proof.leaseTokenHash])
+          if (!issued.rows.length) throw new Error('memory model admission requires its unsettled reservation')
+          await this.admitMemory(client,workItemFromRow(owner.rows[0]!, '', 1))
+          const row=(await client.query('SELECT *,NOW()>=deadline_at AS expired FROM lingxios.agent_model_budgets WHERE root_work_id=$1',[rootWorkId])).rows[0]!
+          return {allowed:!row['expired'],...row['expired'] ? {dimension:'deadline' as const} : {},
+            remainingCalls:Math.max(0,Number(row['max_model_calls'])-Number(row['model_calls'])),
+            remainingTokens:Math.max(0,Number(row['max_tokens'])-Number(row['tokens'])),
+            remainingCostMicros:Math.max(0,Number(row['max_cost_micros'])-Number(row['cost_micros'])),
+            deadlineAt:new Date(row['deadline_at'] as string|Date).toISOString()}
+        }
       }
+      else if (limits.memoryAdmission) throw new Error('memory model admission requires a leased attempt')
       await client.query(`INSERT INTO lingxios.agent_model_budgets
         (root_work_id,max_model_calls,max_tokens,max_cost_micros,deadline_at,max_execution_ms)
         VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(root_work_id) DO NOTHING`,

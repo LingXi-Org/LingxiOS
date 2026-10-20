@@ -114,6 +114,8 @@ export interface StoreLeaseProof {
 }
 
 export interface ModelBudgetLimits {
+  /** Final idempotent admission after publication hooks; epochs are server-owned. */
+  memoryAdmission?: true
   /** Conservative configured model-profile bounds for admission before a child has a prompt. */
   childAdmission?: { inputTokens: number; outputTokens: number; executionMs: number }
   pricing?: import('../model/execution.js').ModelPricing
