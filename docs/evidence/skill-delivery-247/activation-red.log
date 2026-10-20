@@ -1,0 +1,32 @@
+TAP version 13
+# Subtest: loads are reference-only; authoring activation is durable, exact, deduplicated and publicly visible
+not ok 1 - loads are reference-only; authoring activation is durable, exact, deduplicated and publicly visible
+  ---
+  duration_ms: 1916.700347
+  type: 'test'
+  location: '/workspace/LingxiOS-issue247-delivery/dist/test/skill-delivery.test.js:37:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    {"ok":false,"executionState":"rejected","code":"forbidden","error":"capability denied: skills.activate is not granted to this work item"}
+    
+    false !== true
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///workspace/LingxiOS-issue247-delivery/dist/test/skill-delivery.test.js:47:20)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2102.467987

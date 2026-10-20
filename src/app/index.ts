@@ -60,6 +60,7 @@ import { freezeEvolutionBenchmark, rollbackEvolution, type EvolutionBenchmark } 
 import { deadlinePool } from '../control-plane/deadline-pool.js'
 import { assembleHarness, type HarnessProfile } from '../harness/profile.js'
 import { skillIndex, skillTool, type SkillDefinition } from '../skills/definition.js'
+import { skillActivationTool, readSkillActivations, inspectSkillDeliveries, commitSkillDeliveries, type SkillActivation, type SkillDeliveryDecision } from '../skills/delivery.js'
 import { presentationTool, type PresentationDefinition, type TrustedPresentation } from '../presentation/definition.js'
 import { observationTool } from '../context/observations.js'
 import { discoveryTool, toolSpecification } from '../tools/discovery.js'
@@ -102,6 +103,9 @@ export interface LingxiOSOptions {
   contextProvider?: ContextProvider
   /** Native acceptance checks, using live business records rather than model assertions. */
   verifyRun?: (context: RunVerificationContext) => Promise<VerificationRecord[]>
+  /** Trusted current-candidate checks. A model cannot resolve its own activation.
+   * Unsupported/failed must explain non-delivery honestly and commit a nonsatisfied outcome. */
+  verifySkillDelivery?: (context: RunVerificationContext) => Promise<SkillDeliveryDecision[]>
   /** Root-work limits shared by retries and delegated children. */
   modelBudget?: import('../runtime/runtime.js').RootModelBudgetOptions
   /** Required for products that own billing, quota and model-call observability. */
@@ -158,6 +162,10 @@ const resultReadParams = (identity: MessageIdentity) =>
   [identity.runId, identity.tenantId, identity.agentId, identity.sessionId, identity.principalId ?? null, identity.threadId ?? null]
 
 export interface RunVerificationContext {
+  /** Exact current-request authoring intents, never inferred from reference loads or receipts. */
+  skillActivations: readonly SkillActivation[]
+  /** Revoked capabilities or changed contracts: only honest non-delivery may resolve these. */
+  unavailableSkillActivationIds: readonly string[]
   candidate: import('../outcome/verification.js').Candidate
   work: Omit<WorkItem, 'leaseToken'>
   requestVersion: number
@@ -247,20 +255,22 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   const nativeCollaboration = collaborationTools()
   const businessTools = [...options.tools ?? [], ...harness?.tools ?? []]
   const skills = [...options.skills ?? [], ...harness?.skills ?? []], presentations = [...options.presentations ?? [], ...harness?.presentations ?? []]
-  const capabilities = options.capabilityResolver ?? { resolve: async (work: Omit<WorkItem, 'leaseToken'>) => {
+  const capabilities: import('../control-plane/stores.js').CapabilityResolver = options.capabilityResolver ?? { resolve: async (work: Omit<WorkItem, 'leaseToken'>) => {
     const tools = [...businessTools, ...(work.conversation ? nativeCollaboration : [])]
     return [...new Set(tools.map(tool => tool.action.split('.')[0]!))]
       .map(name => ({ name, methods: tools.filter(tool => tool.action.startsWith(name + '.')).map(tool => tool.action.split('.')[1]!) }))
   } }
-  const allowed = async (context: import('../tools/definition.js').ActionContext, actions: string[]) => {
-    const tools = grantedTools(businessTools, await integration.capabilityResolver.resolve(context.work)).filter(tool => permitsTool(context.work, tool))
+  const allowed = async (context: Pick<import('../tools/definition.js').ActionContext, 'work' | 'database'>, actions: string[]) => {
+    const tools = grantedTools(businessTools, await integration.capabilityResolver.resolve(context.work, { database: context.database })).filter(tool => permitsTool(context.work, tool))
     if (actions.some(action => !tools.some(tool => tool.action === action))) throw new Error('required capability was revoked or is unavailable in this mode')
   }
-  const extensionTools = [...(skills.length ? [skillTool(skills, allowed)] : []), ...(presentations.length ? [presentationTool(presentations, allowed)] : [])]
+  const activationTool = skills.some(skill => skill.delivery) ? skillActivationTool(skills, allowed) : undefined
+  const extensionTools = [...(skills.length ? [skillTool(skills, allowed)] : []),
+    ...(activationTool ? [activationTool] : []), ...(presentations.length ? [presentationTool(presentations, allowed)] : [])]
   const readableTools = [...businessTools, ...extensionTools]
   const helperTools = [...extensionTools, ...(readableTools.length ? [observationTool(readableTools, async (context, actions) => {
     if (actions.every(action => businessTools.some(tool => tool.action === action))) await allowed(context, actions)
-  })] : []), ...(businessTools.some(tool => tool.deferred) ? [discoveryTool(businessTools, context => capabilities.resolve(context.work))] : [])]
+  })] : []), ...(businessTools.some(tool => tool.deferred) ? [discoveryTool(businessTools, context => capabilities.resolve(context.work, { database: context.database }))] : [])]
   const definitions = [...businessTools, ...helperTools, ...nativeCollaboration, ...memory?.tools ?? []]
   const behavior = harness?.context ?? (skills.length || presentations.length ? { id: 'authored', version: '1', hash: '', rules: [], skills: [], presentations: [] } : undefined)
   if (behavior) {
@@ -276,14 +286,22 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   const integration = {
     tools: [...TASK_TOOLS, ...definitions.map(toolSpecification)],
     actionExecutor: toolExecutor(options.database, definitions, (work, input, signal) => createNativeArtifact(
-      resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), work, input, signal, options.objects), options.memory),
-    capabilityResolver: { async resolve(work: Omit<WorkItem, 'leaseToken'>) {
-      await authorizeConversationWork(options.database, work)
+      resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), work, input, signal, options.objects), options.memory, async (context, selection) => {
+        if (!activationTool) throw new Error('skill delivery activation is unavailable')
+        // Reuse the exact native contract and current capability checks, with the
+        // authoring tool's already-fenced transaction and request identity.
+        const result = await activationTool.execute(context, activationTool.parse(selection))
+        if (!result.ok) throw new Error('skill delivery activation failed')
+        return (result.value as { activation: import('../skills/delivery.js').SkillActivation }).activation
+      }),
+    capabilityResolver: { async resolve(work: Omit<WorkItem, 'leaseToken'>, context?: import('../control-plane/stores.js').CapabilityResolutionContext) {
+      const database = context?.database ?? options.database
+      await authorizeConversationWork(database, work)
       if (memory && ['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind)) return [{ name: work.kind,
         methods: memory.tools.filter(tool => tool.action.startsWith(work.kind + '.')).map(tool => tool.action.split('.')[1]!) }]
-      let grants = await capabilities.resolve(work)
+      let grants = await capabilities.resolve(work, { database })
       if (typeof work.meta?.['parentWorkId'] === 'string') {
-        const ancestors = await options.database.query(`WITH RECURSIVE lineage AS (
+        const ancestors = await database.query(`WITH RECURSIVE lineage AS (
           SELECT parent.*,ARRAY[parent.id] AS path FROM lingxios.agent_work_items parent
             WHERE parent.id=$1 AND parent.tenant_id=$2 AND parent.principal_id IS NOT DISTINCT FROM $3
           UNION ALL SELECT parent.*,child.path||parent.id FROM lingxios.agent_work_items parent
@@ -294,13 +312,20 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         if (!ancestors.rows.some(row => row['id'] === work.meta?.['rootWorkId'])
           || ancestors.rows.some(row => row['cancel_requested_at'] || !['queued','leased','waiting'].includes(String(row['status'])))) throw new Error('delegation ancestry is no longer authorized')
         let tools = grantedTools(definitions, grants)
-        for (const row of ancestors.rows) tools = grantedTools(tools, await capabilities.resolve(workItemFromRow(row, '', 1)))
+        for (const row of ancestors.rows) tools = grantedTools(tools, await capabilities.resolve(workItemFromRow(row, '', 1), { database }))
         grants = [...new Set(tools.map(tool => tool.action.split('.')[0]!))]
           .map(name => ({ name, methods: tools.filter(tool => tool.action.startsWith(name + '.')).map(tool => tool.action.split('.')[1]!) }))
       }
-      return [...grants,
+      const combined = [...grants,
         ...helperTools.map(tool => ({ name: tool.action.split('.')[0]!, methods: [tool.action.split('.')[1]!] })),
         ...memory?[{name:'memory',methods:memory.tools.filter(tool=>tool.action.startsWith('memory.')).map(tool=>tool.action.split('.')[1]!)}]:[]]
+      // The authoritative executor selects one namespace grant. Preserve all
+      // granted methods when multiple helpers share a namespace (load/activate).
+      return [...new Set(combined.map(grant => grant.name))].map(name => {
+        const rows = combined.filter(grant => grant.name === name)
+        return rows.some(grant => !grant.methods) ? { name }
+          : { name, methods: [...new Set(rows.flatMap(grant => grant.methods!))] }
+      })
     } },
     contextProvider: { ...(contextProvider.authorizeRequest ? { authorizeRequest: contextProvider.authorizeRequest.bind(contextProvider) } : {}),
       async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal, loadOptions?: { responseProfile: import('../runtime/response-policy.js').ResponseProfile; requestVersion?: number; legacyMemoryProof?: boolean }) {
@@ -382,20 +407,32 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     }, { signal: shutdown.signal, metrics, concurrency: outboxConcurrency })
   }
 
-  async function verifyNative(work: Omit<WorkItem, 'leaseToken'>, candidate: import('../outcome/verification.js').Candidate, database: SqlQueryable) {
-    const graphChecks = await verifyGraphResults(database, work, candidate.requestVersion)
-    if (!options.verifyRun) return graphChecks
+  async function verifyNative(work: Omit<WorkItem, 'leaseToken'>, candidate: import('../outcome/verification.js').Candidate, database: SqlQueryable, includeProduct = true): Promise<VerificationRecord[]> {
+    const graphChecks = includeProduct ? await verifyGraphResults(database, work, candidate.requestVersion) : []
+    const activations = await readSkillActivations(database, work, candidate.requestVersion)
+    const unavailable: string[] = []
+    for (const activation of activations) {
+      const skill = skills.find(skill => skill.name === activation.skill.name)
+      if (!skill || skillIndex(skill).hash !== activation.skill.hash || skill.version !== activation.skill.version
+        || skill.delivery?.checker !== activation.checker) { unavailable.push(activation.id); continue }
+      try { await allowed({ work, database }, skill.actions) } catch { unavailable.push(activation.id) }
+    }
+    if (!(includeProduct && options.verifyRun) && !activations.length) return graphChecks
     const deadlineAt = new Date(Date.now() + 10_000).toISOString(), scope = scopedSignal([shutdown.signal], 10_000), signal = scope.signal
     let active = true
     try {
-      const records = await abortable(options.verifyRun({ work, candidate: structuredClone(candidate), requestVersion: candidate.requestVersion, signal, deadlineAt, database: {
-        query: (sql, params) => { signal.throwIfAborted(); if (!active) throw new Error('verification ended'); return database.query(sql, params) },
-      } }), signal)
+      const context = (): RunVerificationContext => ({ work, candidate: structuredClone(candidate), skillActivations: structuredClone(activations), unavailableSkillActivationIds: [...unavailable],
+        requestVersion: candidate.requestVersion, signal, deadlineAt, database: {
+          query: (sql, params) => { signal.throwIfAborted(); if (!active) throw new Error('verification ended'); return database.query(sql, params) },
+        } })
+      const records = includeProduct && options.verifyRun ? await abortable(options.verifyRun(context()), signal) : []
       if (records.length > 64 || records.some(record => !record.checker.startsWith('product:')
         || !['passed','failed','inconclusive'].includes(record.status)) || new Set(records.map(record => record.checker)).size !== records.length) {
         throw new Error('native verification returned invalid acceptance records')
       }
-      return [...graphChecks, ...records]
+      const decisions = activations.length && options.verifySkillDelivery
+        ? await abortable(options.verifySkillDelivery(context()), signal) : []
+      return [...graphChecks, ...records, ...inspectSkillDeliveries(activations, decisions, unavailable)]
     } finally { active = false; scope.dispose() }
   }
 
@@ -496,6 +533,16 @@ export async function createLingxiOS(options: LingxiOSOptions) {
               createHash('sha256').update(message.body).digest('hex')])
             if (!candidate.rows.length) throw new Error('public text source is not bound to the accepted candidate')
           }
+          // Waiting preserves pending obligations. Actual final candidates, including
+          // partial/blocked fallbacks, require fresh authoritative resolution.
+          const finalCandidate = { body: message.body, requestVersion: message.envelope.requestVersion, artifacts: message.envelope.artifacts }
+          const waiting = ['awaiting_input','awaiting_approval','delegated'].includes(message.envelope.goalOutcome.status)
+          const nativeChecks = waiting ? [] : await verifyNative(work, finalCandidate, client, message.envelope.goalOutcome.status === 'satisfied')
+          const skillChecks = nativeChecks.filter(record => record.checker.startsWith('skill-delivery:'))
+          if (skillChecks.some(record => record.status !== 'passed')) throw new Error('skill delivery remains unverified before final commit')
+          if (message.envelope.goalOutcome.status === 'satisfied' && skillChecks.some(record => record.evidence['outcome'] !== 'delivered')) {
+            throw new Error('unsupported or failed skill delivery cannot satisfy an authoring request')
+          }
           const resultId = 'result:' + createHash('sha256').update(JSON.stringify([work.id, message])).digest('hex')
           const previous = await client.query(`SELECT result.id,result.message FROM lingxios.agent_work_items work
             JOIN lingxios.agent_results result ON result.id=work.result_id WHERE work.id=$1`, [work.id])
@@ -505,8 +552,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
           await client.query(`INSERT INTO lingxios.agent_results(id,work_id,request_version,fence,home_epoch,message)
             VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT(id) DO NOTHING`,
           [resultId,work.id,message.envelope.requestVersion,work.fence,work.homeEpoch,JSON.stringify(message)])
+          if (!waiting) await commitSkillDeliveries(client, work, finalCandidate, skillChecks)
           if (message.envelope.goalOutcome.status === 'satisfied') {
-            const nativeChecks = await verifyNative(work, { body: message.body, requestVersion: message.envelope.requestVersion, artifacts: message.envelope.artifacts }, client)
             if (nativeChecks.some(record => record.status !== 'passed')) {
               throw new Error('native acceptance changed before successful completion')
             }

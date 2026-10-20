@@ -1,0 +1,22 @@
+TAP version 13
+# Subtest: migrates schema 9 without resetting business data and matches the fresh schema
+ok 1 - migrates schema 9 without resetting business data and matches the fresh schema
+  ---
+  duration_ms: 3253.941249
+  type: 'test'
+  ...
+# Subtest: resets only schema-8 memory, retains product records and frozen benchmarks, and rejects live workers and reapplication
+ok 2 - resets only schema-8 memory, retains product records and frozen benchmarks, and rejects live workers and reapplication
+  ---
+  duration_ms: 1985.964065
+  type: 'test'
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 2
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 5585.008399

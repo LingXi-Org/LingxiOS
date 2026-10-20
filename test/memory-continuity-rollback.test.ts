@@ -5,7 +5,7 @@ import { memoryFixture, content, identity, scope } from './memory-fixture.js'
 
 const rollback = () => readFile(new URL('../../db/migrations/015-memory-continuity-rollback.sql', import.meta.url), 'utf8')
 it('rejects native rollback when stable forgetting is the only remaining activation state', async () => {
-  const f = await memoryFixture({ resolveScopes: async () => [{ ...scope, continuity: 'principal' }] })
+  const f = await memoryFixture({ resolveScopes: async () => [{ ...scope, continuity: 'principal' }] }, 'schema-013.sql')
   try {
     const stable = (await f.api.scopes(identity))[0]!
     await f.api.initialize(identity, { scope: stable, documents: [content()], idempotencyKey: 'seed', sourceRef: 'settings' })
@@ -23,7 +23,7 @@ it('rejects native rollback when stable forgetting is the only remaining activat
   } finally { await f.close() }
 })
 it('keeps empty pre-activation rollback available and rejects epoch or timestamp fences independently', async () => {
-  const f = await memoryFixture()
+  const f = await memoryFixture({}, 'schema-013.sql')
   try {
     const sql = await rollback()
     await f.db.exec(sql)

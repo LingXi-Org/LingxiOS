@@ -1,0 +1,74 @@
+TAP version 13
+# Subtest: loads are reference-only; authoring activation is durable, exact, deduplicated and publicly visible
+not ok 1 - loads are reference-only; authoring activation is durable, exact, deduplicated and publicly visible
+  ---
+  duration_ms: 2135.15349
+  type: 'test'
+  location: '/workspace/LingxiOS-issue247-delivery/dist/test/skill-delivery.test.js:37:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    true !== false
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: false
+  actual: true
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///workspace/LingxiOS-issue247-delivery/dist/test/skill-delivery.test.js:64:16)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: activation rejects cancellation and stale request versions; decisions cannot cross identity or resolve by omission
+ok 2 - activation rejects cancellation and stale request versions; decisions cannot cross identity or resolve by omission
+  ---
+  duration_ms: 1787.369855
+  type: 'test'
+  ...
+# Subtest: resolution commit is bound to its candidate and rejects pending or superseded evidence
+ok 3 - resolution commit is bound to its candidate and rejects pending or superseded evidence
+  ---
+  duration_ms: 1615.181517
+  type: 'test'
+  ...
+# Subtest: final commit rechecks delivery and cannot hide pending authoring in a partial response
+ok 4 - final commit rechecks delivery and cannot hide pending authoring in a partial response
+  ---
+  duration_ms: 1507.427254
+  type: 'test'
+  ...
+# Subtest: a durable input wait preserves a pending authoring obligation without pretending delivery
+not ok 5 - a durable input wait preserves a pending authoring obligation without pretending delivery
+  ---
+  duration_ms: 1517.454794
+  type: 'test'
+  location: '/workspace/LingxiOS-issue247-delivery/dist/test/skill-delivery.test.js:141:1'
+  failureType: 'testCodeFailure'
+  error: 'skill delivery remains unverified before final commit'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    file:///workspace/LingxiOS-issue247-delivery/dist/src/app/index.js:464:31
+    async withTransaction (file:///workspace/LingxiOS-issue247-delivery/dist/src/control-plane/pg-store.js:23:24)
+    async Object.deliverMessage (file:///workspace/LingxiOS-issue247-delivery/dist/src/app/index.js:403:17)
+    async ControlPlaneService.commitResult (file:///workspace/LingxiOS-issue247-delivery/dist/src/control-plane/service.js:945:9)
+    async TestContext.<anonymous> (file:///workspace/LingxiOS-issue247-delivery/dist/test/skill-delivery.test.js:151:9)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: schema13 upgrades explicitly to14 and remains incompatible with older rollback
+ok 6 - schema13 upgrades explicitly to14 and remains incompatible with older rollback
+  ---
+  duration_ms: 1434.329378
+  type: 'test'
+  ...
+1..6
+# tests 6
+# suites 0
+# pass 4
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 10192.201993

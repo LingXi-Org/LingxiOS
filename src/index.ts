@@ -8,6 +8,7 @@ export type { ConversationIdentity, ThreadIdentity, ConversationPolicy, Conversa
   MessageReference, WorkConversation, IMMessageInput, IMIngressResult, IMDeliveryContext, IMDeliveryReceipt,
   GraphInput, GraphNode, SharedStateIdentity, SharedStateSnapshot, SharedStateUpdate, SharedStateChange, SharedStateResult } from './collaboration/types.js'
 export { assembleHarness, type HarnessProfile, type CapabilityDefinition, type HarnessContext } from './harness/profile.js'
+export type { SkillActivation, SkillDeliveryDecision } from './skills/delivery.js'
 export { skillIndex, type SkillDefinition, type SkillIndex } from './skills/definition.js'
 export type { PresentationDefinition, TrustedPresentation } from './presentation/definition.js'
 export type { ObservationRef } from './context/observations.js'
@@ -48,7 +49,7 @@ export { readRunReference, countPendingApprovals, type RunListQuery, type RunRec
 export type { RunVerificationContext } from './app/index.js'
 export type { VerificationRecord } from './outcome/verification.js'
 export type { SqlPool, SqlClient, SqlQueryable } from './control-plane/pg-store.js'
-export type { ContextProvider, DeliveryPort } from './control-plane/stores.js'
+export type { ContextProvider, DeliveryPort, CapabilityResolver, CapabilityResolutionContext } from './control-plane/stores.js'
 export type { DeliveryContext } from './control-plane/outbox.js'
 export type { RealtimeOptions, RealtimeStore, RunStreamEvent, PreviewUpdate } from './app/realtime.js'
 export type { PreviewFrame, PreviewSnapshot } from './protocol/preview.js'

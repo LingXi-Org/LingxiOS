@@ -23,7 +23,8 @@ import { classifyToolFailure, isSerializationFailure } from './failure.js'
 import { ChildAdmissionRejectedError, recordChildBudgetDenials } from '../model/child-admission.js'
 
 export function toolExecutor(database: SqlPool, definitions: readonly ToolDefinition[],
-  createArtifact?: (work: Omit<WorkItem, 'leaseToken'>, input: ArtifactInput, signal?: AbortSignal) => Promise<KernelArtifact>, memory?: MemoryOptions): ActionExecutor {
+  createArtifact?: (work: Omit<WorkItem, 'leaseToken'>, input: ArtifactInput, signal?: AbortSignal) => Promise<KernelArtifact>, memory?: MemoryOptions,
+  activateSkillDelivery?: (context: ActionContext, skill: Pick<import('../skills/definition.js').SkillIndex, 'name' | 'version' | 'hash'>) => Promise<import('../skills/delivery.js').SkillActivation>): ActionExecutor {
   const tools = new Map(definitions.map(tool => [tool.action, tool]))
   if (tools.size !== definitions.length || new Set(definitions.map(tool => tool.name)).size !== definitions.length) throw new Error('duplicate tool definition')
   const quotas = new Map<string, ResourceQuota>()
@@ -84,7 +85,7 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
     if (!tool) throw new NoEffectError('unknown native tool', 'unknown_tool')
     return tool
   }
-  function context(work: Omit<WorkItem, 'leaseToken'>, action: HostAction, options: ActionExecutionOptions, db: SqlQueryable = database): ActionContext {
+  function context(work: Omit<WorkItem, 'leaseToken'>, action: HostAction, options: ActionExecutionOptions, db: SqlQueryable = database, activationAllowed: () => boolean = () => false): ActionContext {
     const write = () => { options.signal.throwIfAborted(); if (db === database) throw new NoEffectError('child mutations require an action transaction') }
     const queryable = db === database ? deadlinePool(database,options.signal) : db
     const stateScope = (stateId: string) => {
@@ -98,7 +99,13 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
       if (!memory || scope.tenantId !== work.tenantId || !(await authorizedScopes(memory,identityOf(work),db)).some(item =>
         item.tenantId === scope.tenantId && item.scopeType === scope.scopeType && item.scopeId === scope.scopeId)) throw new NoEffectError('memory scope is unavailable')
     }
-    return { work, action, database: queryable, ...options,
+    const ctx: ActionContext = { work, action, database: queryable, ...options,
+      activateSkillDelivery: async skill => {
+        options.signal.throwIfAborted()
+        if (db === database || tools.get(action.action)?.effect !== 'transaction' || !activationAllowed()) throw new NoEffectError('skill activation requires a transactional authoring execute phase')
+        if (!activateSkillDelivery) throw new NoEffectError('skill delivery activation is unavailable')
+        return activateSkillDelivery(ctx, skill)
+      },
       writeMemory: async (scope, mutation) => {
         await authorizeMemory(scope)
         return writeMemory(db, scope, mutation, { actionId: action.idempotencyKey, workId: work.id,
@@ -121,6 +128,7 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
       if (!createArtifact) throw new NoEffectError('artifact storage is unavailable')
       return createArtifact(work, input, options.signal)
     } }
+    return ctx
   }
   return {
     async reconcile(work, action, options) {
@@ -145,13 +153,16 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
       const input = parse(tool, action, options)
       const run = async (db: SqlQueryable) => {
         await authorize(async () => { await authorizeConversationWork(db, work, 'execute', true) }, options, false)
-        const ctx = context(work, action, options, db)
+        let executing = false
+        const ctx = context(work, action, options, db, () => executing)
         await assertToolContract(tool, ctx)
         await authorize(() => tool.authorize(ctx, input), options, false)
         await assertObservation(tool, ctx, input, tools)
         options.signal.throwIfAborted()
         const pending = await approvalGate(tool, ctx, input)
-        return pending ?? tool.execute(ctx, input)
+        if (pending) return pending
+        executing = true
+        try { return await tool.execute(ctx, input) } finally { executing = false }
       }
       if (tool.effect !== 'transaction') {
         const ctx = context(work, action, options)

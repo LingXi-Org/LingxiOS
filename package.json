@@ -1,6 +1,6 @@
 {
   "name": "@lyyzka/lingxios",
-  "version": "3.5.8",
+  "version": "3.6.0",
   "description": "Durable agent execution for PostgreSQL with fenced workers, native tools, verified outcomes, and sandboxed Python.",
   "type": "module",
   "license": "MIT",
@@ -16,6 +16,7 @@
     "db/schema.sql",
     "db/schema-011.sql",
     "db/schema-012.sql",
+    "db/schema-013.sql",
     "db/migrations",
     "kernel/runner.py"
   ],
