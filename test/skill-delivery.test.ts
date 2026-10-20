@@ -3,7 +3,7 @@ import { it } from 'node:test'
 import { readFile } from 'node:fs/promises'
 import { PGlite } from '@electric-sql/pglite'
 import { createLingxiOS, skillIndex, type SkillDeliveryDecision } from '../src/index.js'
-import type { SqlPool } from '../src/control-plane/pg-store.js'
+import type { SqlPool, SqlQueryable } from '../src/control-plane/pg-store.js'
 import type { ToolDefinition } from '../src/tools/definition.js'
 import { actionKeyOf, sessionKeyOf, type WorkItem } from '../src/protocol/types.js'
 import { createResponseEnvelope } from '../src/outcome/envelope.js'
@@ -18,13 +18,30 @@ const selection = (() => { const { name, version, hash } = skillIndex(skill); re
 const action = (work: WorkItem, cellId: string, name: string, args: Record<string, unknown>) => {
   const identity = { runId: work.id, cellId, callIndex: 0 }; return { ...identity, idempotencyKey: actionKeyOf(identity), action: name, args }
 }
-async function fixture() {
+async function fixture(serialized = false) {
   const db = new PGlite()
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
-  const pool: SqlPool = { query: async (sql, params) => { const result = await db.query<Record<string, unknown>>(sql, params); return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length } }, connect: async () => ({ query: pool.query, release() {} }) }
+  let held = false, transaction = false, reentries = 0, tail = Promise.resolve()
+  const acquire = async () => {
+    if (serialized && held && transaction) { reentries++; throw new Error('single connection pool reentry') }
+    let done!: () => void
+    const prior = tail; tail = new Promise<void>(resolve => { done = resolve })
+    await prior; held = true
+    return () => { held = false; done() }
+  }
+  const query: SqlQueryable['query'] = async (sql, params) => {
+    const result = await db.query<Record<string, unknown>>(sql, params)
+    if (/^BEGIN/.test(sql)) transaction = true
+    if (/^(COMMIT|ROLLBACK)/.test(sql)) transaction = false
+    return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length }
+  }
+  const pool: SqlPool = { query: async (sql, params) => {
+    if (!serialized) return query(sql, params)
+    const release = await acquire(); try { return await query(sql, params) } finally { release() }
+  }, connect: async () => ({ query, release: serialized ? await acquire() : () => {} }) }
   let grants = true, outcome: SkillDeliveryDecision['outcome'] = 'pending'
   const seen: unknown[] = []
-  const app = await createLingxiOS({ database: pool, tools: [native], skills: [skill], capabilityResolver: { resolve: async () => grants ? [{ name: 'documents' }] : [] },
+  const app = await createLingxiOS({ database: pool, background: { role: 'passive' }, performance: { notifications: false }, tools: [native], skills: [skill], capabilityResolver: { resolve: async (_work, context?: { database: SqlQueryable }) => { if (serialized) await (context?.database ?? pool).query('SELECT 1'); return grants ? [{ name: 'documents' }] : [] } },
     verifyRun: async context => { seen.push(context.skillActivations); return [] },
     verifySkillDelivery: async context => context.skillActivations.map(activation => ({ activationId: activation.id, outcome, evidence: { checked: true } })) })
   const host = app.connectWorker({ workerId: 'skill-test', workKinds: ['turn'] })
@@ -34,7 +51,7 @@ async function fixture() {
     await host.saveSession(work, { key: sessionKeyOf(work), tenantId: 't', agentId: 'a', sessionId: id, history: [], appliedWorkIds: [id], revision: 0, compactionEpoch: 0, request: snapshotRequest(await host.loadContext(work)) })
     return work
   }
-  return { db, pool, app, host, start, seen, revoke: () => { grants = false }, outcome: (value: SkillDeliveryDecision['outcome']) => { outcome = value }, close: async () => { await app.stop(); await db.close() } }
+  return { db, pool, app, host, start, seen, reentries: () => reentries, revoke: () => { grants = false }, outcome: (value: SkillDeliveryDecision['outcome']) => { outcome = value }, close: async () => { await app.stop(); await db.close() } }
 }
 it('loads are reference-only; authoring activation is durable, exact, deduplicated and publicly visible', async () => {
   const f = await fixture()
@@ -145,4 +162,35 @@ it('schema13 upgrades explicitly to14 and remains incompatible with older rollba
     assert.equal((await db.query<Record<string, unknown>>('SELECT version FROM lingxios.schema_version')).rows[0]!['version'], 14)
     await assert.rejects(db.exec(await readFile(new URL('../../db/migrations/015-memory-continuity-rollback.sql', import.meta.url), 'utf8')), /requires schema 12 or 13/)
   } finally { await db.close() }
+})
+
+it('transactional activation and final verification reuse one connection while rechecking current grants and ancestry', async () => {
+  const f = await fixture(true)
+  try {
+    const work = await f.start('serialized-child')
+    await f.app.enqueue({ id: 'serialized-parent', tenantId: 't', agentId: 'a', principalId: work.principalId!, sessionId: 'parent', text: 'Parent work' })
+    const lineage = { parentWorkId: 'serialized-parent', rootWorkId: 'serialized-parent' }
+    await f.pool.query('UPDATE lingxios.agent_work_items SET meta=meta||$2::jsonb WHERE id=$1', [work.id, JSON.stringify(lineage)])
+    work.meta = { ...work.meta, ...lineage }
+    const activated = await f.host.executeAction(work, action(work, 'author', 'skills.activate', selection))
+    assert.equal(activated.ok, true, JSON.stringify(activated))
+    f.outcome('delivered')
+    const checked = () => f.host.verifyCandidate!(work, candidate)
+    assert.equal((await checked()).records.find(c => c.checker.startsWith('skill-delivery:'))!.status, 'passed')
+    await f.pool.query("UPDATE lingxios.agent_work_items SET cancel_requested_at=NOW() WHERE id='serialized-parent'")
+    assert.equal((await checked()).records.find(c => c.checker.startsWith('skill-delivery:'))!.status, 'inconclusive')
+    await f.pool.query("UPDATE lingxios.agent_work_items SET cancel_requested_at=NULL WHERE id='serialized-parent'")
+    assert.equal((await checked()).records.find(c => c.checker.startsWith('skill-delivery:'))!.status, 'passed')
+    f.revoke()
+    assert.equal((await checked()).records.find(c => c.checker.startsWith('skill-delivery:'))!.status, 'inconclusive')
+    const request = (await f.host.loadSession(work, sessionKeyOf(work)))!.request!
+    const body = 'Unavailable after authorization changed; no diagram was delivered.'
+    const envelope = createResponseEnvelope(body, { status: 'partial', verification: 'not_run', requestVersion: 1 }, request.evidence)
+    const message = { version: 2 as const, runId: work.id, agentId: work.agentId, sessionId: work.sessionId, body, envelope }
+    await assert.rejects(f.host.commitResult(work, message), /skill delivery/)
+    f.outcome('unsupported')
+    await f.host.commitResult(work, message)
+    assert.equal(f.reentries(), 0)
+    assert.equal((await f.pool.query('SELECT resolution FROM lingxios.agent_skill_activations')).rows[0]!['resolution'], 'unsupported')
+  } finally { await f.close() }
 })

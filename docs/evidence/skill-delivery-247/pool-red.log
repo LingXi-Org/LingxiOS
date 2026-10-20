@@ -1,0 +1,32 @@
+TAP version 13
+# Subtest: transactional activation and final verification reuse one connection while rechecking current grants and ancestry
+not ok 1 - transactional activation and final verification reuse one connection while rechecking current grants and ancestry
+  ---
+  duration_ms: 1979.647884
+  type: 'test'
+  location: '<worktree>/dist/test/skill-delivery.test.js:206:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    {"ok":false,"executionState":"no_effect","code":"transaction_rolled_back","diagnostics":{"category":"unknown","retryable":false,"recovery":"none","correlationId":"156ddf50-132d-4682-9b18-4628e378fe76"},"error":"Native tool operation failed"}
+    
+    false !== true
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file://<worktree>/dist/test/skill-delivery.test.js:215:16)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2182.347278

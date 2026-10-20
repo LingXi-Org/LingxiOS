@@ -49,7 +49,7 @@ export { readRunReference, countPendingApprovals, type RunListQuery, type RunRec
 export type { RunVerificationContext } from './app/index.js'
 export type { VerificationRecord } from './outcome/verification.js'
 export type { SqlPool, SqlClient, SqlQueryable } from './control-plane/pg-store.js'
-export type { ContextProvider, DeliveryPort } from './control-plane/stores.js'
+export type { ContextProvider, DeliveryPort, CapabilityResolver, CapabilityResolutionContext } from './control-plane/stores.js'
 export type { DeliveryContext } from './control-plane/outbox.js'
 export type { RealtimeOptions, RealtimeStore, RunStreamEvent, PreviewUpdate } from './app/realtime.js'
 export type { PreviewFrame, PreviewSnapshot } from './protocol/preview.js'

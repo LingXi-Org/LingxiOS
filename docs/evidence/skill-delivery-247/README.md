@@ -14,6 +14,12 @@ Candidate checks do not resolve or commit delivery. The final message transactio
 
 Activation never grants business permissions and never counts as a business action's successful delivery. Existing skills without a delivery declaration retain their prior load behavior and hash. Existing `verifyRun` signatures remain valid; context fields and the optional callback are additive. Applications opting in must configure their trusted verifier and instruct authoring to call the explicit activation action. This mechanism guarantees enforcement for activated work; it cannot infer whether a model should choose a chart or compel activation from ordinary prose/code. It uses no keywords or private protocol heuristics.
 
+## Transaction-scoped capability resolution
+
+`CapabilityResolver.resolve(work, context?)` now receives public `CapabilityResolutionContext.database` from the app. Database-backed policies must use this queryable and pass it through their own helpers, e.g. `const db = context?.database ?? pool`. During `skills.activate` and final verification it is the existing transaction connection. Native conversation and delegation-lineage authorization, current-work policies and ancestor policies all reuse it. Checks stay fresh under the existing locks; no authorization result is cached. One-argument pure resolvers remain source-compatible. A resolver that ignores the new context and closes over its own pool can still deadlock and must be updated when enabling delivery; the runtime cannot redirect arbitrary consumer closures.
+
+The final guard rejects a satisfied envelope when the trusted decision is unsupported/failed. This is not proof that AgentRuntime automatically converts an inaccurate model assessment to partial: current short coverage commits an explicitly honest partial response via the public host. Product verifier/envelope integration must honor that boundary; pending and non-delivery are not a claim of fulfilled work.
+
 ## Schema and upgrade boundary
 
 This draft requires native schema14, with a dedicated `agent_skill_activations` table and startup probe. Migration `016-skill-delivery.sql` explicitly upgrades13→14, rejects absent/wrong source provenance, and requires drained Workers. Operators must also stop/drain Web background work before applying it. Runtime startup never executes DDL. Immutable `schema-013.sql` is byte-identical to the base's schema, and is included in package resources and the Worker image source. Existing schema13 rollback tests explicitly use that historical snapshot; the current upgrade chain includes016.
@@ -28,7 +34,13 @@ The [failure model](FAILURE-MODEL.md) and targeted tests preceded implementation
 - Targeted tests: `skill-delivery`, `harness-regressions`, `memory-continuity-rollback`: **12/12 passed, 0 skipped** using local PGlite, no network/provider.
 - These cover public activation/load separation, exact bindings/deduplication, tenant exclusion, cancellation/supersession, malformed/omitted decisions, revoked capability fallback, no candidate-time resolution, final commit recheck/rollback, pending input-wait preservation, business-evidence exclusion, native13→14 provenance and old rollback rejection.
 - Two existing historical-upgrade compatibility cases also passed (collaboration fresh-schema equivalence and memory reset preservation); only their migration lists and the existing PostgreSQL store script were extended with016. The full PostgreSQL script was not run.
-- Independent final code review found no remaining P1/P2 after the four reported fixes, null-safe migration guard and migration-list updates.
+- The initial review cleared the four reported fixes and migration guard. A subsequent independent single-connection review found pool reentry; the new counterexample and correction are recorded below, superseding the earlier blanket clearance.
 - Retained logs and `SHA256SUMS` are adjacent. Repeat: `npm run build`, then `node --test --test-concurrency=1 dist/test/skill-delivery.test.js dist/test/harness-regressions.test.js dist/test/memory-continuity-rollback.test.js`.
 
 No provider/browser, long soak, production request, merge or release was performed. Original product provider failures remain red. Actual app wiring to this future public API and generated HTML diagram-box coordinate/size correctness outside the numeric renderer remain separate product implementation slices; CSS zoom and numeric PR253 do not cover arbitrary generated boxes.
+
+## Pool-reentry correction
+
+A second independent public-API reproduction showed the original c8c90 activation path blocking on a single-connection pool. The added regression models serialized access and fails immediately on reentry during an open transaction; ordinary parallel reads still serialize. Before fix activation rolled back; after passing the current queryable it completes with zero reentries. The same case covers child ancestry, parent cancellation/reinstatement, fresh grant revocation between candidate/final checks, rejection of a delivered decision after revocation and a valid honest unsupported final commit.
+
+Full build and the same owning suite now pass **13/13,0 skipped**. New `pool-red.log`, `pool-green.log`, `pool-build.log`, `pool-owning.log` retain this bounded evidence. No provider/browser/production, runtime publish or product lock changes. Independent re-review of the new correction is pending until its exact updated commit is handed off.

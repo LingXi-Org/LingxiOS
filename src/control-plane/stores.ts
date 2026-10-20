@@ -282,8 +282,13 @@ export interface ActionExecutor {
  * Authoritative capability resolution. The control plane refuses any action
  * outside this grant regardless of what the kernel allowed.
  */
+export interface CapabilityResolutionContext {
+  /** Use this queryable for all policy/ancestry reads. It may own the active
+   * transaction; reacquiring the outer pool can deadlock or miss its changes. */
+  database: import('./pg-store.js').SqlQueryable
+}
 export interface CapabilityResolver {
-  resolve(work: Omit<WorkItem, 'leaseToken'>): Promise<import('../protocol/types.js').CapabilityGrant[]>
+  resolve(work: Omit<WorkItem, 'leaseToken'>, context?: CapabilityResolutionContext): Promise<import('../protocol/types.js').CapabilityGrant[]>
 }
 
 /** Streams events and delivers final messages to product surfaces. */

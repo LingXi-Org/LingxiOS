@@ -255,13 +255,13 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   const nativeCollaboration = collaborationTools()
   const businessTools = [...options.tools ?? [], ...harness?.tools ?? []]
   const skills = [...options.skills ?? [], ...harness?.skills ?? []], presentations = [...options.presentations ?? [], ...harness?.presentations ?? []]
-  const capabilities = options.capabilityResolver ?? { resolve: async (work: Omit<WorkItem, 'leaseToken'>) => {
+  const capabilities: import('../control-plane/stores.js').CapabilityResolver = options.capabilityResolver ?? { resolve: async (work: Omit<WorkItem, 'leaseToken'>) => {
     const tools = [...businessTools, ...(work.conversation ? nativeCollaboration : [])]
     return [...new Set(tools.map(tool => tool.action.split('.')[0]!))]
       .map(name => ({ name, methods: tools.filter(tool => tool.action.startsWith(name + '.')).map(tool => tool.action.split('.')[1]!) }))
   } }
-  const allowed = async (context: Pick<import('../tools/definition.js').ActionContext, 'work'>, actions: string[]) => {
-    const tools = grantedTools(businessTools, await integration.capabilityResolver.resolve(context.work)).filter(tool => permitsTool(context.work, tool))
+  const allowed = async (context: Pick<import('../tools/definition.js').ActionContext, 'work' | 'database'>, actions: string[]) => {
+    const tools = grantedTools(businessTools, await integration.capabilityResolver.resolve(context.work, { database: context.database })).filter(tool => permitsTool(context.work, tool))
     if (actions.some(action => !tools.some(tool => tool.action === action))) throw new Error('required capability was revoked or is unavailable in this mode')
   }
   const extensionTools = [...(skills.length ? [skillTool(skills, allowed)] : []),
@@ -269,7 +269,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   const readableTools = [...businessTools, ...extensionTools]
   const helperTools = [...extensionTools, ...(readableTools.length ? [observationTool(readableTools, async (context, actions) => {
     if (actions.every(action => businessTools.some(tool => tool.action === action))) await allowed(context, actions)
-  })] : []), ...(businessTools.some(tool => tool.deferred) ? [discoveryTool(businessTools, context => capabilities.resolve(context.work))] : [])]
+  })] : []), ...(businessTools.some(tool => tool.deferred) ? [discoveryTool(businessTools, context => capabilities.resolve(context.work, { database: context.database }))] : [])]
   const definitions = [...businessTools, ...helperTools, ...nativeCollaboration, ...memory?.tools ?? []]
   const behavior = harness?.context ?? (skills.length || presentations.length ? { id: 'authored', version: '1', hash: '', rules: [], skills: [], presentations: [] } : undefined)
   if (behavior) {
@@ -286,13 +286,14 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     tools: [...TASK_TOOLS, ...definitions.map(toolSpecification)],
     actionExecutor: toolExecutor(options.database, definitions, (work, input, signal) => createNativeArtifact(
       resolve(options.homesRoot ?? process.env['AGENT_OS_HOMES_ROOT'] ?? '.agent-os/homes'), work, input, signal, options.objects), options.memory),
-    capabilityResolver: { async resolve(work: Omit<WorkItem, 'leaseToken'>) {
-      await authorizeConversationWork(options.database, work)
+    capabilityResolver: { async resolve(work: Omit<WorkItem, 'leaseToken'>, context?: import('../control-plane/stores.js').CapabilityResolutionContext) {
+      const database = context?.database ?? options.database
+      await authorizeConversationWork(database, work)
       if (memory && ['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind)) return [{ name: work.kind,
         methods: memory.tools.filter(tool => tool.action.startsWith(work.kind + '.')).map(tool => tool.action.split('.')[1]!) }]
-      let grants = await capabilities.resolve(work)
+      let grants = await capabilities.resolve(work, { database })
       if (typeof work.meta?.['parentWorkId'] === 'string') {
-        const ancestors = await options.database.query(`WITH RECURSIVE lineage AS (
+        const ancestors = await database.query(`WITH RECURSIVE lineage AS (
           SELECT parent.*,ARRAY[parent.id] AS path FROM lingxios.agent_work_items parent
             WHERE parent.id=$1 AND parent.tenant_id=$2 AND parent.principal_id IS NOT DISTINCT FROM $3
           UNION ALL SELECT parent.*,child.path||parent.id FROM lingxios.agent_work_items parent
@@ -303,7 +304,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         if (!ancestors.rows.some(row => row['id'] === work.meta?.['rootWorkId'])
           || ancestors.rows.some(row => row['cancel_requested_at'] || !['queued','leased','waiting'].includes(String(row['status'])))) throw new Error('delegation ancestry is no longer authorized')
         let tools = grantedTools(definitions, grants)
-        for (const row of ancestors.rows) tools = grantedTools(tools, await capabilities.resolve(workItemFromRow(row, '', 1)))
+        for (const row of ancestors.rows) tools = grantedTools(tools, await capabilities.resolve(workItemFromRow(row, '', 1), { database }))
         grants = [...new Set(tools.map(tool => tool.action.split('.')[0]!))]
           .map(name => ({ name, methods: tools.filter(tool => tool.action.startsWith(name + '.')).map(tool => tool.action.split('.')[1]!) }))
       }
@@ -406,7 +407,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       const skill = skills.find(skill => skill.name === activation.skill.name)
       if (!skill || skillIndex(skill).hash !== activation.skill.hash || skill.version !== activation.skill.version
         || skill.delivery?.checker !== activation.checker) { unavailable.push(activation.id); continue }
-      try { await allowed({ work }, skill.actions) } catch { unavailable.push(activation.id) }
+      try { await allowed({ work, database }, skill.actions) } catch { unavailable.push(activation.id) }
     }
     if (!(includeProduct && options.verifyRun) && !activations.length) return graphChecks
     const deadlineAt = new Date(Date.now() + 10_000).toISOString(), scope = scopedSignal([shutdown.signal], 10_000), signal = scope.signal
