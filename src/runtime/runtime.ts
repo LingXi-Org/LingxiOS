@@ -47,6 +47,7 @@ import type { KernelArtifact, HostActionResult } from '../protocol/types.js'
 import type { KernelExecutor, KernelExecutionOptions } from '../kernel/manager.js'
 import { nullLogger, type Logger } from '../logging.js'
 import type { ModelDriver } from '../model/driver.js'
+import { publicModelDiagnostics } from '../model/diagnostics.js'
 import { inputTokens, modelProfile } from '../model/profile.js'
 import { RUN_SEQUENCE_SPAN } from '../protocol/constants.js'
 import {
@@ -704,7 +705,7 @@ export class AgentRuntime {
         }
         await this.event(work, runId, {
           kind: 'model.failed', stage: 'failed', visibility: 'internal',
-          data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: errorMessage(error) },
+          data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: publicFailure(error) },
         })
         if (isPublicTextSafetyFailure(error) && budget.consume('response_protocol','public text safety rejected')) {
           protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return only safe user-facing content. Do not include private reasoning or internal protocol.'}
@@ -729,7 +730,7 @@ export class AgentRuntime {
         kind: 'model.completed', stage: 'completed', visibility: 'internal',
         data: {
           hop: hop + 1, callId: modelCallId, model: turn.model ?? 'unknown', purpose: 'agent-turn',
-          usage: turn.usage, ...(turn.diagnostics ? { diagnostics: turn.diagnostics } : {}),
+          usage: turn.usage, ...(turn.diagnostics ? { diagnostics: publicModelDiagnostics(turn.diagnostics) } : {}),
           inputSha256, providerConfigSha256: model.configurationFingerprint ?? 'unknown', traceExpiresAt,
           ...(this.recordModelPayloads && sample ? { output: tracePayload(turn.output),
             ...(turn.finalCandidate === undefined ? {} : { finalCandidate: tracePayload(turn.finalCandidate) }) } : {}),
@@ -1153,13 +1154,15 @@ export class AgentRuntime {
             session.request.resourceChecks = appendResourceCheck(session.request.resourceChecks ?? [], action.idempotencyKey,
               result, session.request.revisions.length + 1)
           }
+          const memoryAction = action.action.startsWith('memory.')
           const toolResult = result.approval
             ? { status: 'awaiting-approval', approvalId: result.approval.id }
             : result.ok
-              ? { status: 'completed', value: action.action.startsWith('memory.') ? memoryEventValue(result.value) : JSON.parse(boundedToolOutput(result.value ?? null)) as unknown }
+              ? { status: 'completed', value: memoryAction ? memoryEventValue(result.value) : JSON.parse(boundedToolOutput(result.value ?? null)) as unknown }
               : result.executionState === 'unknown'
-                ? { status: 'unknown', error: result.error ?? 'host action outcome is unknown', reconciliationRequired: true }
-                : { status: 'failed', error: result.error ?? 'host action failed' }
+                ? { status: 'unknown', error: memoryAction ? 'Memory operation outcome is unknown; reconciliation is required'
+                  : result.error ?? 'host action outcome is unknown', reconciliationRequired: true }
+                : { status: 'failed', error: memoryAction ? 'Memory operation failed' : result.error ?? 'host action failed' }
           await this.event(work, runId, {
             kind: 'tool.completed', stage: result.ok || result.approval ? 'completed' : 'failed', visibility: 'user',
             data: { toolCallId, partIndex, result: toolResult, isError: !result.ok && !result.approval, requestVersion: (session.request?.revisions.length ?? 0)+1, fence:work.fence, attemptId:this.modelAttempts.get(runId) },
@@ -1498,7 +1501,7 @@ export class AgentRuntime {
     if (leaseLost) {
       // The lease is gone: another worker may already own the work. Log and
       // walk away — no completion call is valid without the lease.
-      log.warn('lease lost mid-run', { error: errorMessage(error) })
+      log.warn('lease lost mid-run', { error: publicFailure(error) })
       return
     }
     const cancelled = signals.lifecycle.signal.aborted
@@ -1512,7 +1515,7 @@ export class AgentRuntime {
       kind: cancelled ? 'run.cancelled' : 'run.failed', stage: status, visibility: 'user',
       data: {
         error: publicFailure(error),
-        ...(error instanceof ModelDriverError ? { modelDiagnostics: error.diagnostics } : {}),
+        ...(error instanceof ModelDriverError ? { modelDiagnostics: publicModelDiagnostics(error.diagnostics) } : {}),
         ...(error instanceof ModelBudgetExceededError ? { budgetLimit: error.diagnostics } : {}),
         ...(error instanceof HardLimitExceededError && error.diagnostics ? { compactionDiagnostics: error.diagnostics } : {}),
       },
@@ -1535,8 +1538,11 @@ function publicFailure(error: unknown): string {
   if (error instanceof HardLimitExceededError) return error.diagnostics?.reason === 'irreducible_context'
     ? 'Required input exceeds the model context limit. Reduce the request or attached material before retrying.'
     : 'The request and conversation exceed the model context limit after bounded recovery.'
-  if (error instanceof ModelDriverError) return error.diagnostics.kind === 'protocol'
-    ? 'Model returned an invalid response format' : `Model provider request failed${error.diagnostics.status ? ` (HTTP ${error.diagnostics.status})` : ''}`
+  if (error instanceof ModelDriverError) {
+    const diagnostics = publicModelDiagnostics(error.diagnostics)
+    return diagnostics['kind'] === 'protocol'
+      ? 'Model returned an invalid response format' : `Model provider request failed${diagnostics['status'] ? ` (HTTP ${diagnostics['status']})` : ''}`
+  }
   if (error instanceof AgentOSError) {
     switch (error.code) {
       case 'unresolved_checkpoint': return 'unresolved tool execution checkpoint; reconcile before continuing'

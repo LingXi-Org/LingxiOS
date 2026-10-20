@@ -1,0 +1,25 @@
+{
+  "kind": "local-synthetic-candidate-e6756398-event-serializer-only",
+  "results": [
+    {
+      "mode": "default",
+      "modelCalls": 1,
+      "authorizedModelInputSentinelCount": 1,
+      "events": [],
+      "ledgerSentinelCount": 0,
+      "stderrSentinelCount": 0,
+      "eventStoreRows": [],
+      "authorizedSavedStepSentinelCount": 0
+    },
+    {
+      "mode": "memory-tool",
+      "modelCalls": 2,
+      "authorizedModelInputSentinelCount": 3,
+      "events": [],
+      "ledgerSentinelCount": 0,
+      "stderrSentinelCount": 0,
+      "eventStoreRows": [],
+      "authorizedSavedStepSentinelCount": 2
+    }
+  ]
+}
