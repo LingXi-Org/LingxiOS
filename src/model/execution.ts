@@ -74,7 +74,7 @@ export interface ApprovedModelFallback {
 export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>,
   model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'countTokens' | 'configurationFingerprint' | 'recovery' | 'profile' | 'contextWindowTokens'>, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
-  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', memoryAdmission?: () => boolean) {
+  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', memoryAdmission?: () => number | boolean | undefined) {
   let sequence = 0, calls = 0, tokens = 0, cost = 0
   const started = Date.now()
   const invoke = async <T extends { model?: string; usage: ModelUsage }>(purpose: ModelCallObservation['purpose'],
@@ -85,6 +85,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
     const instructionsSha256 = request.instructions === undefined ? undefined : textSha256(request.instructions)
     if (request.prompt && request.prompt.instructionsSha256 !== instructionsSha256) throw new Error('prompt manifest does not match model instructions')
     const logicalCallId = `${work.id}:${work.fence}:${namespace}:${++sequence}`
+    const memoryVersion=memoryAdmission?.()
     const recovery = recoveryPolicy(callModel.recovery), logicalBegan = performance.now()
     const totalTimeout = AbortSignal.timeout(Math.min(recovery.totalTimeoutMs, limits.wallClockMs))
     const logicalSignal = AbortSignal.any([...(request.signal ? [request.signal] : []), totalTimeout])
@@ -110,6 +111,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
         deadlineAt: new Date(Date.now() + limits.wallClockMs).toISOString(),
         reservedTokens: input + output, reservedInputTokens: input, reservedOutputTokens: output, reservedCostMicros: reservedCost,
         pricing: modelPricing(limits),
+        ...(typeof memoryVersion==='number' ? {memoryRequestVersion:memoryVersion} : {}),
         ...(purpose === 'agent-turn' ? { childAdmission: {
           inputTokens: input,
           outputTokens: output, executionMs: recovery.totalTimeoutMs,
@@ -125,12 +127,13 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       const began = performance.now()
       let result: T | undefined, failure: unknown
       const diagnostics: Record<string, unknown> = {providerNotStarted:true}
-      const admit=memoryAdmission?.() ? async () => {
+      const admit=memoryVersion ? async () => {
         signal.throwIfAborted()
         // Same call id, already reserved: the store only validates the server-owned
         // context proof in a short transaction. It cannot charge or issue again.
         const admitted=await host.reserveModelCall(work,callId,{...reserved,memoryAdmission:true})
         if (!admitted.allowed) throw new ModelBudgetExceededError('Root work budget limit reached',admitted.dimension)
+        if (Date.parse(admitted.deadlineAt)<=Date.now()) throw new ModelBudgetExceededError('Root work execution time exhausted','deadline')
       } : undefined
       try {
         await emit?.({
@@ -169,8 +172,8 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       } : {}) }
       // Admission, publication and cancellation gates are not provider failures:
       // settle the one reservation but never retry/fallback past a rejected gate.
-      if (diagnostics['providerNotStarted']) throw failure
       if (signal.aborted) throw deadlineFailure(rootTimeout, signal)
+      if (diagnostics['providerNotStarted']) throw failure
       if (attempt >= recovery.maxAttempts) throw failure
       if (fallback && !routed && classifiedFailure && ['authorization','quota','circuit_open','network','timeout','unavailable','rate_limit'].includes(classifiedFailure.category)) {
         callModel = fallback.model
@@ -192,7 +195,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
 export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>, source: ModelDriver, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
   emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', approvedFallback?: ApprovedModelFallback,
-  memoryAdmission?: () => boolean): ModelDriver {
+  memoryAdmission?: () => number | boolean | undefined): ModelDriver {
   const model = source.singleAttempt?.() ?? source
   const secondary = approvedFallback?.model.singleAttempt?.() ?? approvedFallback?.model
   if (approvedFallback) {

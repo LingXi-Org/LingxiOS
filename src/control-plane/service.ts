@@ -459,6 +459,7 @@ export class ControlPlaneService {
       })()).then(async snapshot => ({ ...snapshot, session: await this.authorizeSession(work, snapshot.session) }))
     const [context, snapshot, dependencies] = await Promise.all([
       snapshotPromise.then(snapshot => this.deps.contextProvider.loadContext(work, signal, {
+        requestVersion: snapshot.requestVersion,
         responseProfile: snapshot.session?.request && [snapshot.session.request.attachments,
           ...[...snapshot.session.request.inheritedRevisions ?? [], ...snapshot.session.request.revisions]
             .map(revision => revision.attachments ?? [])].some(attachments => attachments.length)

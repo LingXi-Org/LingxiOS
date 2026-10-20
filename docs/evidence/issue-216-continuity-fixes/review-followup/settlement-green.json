@@ -1,0 +1,38 @@
+{
+  "sourceBase": "cb7dc5b0b040079035d3ed9877ab26f61d47487f",
+  "fixture": "exclusive local PostgreSQL, existing image, network none, Unix socket, private tmpfs",
+  "productionRequests": 0,
+  "providerRequests": 0,
+  "sharedDatabaseQueries": 0,
+  "created": true,
+  "cleanup": true,
+  "network": "none",
+  "postgresVersion": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "settledWhileFinalAdmissionPending": false,
+  "persistedSettledBeforeAdmissionReturned": false,
+  "finalAllowed": true,
+  "budget": {
+    "calls": 1,
+    "tokens": 0
+  },
+  "violation": false,
+  "recordFirst": {
+    "lockObserved": true,
+    "returnedBeforeSettlement": false,
+    "rejectedUnsettled": true
+  },
+  "parallelReserveRecord": {
+    "completed": true,
+    "reserveAllowed": true
+  },
+  "leaseAfterWait": {
+    "rejected": true
+  },
+  "sourceHashes": {
+    "src/memory/admission.ts": "049876ca04b44840b087715b8136cb3b14eafb454d90118422b0d4470f4bc97c",
+    "src/memory/runtime.ts": "2360ffe6a876cbb729b6f41dc69ca11e26914651912095415f873ee7277d5329",
+    "src/control-plane/pg-store.ts": "32e99a19271cdd436e4f5912e35dd7b675e4a29b51bb0c077983b560b69d8ab3",
+    "src/model/execution.ts": "f80d95826056bce0b1f477d9758bf27620b2e8cef0d914e4653107fccf950386"
+  },
+  "passed": true
+}
