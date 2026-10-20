@@ -147,3 +147,17 @@ it('native IM speak and frozen audience authorization are rechecked before every
     assert.equal((await f.app.readEvents(identity)).events.length,1)
   }finally{await f.close()}
 })
+
+it('worker event submission cannot forge the result transaction reserved commit event',async()=>{
+  const f=await fixture()
+  try{
+    await f.host.emitEvent(f.work,f.delta(1,'unaccepted public text'))
+    await assert.rejects(f.host.emitEvent(f.work,{runId:f.work.id,seq:2,kind:'response.committed',stage:'completed',visibility:'user',
+      data:{resultId:'not-a-result',requestVersion:1,publicTextPartId:'part-1'}}),/reserved/)
+    const page=await f.app.readEvents(f.identity),state=await f.app.readRunState(f.identity);assert.ok(state)
+    let view=consumeRunState(createRunView(f.work.id),state)
+    for(const event of page.events)view=consumeRunEvent(view,event)
+    assert.equal(state.message,null);assert.equal(page.events.length,1)
+    assert.equal(view.publicTextParts?.[0]?.acceptedResultId,null)
+  }finally{await f.close()}
+})

@@ -425,7 +425,7 @@ export class AgentRuntime {
         evidence(), artifacts, session.request?.contract, session.request?.resourceChecks)
       } catch { return /* Invalid citations or artifacts must never become a partial delivery. */ }
       await this.hostFor(work).saveStep(work, { id: `candidate:${randomUUID()}`, kind: 'runtime.candidate',
-        requestVersion: envelope.requestVersion, input: publicTextPartId ? { publicTextPartId } : {}, output: JSON.stringify(envelope), artifacts: [] })
+        requestVersion: envelope.requestVersion, input: publicTextPartId ? { publicTextPartId, publicTextBodyHash: createHash('sha256').update(text).digest('hex') } : {}, output: JSON.stringify(envelope), artifacts: [] })
       lastGood = { text, envelope, ...publicTextPartId ? { publicTextPartId } : {} }
     }
     const savedCandidate = context.executionSteps?.findLast(step => step.kind === 'runtime.candidate'
@@ -888,6 +888,9 @@ export class AgentRuntime {
         }
         await this.publications.get(runId)?.end('completed')
         finalPublicTextPartId = this.publications.get(runId)?.partId
+        if (finalPublicTextPartId) await this.hostFor(work).saveStep(work, { id: `public-text:${finalPublicTextPartId}`, kind: 'runtime.public_text_source',
+          requestVersion: (session.request?.revisions.length ?? 0) + 1,
+          input: { publicTextPartId: finalPublicTextPartId, publicTextBodyHash: createHash('sha256').update(turn.text.trim()).digest('hex') }, output: '{}', artifacts: [] })
         session.history.push(...turn.output)
         finalText = turn.text.trim()
         if (finalText) {

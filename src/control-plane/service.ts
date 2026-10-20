@@ -782,6 +782,7 @@ export class ControlPlaneService {
     ) {
       throw new ControlPlaneError(400, 'invalid run event envelope')
     }
+    if (event.kind === 'response.committed') throw new ControlPlaneError(400, 'response.committed is reserved for the result transaction')
     // Attempt-range fencing: an event must land inside its own attempt's
     // sequence range so retried attempts can never shadow one another.
     const rangeStart = Math.max(0, work.fence - 1) * RUN_SEQUENCE_SPAN

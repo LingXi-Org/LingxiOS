@@ -485,6 +485,11 @@ export async function createLingxiOS(options: LingxiOSOptions) {
             const identity = source.rows[0]?.['data'] as Record<string,unknown> | undefined
             if (!identity || identity['requestVersion'] !== message.envelope.requestVersion
               || !Number.isSafeInteger(identity['fence']) || Number(identity['fence']) > work.fence) throw new Error('public text source is not part of the accepted request')
+            const candidate = await client.query(`SELECT 1 FROM lingxios.agent_steps WHERE work_id=$1 AND request_version=$2
+              AND kind IN ('runtime.candidate','runtime.public_text_source') AND completed_at IS NOT NULL AND input->>'publicTextPartId'=$3
+              AND input->>'publicTextBodyHash'=$4 LIMIT 1`, [work.id,message.envelope.requestVersion,message.publicTextPartId,
+              createHash('sha256').update(message.body).digest('hex')])
+            if (!candidate.rows.length) throw new Error('public text source is not bound to the accepted candidate')
           }
           const resultId = 'result:' + createHash('sha256').update(JSON.stringify([work.id, message])).digest('hex')
           const previous = await client.query(`SELECT result.id,result.message FROM lingxios.agent_work_items work
