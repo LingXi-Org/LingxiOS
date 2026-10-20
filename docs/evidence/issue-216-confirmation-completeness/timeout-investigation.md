@@ -92,3 +92,12 @@ Keep the original batch and transactional validator authoritative. Do not filter
 invalid changes into accepted empty changes. Test the partition and successful
 new fact plus unchanged protected value before the implementation; retain the
 existing rejection, version, epoch and coverage tests.
+
+The protected-reference candidate's first page validates its proposal, receives
+successful provider output for verification, then fails before apply. This
+localizes a second defect to the verifier response shape. A malformed verifier
+must never authorize writing. It may consume the same single repair allowance
+already reserved for this page and request a fresh independent, well-formed
+verdict. Do not retry transport/cancellation or an already-used allowance; a
+second malformed verdict remains pending. Keep the four-call maximum. Record
+only the fixed names of invalid verdict fields, never their values or feedback.
