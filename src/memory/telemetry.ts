@@ -9,5 +9,6 @@ export function memoryEventValue(value:unknown):unknown {
   for(const field of ['document','snapshot']) if(row[field]) out[field]=memoryEventValue(row[field])
   for(const field of ['documents','items']) if(Array.isArray(row[field])) out[field]=(row[field] as unknown[]).slice(0,100).map(memoryEventValue)
   if(typeof row['retrieval']==='string') out['retrieval']=row['retrieval']
+  if(Array.isArray(row['jobIds'])) out['jobIds']=(row['jobIds'] as unknown[]).filter(id=>typeof id==='string').slice(0,32)
   return out
 }

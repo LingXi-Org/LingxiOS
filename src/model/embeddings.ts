@@ -10,6 +10,8 @@ export interface EmbeddingOptions {
   apiKey: string
   baseUrl?: string
   dimensions?: number
+  /** Validate a fixed-size model without sending the optional dimensions parameter. */
+  expectedDimensions?: number
   /** Change when weights/preprocessing change while the provider model alias stays fixed. */
   indexVersion?: string
   requestTimeoutMs?: number
@@ -33,8 +35,10 @@ export class OpenAIEmbeddingDriver {
     this.timeoutMs = options.requestTimeoutMs ?? 15_000
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 60_000) throw new Error('invalid embedding timeout')
     if (options.dimensions !== undefined && (!Number.isSafeInteger(options.dimensions) || options.dimensions < 1 || options.dimensions > 4096)) throw new Error('invalid embedding dimensions')
+    if(options.expectedDimensions!==undefined && (!Number.isSafeInteger(options.expectedDimensions) || options.expectedDimensions<1 || options.expectedDimensions>4096
+      || options.dimensions!==undefined && options.dimensions!==options.expectedDimensions)) throw new Error('invalid expected embedding dimensions')
     if (options.indexVersion !== undefined && (!options.indexVersion.trim() || options.indexVersion.length>128)) throw new Error('invalid embedding index version')
-    this.cacheKey = createHash('sha256').update(JSON.stringify([this.endpoint, options.id, options.dimensions ?? null,
+    this.cacheKey = createHash('sha256').update(JSON.stringify([this.endpoint, options.id, options.dimensions ?? options.expectedDimensions ?? null,
       ...(options.indexVersion === undefined ? [] : [options.indexVersion])])).digest('hex')
     this.circuitKey = createHash('sha256').update(JSON.stringify(['embedding', this.endpoint, options.id, options.apiKey])).digest('hex')
   }
@@ -94,7 +98,7 @@ export class OpenAIEmbeddingDriver {
     if (!result || typeof result !== 'object' || typeof result.model !== 'string' || !result.model.trim() || result.model.length > 256
       || !Array.isArray(result.data) || result.data.length !== input.length) throw protocolFailure('invalid embedding response envelope')
     const vectors: number[][] = new Array(input.length)
-    let dimensions = this.options.dimensions
+    let dimensions = this.options.dimensions ?? this.options.expectedDimensions
     for (const item of result.data) {
       if (!item || !Number.isSafeInteger(item.index) || item.index < 0 || item.index >= input.length || vectors[item.index]
         || !Array.isArray(item.embedding) || item.embedding.length < 1 || item.embedding.length > 4096
