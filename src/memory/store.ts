@@ -179,11 +179,13 @@ export async function applyMemoryChanges(database: SqlQueryable, scope: MemorySc
     return previous['result'] as unknown as MemoryApplyResult
   }
   const result: MemoryApplyResult = { documents: [], deleted: [] }
-  const get = async (id: string, version: number) => {
+  const get = async (id: string, version: number, deleting = false) => {
     const doc = await readMemory(database,scope,id)
     if (!doc || doc.version !== version) throw new Error('memory is unavailable or stale')
     if (!context.explicit && (doc.origin === 'explicit' || doc.locked)) throw new Error('memory is protected; a current explicit user request is required')
-    if (context.resolveScopes) for (const source of doc.sources) {
+    // A currently authorized explicit deletion does not reuse historical content.
+    // Keep provenance authorization for every other mutation, including mixed batches.
+    if (!(deleting && context.explicit) && context.resolveScopes) for (const source of doc.sources) {
       if (!source.workId) continue
       const row=(await database.query('SELECT * FROM lingxios.agent_work_items WHERE id=$1 AND tenant_id=$2',[source.workId,scope.tenantId])).rows[0]
       if (!row || !(await authorizedScopes({resolveScopes:context.resolveScopes},sourceIdentity(row),database)).some(item=>sameScope(item,scope))) throw new Error('memory source scope was revoked')
@@ -191,16 +193,16 @@ export async function applyMemoryChanges(database: SqlQueryable, scope: MemorySc
     return doc
   }
   for (const [index,change] of changes.entries()) {
-    const current = change.action === 'create' ? undefined : await get(change.id,change.expectedVersion)
-    const sources = new Map<string,MemorySource>()
-    for (const source of [...current?.sources ?? [],...context.sources]) sources.set(memoryDigest(source),source)
-    if (sources.size > 64) throw new Error('memory provenance limit reached; split the document')
+    const current = change.action === 'create' ? undefined : await get(change.id,change.expectedVersion,change.action==='delete')
     if (change.action === 'delete') {
       if (!context.explicit) throw new Error('deletion requires an explicit user request')
       await database.query('DELETE FROM lingxios.agent_memories WHERE tenant_id=$1 AND id=$2',[scope.tenantId,change.id])
       result.deleted.push(change.id)
       continue
     }
+    const sources = new Map<string,MemorySource>()
+    for (const source of [...current?.sources ?? [],...context.sources]) sources.set(memoryDigest(source),source)
+    if (sources.size > 64) throw new Error('memory provenance limit reached; split the document')
     if (change.action === 'expire') {
       const row = (await database.query(`UPDATE lingxios.agent_memories SET status='expired',version=version+1,updated_at=NOW(),source_refs=$3::jsonb
         WHERE tenant_id=$1 AND id=$2 RETURNING *`,[scope.tenantId,change.id,JSON.stringify([...sources.values()])])).rows[0]!
