@@ -17,3 +17,9 @@ Failure cases to cover before changing implementation:
 - Final delivery duplicates commentary or labels an incomplete attempt as a final answer.
 
 Use existing JSONB events and published APIs, no schema migration. Tests use synthetic text/providers and isolated databases; never log provider payloads or credentials. Measure persistence and rendering separately. Preserve bounded cancellation, model budget settlement, lease fencing and business-tool receipts.
+
+## Implementation and evidence follow-up
+
+The initial five baseline behavioral tests failed before implementation. Additional targeted failures exposed inferred-versus-explicit terminal ordering, same-fence revisions, loss of publication-error identity after usage wrapping, pre-gate public content, premature `completed`, and commentary invented from a final return without deltas, missing accepted-result association, unrelated pre-tool source association, and a forged result-commit event. Each has a dedicated regression. See [the public contract](public-text.md) and its evidence manifest for tested commits and counts. Early harness type errors, a storage-fixture assertion/table-name correction, and a build blocked by disk exhaustion are retained as non-passing development evidence; none are counted as product successes.
+
+The accepted-result follow-up also preserves the existing control-plane candidate-size check. An exploratory full-app 100,001-character final was rejected before `commitResult`; it is not counted as a successful large-answer delivery. The new source binding does not use the retained-candidate cache size as an additional acceptance limit.

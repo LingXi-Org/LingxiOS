@@ -1,0 +1,156 @@
+{
+  "date": "2026-10-20",
+  "baseCommit": "e44fb862c1a1a0d94eb5213fcfaf56f3dfccae73",
+  "sourceCommit": "e03cc2dbd8aa178253d37c4931fd7ba6d5e5eef6",
+  "nodeVersion": "v22.23.3",
+  "package": {
+    "version": "3.5.6",
+    "officialRelease": false,
+    "note": "Local candidate built from sourceCommit; release allocation is separate.",
+    "sha256": "2d4f958f09a9faffb6802a3e05e54994d36cdb573d31f815fac4513aa7a103bc"
+  },
+  "build": {
+    "command": "npm run build",
+    "exitCode": 0,
+    "logName": "issue215-final-e03c-build.log",
+    "rawLogSha256": "f933db34cf0683b55cb9bc7c6cfbabf71d433ef94da1fdee95eab5f53f9dd18c"
+  },
+  "checks": {
+    "command": "node --test --test-concurrency=1 dist/test/public-text*.test.js dist/test/preview.test.js dist/test/realtime.test.js dist/test/realtime-guards.test.js dist/test/model.test.js dist/test/model-execution.test.js dist/test/model-recovery-metadata.test.js dist/test/model-fallback.test.js dist/test/runtime.test.js dist/test/app.test.js dist/test/operation-context.test.js dist/test/operation-context-contract.test.js dist/test/deadlines.test.js",
+    "exitCode": 0,
+    "counts": {
+      "tests": 171,
+      "pass": 171,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "durationMs": 83011.587602,
+    "logName": "issue215-final-e03c-tests.log",
+    "rawLogSha256": "3882d0bb275a09aa633a5e42250778093d5a72f8708bb8ec263f7f9e01946d34"
+  },
+  "redEvidence": [
+    {
+      "scenario": "Initial projection and async acknowledgement",
+      "logName": "issue215-public-red.log",
+      "rawLogSha256": "d152967046b8a2eb2e7ba7745d36cba52cabd984eb376cd36a989248a25d540c",
+      "counts": {
+        "tests": 4,
+        "pass": 0,
+        "fail": 4
+      },
+      "exitCode": 1
+    },
+    {
+      "scenario": "Initial actual worker persistence",
+      "logName": "issue215-public-worker-red.log",
+      "rawLogSha256": "bd1ebbc13dd714b1123fca6faff04d72a3b8a714f30af60b114cc785feb9dfad",
+      "counts": {
+        "tests": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exitCode": 1
+    },
+    {
+      "scenario": "Streaming approval boundaries",
+      "logName": "issue215-safety-red.log",
+      "rawLogSha256": "1641e73cb34c598070fb84b1cf2102efed63bf3e86dc8276f682dbe5d344ff60",
+      "counts": {
+        "tests": 5,
+        "pass": 0,
+        "fail": 5
+      },
+      "exitCode": 1
+    },
+    {
+      "scenario": "Actual worker streaming policy",
+      "logName": "issue215-safety-worker-red.log",
+      "rawLogSha256": "07e2f4d99772f79e3780219a0a56af82238a3b5a742b402e3baabd4a31124813",
+      "counts": {
+        "tests": 3,
+        "pass": 0,
+        "fail": 3
+      },
+      "exitCode": 1
+    },
+    {
+      "scenario": "EOF without actual delta",
+      "logName": "issue215-no-delta-red.log",
+      "rawLogSha256": "f4be03b7f03d16095d75af5010d996d773e3c8dc025e1e6540dc86f653a6e420",
+      "counts": {
+        "tests": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exitCode": 1
+    },
+    {
+      "scenario": "Committed result association",
+      "logName": "issue215-association-red-2.log",
+      "rawLogSha256": "c3586271e600050ac7554f6d23403ed485f44624ca56e360e0e003c06cff89b5",
+      "counts": {
+        "tests": 8,
+        "pass": 6,
+        "fail": 2
+      },
+      "exitCode": 1
+    },
+    {
+      "scenario": "Unrelated pre-tool source",
+      "logName": "issue215-unrelated-source-red.log",
+      "rawLogSha256": "91b1eb9fe1a0d54cb5d0ab60e424d1df803c0e0d50dd8e99842592c1b02beb8b",
+      "counts": {
+        "tests": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exitCode": 1
+    },
+    {
+      "scenario": "Forged result commit event",
+      "logName": "issue215-reserved-commit-red.log",
+      "rawLogSha256": "6616ba9406930241fba8d42d4c21a48abb75ba948f94384f561208821a8abce8",
+      "counts": {
+        "tests": 1,
+        "pass": 0,
+        "fail": 1
+      },
+      "exitCode": 1
+    }
+  ],
+  "syntheticObservations": {
+    "singleRunNotSLA": true,
+    "providerFirstContentToNativeToolReadingDurablePrefixMs": 65.66,
+    "nativeToolExecutions": 1,
+    "singleCharacterDeltas": 16000,
+    "policyCalls": 5,
+    "writerPolicyElapsedMs": 52.73
+  },
+  "independentSafetyReview": {
+    "runtimeCommit": "1091ee6bde5d1042d074436b851941fd2b047e94",
+    "productHookCommit": "bbcd99e13358bb9f1893478010d05c5fd0291989",
+    "syntheticActualRuntimeDriverCases": 16,
+    "passed": 16,
+    "countsSha256": "a6d2a86126cf9aaeac4c8f6f41aef658d389fc25d69b3d98a3db1a6792ce2ba7",
+    "note": "Ancestor safety-gate review; final acceptance-association review is separate."
+  },
+  "independentFinalReview": {
+    "sourceCommit": "e03cc2dbd8aa178253d37c4931fd7ba6d5e5eef6",
+    "remainingP1P2": 0,
+    "forgedCommitRejected": true,
+    "additionalActualWorkerCases": 2,
+    "passed": 2,
+    "privateReportSha256": "007ccb4b417c196b09c0fae46d3b549a525fa96f39c554f3c867dea83a4c105a"
+  },
+  "boundaries": [
+    "Synthetic providers only; no paid or production provider request.",
+    "Upstream databases are isolated PGlite; real HTTP worker subprocess SIGKILL/restart is covered, not a network PostgreSQL crash.",
+    "Product PostgreSQL, IM discovery and browser rendering acceptance belong to the product consumer.",
+    "No DDL or package version change in this branch.",
+    "Earlier harness type errors, a storage-fixture correction and disk-exhaustion build failure are not counted as passes.",
+    "Exploratory 100001-character full-app final was rejected by the existing candidate guard before commit; it is not counted as successful large-answer delivery.",
+    "Raw development logs are retained privately; public artifacts contain synthetic case names, counts, timings and hashes only."
+  ]
+}
