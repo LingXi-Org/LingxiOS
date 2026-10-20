@@ -31,6 +31,14 @@ it('bounds embedding requests, aligns response indices and rejects corrupt vecto
     assert.deepEqual(received, { model: 'embedding-test', input: ['text', '文字'], encoding_format: 'float', dimensions: 2 })
     assert.equal(driver.cacheKey, new OpenAIEmbeddingDriver({ ...options, apiKey: 'rotated' }).cacheKey)
     assert.notEqual(driver.cacheKey, new OpenAIEmbeddingDriver({ ...options, dimensions: 3 }).cacheKey)
+    const {dimensions:_dimensions,...fixedOptions}=options
+    const fixed=new OpenAIEmbeddingDriver({...fixedOptions,expectedDimensions:2})
+    assert.equal(fixed.cacheKey,driver.cacheKey,'fixed output dimensions still identify the same vector space')
+    payload={model:'embedding-test',data:[{index:0,embedding:[3,4]}]}
+    await fixed.embed(['fixed'])
+    assert.deepEqual(received,{model:'embedding-test',input:['fixed'],encoding_format:'float'})
+    payload={model:'embedding-test',data:[{index:0,embedding:[3,4,5]}]}
+    await assert.rejects(fixed.embed(['fixed']),/dimensions/)
     const count = requests
     for (const input of [[], [''], ['字'.repeat(3000)], Array(33).fill('text')]) await assert.rejects(driver.embed(input), /embedding input/)
     assert.equal(requests, count)

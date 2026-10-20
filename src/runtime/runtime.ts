@@ -1,4 +1,5 @@
 import { PublicTextWriter, isPublicTextPublicationFailure, isPublicTextSafetyFailure } from './public-text.js'
+import { isMemoryDeletionReceipt } from '../memory/confirmation.js'
 import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from './wait.js'
 import { inputWaitQuestion } from '../protocol/input-wait.js'
@@ -12,7 +13,8 @@ import { createTaskContract } from '../context/task-contract.js'
 import { abortable } from '../deadline.js'
 import { deadlineHost } from '../host/deadline-host.js'
 import { checkpointHost } from '../host/checkpoint-host.js'
-import { fitMemorySnapshot } from '../memory/context.js'
+import { fitMemorySnapshot, memorySnapshotBody } from '../memory/context.js'
+import { memoryEventValue } from '../memory/telemetry.js'
 import type { MemorySnapshot } from '../memory/types.js'
 /**
  * AgentRuntime — the product-agnostic agent loop.
@@ -46,6 +48,7 @@ import type { KernelArtifact, HostActionResult } from '../protocol/types.js'
 import type { KernelExecutor, KernelExecutionOptions } from '../kernel/manager.js'
 import { nullLogger, type Logger } from '../logging.js'
 import type { ModelDriver } from '../model/driver.js'
+import { publicModelDiagnostics } from '../model/diagnostics.js'
 import { inputTokens, modelProfile } from '../model/profile.js'
 import { RUN_SEQUENCE_SPAN } from '../protocol/constants.js'
 import {
@@ -60,6 +63,8 @@ import { DefaultRuntimePolicy, type RuntimePolicy } from './policy.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { ModelBudgetExceededError } from '../errors.js'
 import { boundedDirectToolOutput, boundedToolOutput, parseIPythonArguments } from './tool.js'
+import { projectMemoryHistory, stripMemorySources, receiptMemoryMetadata, memoryDependencies,
+  invalidMemorySources, isMemorySummary } from '../memory/history.js'
 import { receiptReferences } from '../context/observations.js'
 import { exposedTools } from '../tools/discovery.js'
 import { promptProgram } from '../prompts/program.js'
@@ -142,6 +147,8 @@ export class AgentRuntime {
   private readonly processors = new Map<string, WorkProcessor | 'conversation'>()
   private readonly eventSeqByRun = new Map<string, number>()
   private readonly eventTails = new Map<string, Promise<void>>()
+  private readonly privateMemoryRuns = new Set<string>()
+  private readonly memoryAdmissionRuns = new Map<string,number>()
   private readonly hostsByRun = new Map<string, HostPort>()
   private readonly controls = new Map<string, AttemptSignals>()
   private readonly workspaces = new Map<string, WorkspaceState | null>()
@@ -173,7 +180,7 @@ export class AgentRuntime {
       preview.task = uploadPreview(buffer, frames => this.host.streamPreview!(work, frames, uploadSignal), uploadSignal).catch(error => {
         buffer.close()
         if (!signal.aborted && !stop.signal.aborted) {
-          this.logger.warn('preview channel unavailable; final result remains durable', { workId: work.id, error: errorMessage(error) })
+          this.logger.warn('preview channel unavailable; final result remains durable', { workId: work.id, error: publicFailure(error) })
           this.metrics?.counter('agentos_preview_resets_total', 'Preview lost; durable final result is unaffected').inc({ reason: 'transport' })
         }
       })
@@ -221,6 +228,15 @@ export class AgentRuntime {
   }
 
   private async event(work: WorkItem, runId: string, event: Omit<RunEvent, 'runId' | 'seq'>): Promise<number> {
+    if(this.privateMemoryRuns.has(runId)) {
+      const data={...event.data}
+      // These are diagnostic copies, not the authorized session or action ledger.
+      if(event.kind==='ipython.completed') delete data['output']
+      if(event.kind==='response.assessed') delete data['body']
+      if('error' in data) data['error']='Operation failed; inspect the structured status'
+      if('violation' in data) data['violation']='Response failed validation'
+      event={...event,data}
+    }
     if (['response.withheld', 'run.failed', 'run.cancelled'].includes(event.kind)) this.previews.get(runId)?.buffer.discard()
     const seq = (this.eventSeqByRun.get(runId) ?? 0) + 1
     this.eventSeqByRun.set(runId, seq)
@@ -291,6 +307,7 @@ export class AgentRuntime {
   async runWork(work: WorkItem, signal?: AbortSignal): Promise<void> {
     const began = performance.now()
     const runId = work.id
+    if(work.kind.startsWith('memory_')) this.privateMemoryRuns.add(runId)
     this.eventSeqByRun.set(runId, Math.max(0, work.fence - 1) * RUN_SEQUENCE_SPAN)
     const signals = this.startSignals(work, signal)
     this.controls.set(runId, signals)
@@ -298,7 +315,8 @@ export class AgentRuntime {
       signals.lifecycle.signal,30_000,this.metrics))
     let activeSession: SessionRecord | null = null
     const log = this.logger.child({ runId, workId: work.id, agentId: work.agentId, fence: work.fence })
-    const model = executionModel(this.hostFor(work), this.model, work, this.rootModelBudget, event => this.event(work, runId, event),'model',this.fallbackModel)
+    const model = executionModel(this.hostFor(work), this.model, work, this.rootModelBudget, event => this.event(work, runId, event),'model',this.fallbackModel,
+      ()=>this.memoryAdmissionRuns.get(runId))
 
     try {
       const recoveryStarted = performance.now()
@@ -362,6 +380,8 @@ export class AgentRuntime {
       this.eventSeqByRun.delete(runId)
       this.eventTails.delete(runId)
       this.hostsByRun.delete(runId)
+      this.privateMemoryRuns.delete(runId)
+      this.memoryAdmissionRuns.delete(runId)
     }
   }
 
@@ -376,9 +396,11 @@ export class AgentRuntime {
   ): Promise<void> {
     const host = this.hostFor(work)
     const fastModel = this.fastModel ? executionModel(host, this.fastModel, work, this.rootModelBudget,
-      event => this.event(work, runId, event), 'fast-model') : undefined
+      event => this.event(work, runId, event), 'fast-model',undefined,()=>this.memoryAdmissionRuns.get(runId)) : undefined
     const contextBegan = performance.now()
     const context = await (host.loadInitialContext?.(work) ?? host.loadContext(work))
+    if (context.memory?.admission) this.memoryAdmissionRuns.set(runId,context.memory.admissionRequestVersion ?? 0)
+    if(context.memory || context.capabilities.includes('memory') || context.tools?.some(tool=>tool.action.startsWith('memory.'))) this.privateMemoryRuns.add(runId)
     await this.event(work, runId, {
       kind: 'input.loaded', stage: 'completed', visibility: 'internal',
       data: { triggerRef: work.triggerRef, durationMs: performance.now() - contextBegan, responseProfile: context.responseProfile ?? 'deep' },
@@ -387,6 +409,16 @@ export class AgentRuntime {
     const initialExecution = executionSnapshot(context, this.policy)
     const session = await this.restoreSession(work, { ...context, tools: initialExecution.tools }, initialExecution)
     if (!session) return
+    sessionRef.session = session
+    // A queued request can already have human revisions when it is first
+    // claimed. Admit those revisions before the first version-fenced step.
+    await signals.refresh()
+    if (signals.leaseLost()) throw signals.leaseLost()!
+    signals.lifecycle.signal.throwIfAborted()
+    for (const steer of signals.drainSteer()) if (session.request && !session.request.revisions.some(item=>item.id===steer.id)) {
+      session.request.revisions.push(steer)
+      delete session.request.contract
+    }
     if (context.harness) {
       const binding = { runtime: releaseVersions.runtime, harness: context.harness.hash, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
@@ -476,6 +508,7 @@ export class AgentRuntime {
       // Dynamic context stays outside conversational history; memory snapshots
       // are recorded separately with the model call for traceability.
       const liveContext = hop === 0 ? context : await this.hostFor(work).loadContext(work)
+      if (liveContext.memory?.admission) this.memoryAdmissionRuns.set(runId,liveContext.memory.admissionRequestVersion ?? 0)
       if (liveContext.responseProfile === 'fast' && !fastModel) throw new Error('automatic response routing requires a fast model configuration')
       const model = liveContext.responseProfile === 'fast' ? fastModel! : deepModel
       // The first deep context after an upgrade supplies the evidence skipped by the fast pass.
@@ -493,17 +526,22 @@ export class AgentRuntime {
       const modelTools = exposedTools(execution.tools, liveContext.executionSteps ?? [], liveContext.discoveredTools)
       session.promptContext = buildPromptContext(liveContext, this.policy, session.compactionEpoch, this.promptContractVersion, undefined, execution, this.promptCache)
       const preferenceItems = (session.promptContext.blocks ?? []).filter(block => block.trust !== 'platform' && block.trust !== 'product').map(contextItem)
-      const dynamicItems = [...preferenceItems, ...this.policy.dynamicContextItems(liveContext)]
+      const modelContext = (value: typeof liveContext) => value.memory
+        ? { ...value, memory: memorySnapshotBody(value.memory) } : value
+      const dynamicItems = [...preferenceItems, ...this.policy.dynamicContextItems(modelContext(liveContext))]
       const instructions = session.promptContext.systemInstructions
       if (budget.rediagnose && protocolCorrection && 'role' in protocolCorrection) protocolCorrection = { role: 'user', content: 'Repeated failure without new observations: diagnose the cause and change the approach before another attempt. ' + protocolCorrection.content }
       const currentEvidenceItems = evidenceItems(evidence(), modelTools.some(tool => tool.action === 'task.read_evidence'))
       const currentRequestItems = session.request ? requestItems(session.request,
         this.onDemandAttachments && modelTools.some(tool => tool.action === 'task.read_attachment')) : []
-      const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...(protocolCorrection ? [protocolCorrection] : [])]
+      const projectHistory = (items: readonly ModelItem[]) => projectMemoryHistory(items, liveContext.memory)
+      const restoredMessages = session.history.some(item => isMemorySummary(item) && invalidMemorySources(item, liveContext.memory))
+        ? this.policy.turnInputItems(liveContext, false) : []
+      const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...restoredMessages, ...(protocolCorrection ? [protocolCorrection] : [])]
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
       const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
-        items: observationItems([...history, ...supplementalItems], 'turn-context'), tools: modelTools, codeExecution })
+        items: observationItems(stripMemorySources([...projectHistory(history), ...supplementalItems]), 'turn-context'), tools: modelTools, codeExecution })
       const profile = modelProfile(model), reservedTokens = profile.maxOutputTokens + profile.maxThinkingTokens + 512
       const estimateOverhead = () => inputTokens(model, modelInputFor([])) + reservedTokens
       let overheadTokens = estimateOverhead()
@@ -512,7 +550,7 @@ export class AgentRuntime {
       let dynamicCount=dynamicItems.length
       const renderMemory = (snapshot: MemorySnapshot|undefined) => {
         const {memory:_memory,...withoutMemory}=liveContext
-        const items=[...preferenceItems,...this.policy.dynamicContextItems({...withoutMemory,...snapshot?{memory:snapshot}:{}})]
+        const items=[...preferenceItems,...this.policy.dynamicContextItems(modelContext({...withoutMemory,...snapshot?{memory:snapshot}:{}}))]
         supplementalItems.splice(0,dynamicCount,...items); dynamicCount=items.length
         memoryForModel=snapshot; overheadTokens=estimateOverhead()
       }
@@ -553,7 +591,7 @@ export class AgentRuntime {
       if (pendingCompaction?.ready) pendingCompaction = undefined
       let compacted = prepared
       if (!this.asyncCompaction || estimateTokens(session.history, model) + overheadTokens >= hardLimit) {
-        const recovered = await compactIfNeeded(session, instructions, model, this.compaction, signals.generationSignal(), overheadTokens)
+        const recovered = await compactIfNeeded(session, instructions, model, this.compaction, signals.generationSignal(), overheadTokens, false, projectHistory)
           .catch((error): CompactionOutcome => {
             if (!signals.hasSteer() && (!memoryForModel || !(error instanceof HardLimitExceededError))) throw error
             return { compacted: false }
@@ -588,11 +626,15 @@ export class AgentRuntime {
       const modelInput = modelInputFor(session.history), modelItems = modelInput.items
       const inputSha256 = createHash('sha256').update(JSON.stringify(modelInput)).digest('hex')
       const modelCallId = model.nextCallId?.() ?? `${work.id}:${work.fence}:model:${hop + 1}`
-      const sample = Number.parseInt(inputSha256.slice(0, 8), 16) / 0xffffffff < this.modelTrace.sampleRate
+      const sample = !this.privateMemoryRuns.has(runId) && Number.parseInt(inputSha256.slice(0, 8), 16) / 0xffffffff < this.modelTrace.sampleRate
       const tracePayload = (value: unknown) => this.modelTrace.redact ? this.modelTrace.redact(structuredClone(value)) : value
       const traceExpiresAt = new Date(Date.now() + this.modelTrace.retentionDays * 86_400_000).toISOString()
       await this.event(work, runId, { kind: 'model.started', stage: 'started', visibility: 'internal', data: {
-        hop: hop + 1, callId: modelCallId, ...(memoryForModel ? { memorySnapshotId: memoryForModel.id, memorySnapshot: memoryForModel }
+        hop: hop + 1, callId: modelCallId, ...(memoryForModel ? { memorySnapshotId: memoryForModel.id, memorySnapshot: {
+          status:memoryForModel.status,retrieval:memoryForModel.retrieval,budget:memoryForModel.budget,omitted:memoryForModel.omitted,
+          counts:{core:memoryForModel.core.length,directory:memoryForModel.directory.length,recalled:memoryForModel.recalled.length,strategies:memoryForModel.strategies.length},
+          diagnostics:memoryForModel.diagnostics,
+        } }
           : hadMemory ? { memoryOmittedForBudget: true } : {}),
         model: model.modelId ?? 'unknown', providerConfigSha256: model.configurationFingerprint ?? 'unknown', inputSha256,
         program: promptProgram(session.promptContext.manifest!, execution, model, inputSha256, liveContext.harness?.hash),
@@ -601,7 +643,7 @@ export class AgentRuntime {
         prompt: session.promptContext.manifest, promptFingerprint: session.promptContext.fingerprint,
         promptContractVersion: this.promptContractVersion, toolProtocol: 'ipython-v1', decision: protocolCorrection ? 'correction' : hop === 0 ? 'initial' : 'continue',
       } })
-      let turn
+      let turn: Awaited<ReturnType<ModelDriver['run']>>
       let parser = new CandidateBodyParser()
       const publishes = liveContext.publicTextAllowed && model.previewFormat === 'user-text'
       const preview = !publishes && liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
@@ -633,7 +675,7 @@ export class AgentRuntime {
               if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
                 && estimateTokens(session.history, model) + overheadTokens >= backgroundLimit) {
                 sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
-                  { ...this.compaction, softRatio: backgroundLimit / this.compaction.contextWindowTokens }, generationSignal, overheadTokens))
+                  { ...this.compaction, softRatio: backgroundLimit / this.compaction.contextWindowTokens }, generationSignal, overheadTokens, projectHistory))
               }
               providerBegan = performance.now()
               parser = new CandidateBodyParser()
@@ -671,7 +713,7 @@ export class AgentRuntime {
         }
         await this.event(work, runId, {
           kind: 'model.failed', stage: 'failed', visibility: 'internal',
-          data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: errorMessage(error) },
+          data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: publicFailure(error) },
         })
         if (isPublicTextSafetyFailure(error) && budget.consume('response_protocol','public text safety rejected')) {
           protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return only safe user-facing content. Do not include private reasoning or internal protocol.'}
@@ -696,7 +738,7 @@ export class AgentRuntime {
         kind: 'model.completed', stage: 'completed', visibility: 'internal',
         data: {
           hop: hop + 1, callId: modelCallId, model: turn.model ?? 'unknown', purpose: 'agent-turn',
-          usage: turn.usage, ...(turn.diagnostics ? { diagnostics: turn.diagnostics } : {}),
+          usage: turn.usage, ...(turn.diagnostics ? { diagnostics: publicModelDiagnostics(turn.diagnostics) } : {}),
           inputSha256, providerConfigSha256: model.configurationFingerprint ?? 'unknown', traceExpiresAt,
           ...(this.recordModelPayloads && sample ? { output: tracePayload(turn.output),
             ...(turn.finalCandidate === undefined ? {} : { finalCandidate: tracePayload(turn.finalCandidate) }) } : {}),
@@ -711,6 +753,15 @@ export class AgentRuntime {
       if (signals.lifecycle.signal.aborted) throw new RunCancelledError('lifecycle')
       if (signals.hasSteer()) continue
 
+      // Intermediate model output can carry memory observations forward too.
+      // Final public answers below retain their ordinary conversation identity.
+      const derivedSources = memoryDependencies([...projectHistory(session.history), {
+        role: 'user', content: '', memorySources: { version: 1,
+          sources: memoryForModel && [memoryForModel.core, memoryForModel.directory, memoryForModel.recalled, memoryForModel.strategies].some(items => items.length)
+            ? memoryForModel.sourceEpochs ?? [] : [] },
+      }])
+      const derivedMetadata = derivedSources.sources.length || derivedSources.unknown ? { memorySources: derivedSources } : {}
+      const derivedOutput = () => turn.output.map(item => ({ ...item, ...derivedMetadata }))
       const calls = turn.output.filter(
         (item): item is Extract<ModelItem, { type: 'function_call' }> => 'type' in item && item.type === 'function_call',
       )
@@ -746,7 +797,7 @@ export class AgentRuntime {
         } catch (error) {
           await this.event(work, runId, { kind: 'response.withheld', stage: 'failed', visibility: 'internal',
             data: { violation: errorMessage(error), candidateType: 'final_json' } })
-          session.history.push(...turn.output)
+          session.history.push(...derivedOutput())
           await this.hostFor(work).saveSession(work, session)
           // A failed self-check does not invalidate an independently valid answer body.
           let body: unknown
@@ -765,7 +816,7 @@ export class AgentRuntime {
       const conversationTurn = work.conversation?.internal === false && work.meta?.['conversationTurn'] === true
       if (assessment?.status === 'partial' && !conversationTurn && budget.consume('content_acceptance', JSON.stringify(assessment.gaps))) {
         await rememberCandidate(turn.text, liveContext, assessment.gaps)
-        session.history.push(...turn.output)
+        session.history.push(...derivedOutput())
         await this.hostFor(work).saveSession(work, session)
         await this.event(work, runId, { kind: 'response.withheld', stage: 'failed', visibility: 'internal',
           data: { violation: 'A partial candidate was returned while execution budget remains', gaps: assessment.gaps } })
@@ -896,7 +947,7 @@ export class AgentRuntime {
         if (finalPublicTextPartId) await this.hostFor(work).saveStep(work, { id: `public-text:${finalPublicTextPartId}`, kind: 'runtime.public_text_source',
           requestVersion: (session.request?.revisions.length ?? 0) + 1,
           input: { publicTextPartId: finalPublicTextPartId, publicTextBodyHash: createHash('sha256').update(turn.text.trim()).digest('hex') }, output: '{}', artifacts: [] })
-        session.history.push(...turn.output)
+        session.history.push(...stripMemorySources(turn.output))
         finalText = turn.text.trim()
         if (finalText) {
           const partIndex = nextStreamPartIndex++
@@ -911,7 +962,7 @@ export class AgentRuntime {
 
       for (const call of calls) call.stepId ??= `step:${randomUUID()}`
       executedSteps.push(...calls.map(call => ({ id: call.stepId!, kind: call.name, requestVersion: session.request!.revisions.length + 1, input: {}, artifacts: [] })))
-      session.history.push(...turn.output)
+      session.history.push(...derivedOutput())
       await this.hostFor(work).saveSession(work, session)
       const onlyReads = model.profile?.parallelTools !== false
         && calls.every(call => liveContext.tools?.some(tool => tool.name === call.name && tool.effect === 'read'))
@@ -931,7 +982,7 @@ export class AgentRuntime {
           const settled = await Promise.allSettled(batch.map(async call => {
             const part = nextStreamPartIndex
             nextStreamPartIndex += onlyReads ? 2 : 0
-            return this.executeCall(work, runId, session, call, signals, budget, part,
+            return this.executeCall(work, runId, session, { ...call, ...derivedMetadata }, signals, budget, part,
               execution.grants, artifacts, codeExecution, liveContext.tools)
           }))
           const failure = settled.find(result => result.status === 'rejected')
@@ -1120,13 +1171,15 @@ export class AgentRuntime {
             session.request.resourceChecks = appendResourceCheck(session.request.resourceChecks ?? [], action.idempotencyKey,
               result, session.request.revisions.length + 1)
           }
+          const memoryAction = action.action.startsWith('memory.')
           const toolResult = result.approval
             ? { status: 'awaiting-approval', approvalId: result.approval.id }
             : result.ok
-              ? { status: 'completed', value: JSON.parse(boundedToolOutput(result.value ?? null)) as unknown }
+              ? { status: 'completed', value: memoryAction ? memoryEventValue(result.value) : JSON.parse(boundedToolOutput(result.value ?? null)) as unknown }
               : result.executionState === 'unknown'
-                ? { status: 'unknown', error: result.error ?? 'host action outcome is unknown', reconciliationRequired: true }
-                : { status: 'failed', error: result.error ?? 'host action failed' }
+                ? { status: 'unknown', error: memoryAction ? 'Memory operation outcome is unknown; reconciliation is required'
+                  : result.error ?? 'host action outcome is unknown', reconciliationRequired: true }
+                : { status: 'failed', error: memoryAction ? 'Memory operation failed' : result.error ?? 'host action failed' }
           await this.event(work, runId, {
             kind: 'tool.completed', stage: result.ok || result.approval ? 'completed' : 'failed', visibility: 'user',
             data: { toolCallId, partIndex, result: toolResult, isError: !result.ok && !result.approval, requestVersion: (session.request?.revisions.length ?? 0)+1, fence:work.fence, attemptId:this.modelAttempts.get(runId) },
@@ -1162,7 +1215,8 @@ export class AgentRuntime {
         if (JSON.stringify(facts) !== '{}') budget.observe(facts)
       }
       session.history.push({ type: 'function_call_output', callId: call.callId,
-        output: call.name === 'ipython' ? output : boundedDirectToolOutput(receipts[0]!) })
+        output: call.name === 'ipython' ? output : boundedDirectToolOutput(receipts[0]!),
+        ...receiptMemoryMetadata(receipts, call.memorySources) })
       await this.event(work, runId, {
         kind: 'ipython.completed', stage: 'completed', visibility: 'internal',
         data: {
@@ -1184,6 +1238,10 @@ export class AgentRuntime {
           deliverables: draft['deliverables'], constraints: draft['constraints'], actions: draft['actions'], acceptance: draft['acceptance'],
         })
         await this.hostFor(work).saveSession(work, session)
+      }
+      if (receipts.some(receipt => isMemoryDeletionReceipt(receipt.action,receipt.result))) {
+        await this.hostFor(work).saveSession(work,session)
+        if (await this.hostFor(work).recoverWork?.(work,signals.lifecycle.signal)) return {nextStreamPartIndex,terminal:true}
       }
       const defer = execution.directives.find((directive) => directive.type === 'defer')
       // Custom HostPorts may bypass the control-plane contract check. Already
@@ -1226,6 +1284,7 @@ export class AgentRuntime {
         })
         session.history.push({
           type: 'function_call_output', callId: call.callId,
+          ...receiptMemoryMetadata(receipts, call.memorySources),
           output: boundedToolOutput({ approvalPending: error.approvalId, receipts }),
         })
         await this.hostFor(work).saveSession(work, session)
@@ -1235,6 +1294,7 @@ export class AgentRuntime {
       if (error instanceof KernelTimeoutError) {
         session.history.push({
           type: 'function_call_output', callId: call.callId,
+          ...receiptMemoryMetadata(receipts, call.memorySources),
           output: boundedToolOutput({ error: error.message, kernelRestarted: true, receipts }),
         })
         await this.event(work, runId, {
@@ -1246,6 +1306,7 @@ export class AgentRuntime {
       if (error instanceof KernelExecutionError) {
         session.history.push({
           type: 'function_call_output', callId: call.callId,
+          ...receiptMemoryMetadata(receipts, call.memorySources),
           output: boundedToolOutput({ error: error.message, receipts }),
         })
         await this.event(work, runId, {
@@ -1351,7 +1412,11 @@ export class AgentRuntime {
           if (!receipts?.length) throw new Error('unresolved direct tool receipt; reconcile before continuing')
           output = boundedDirectToolOutput(receipts[0]!, undefined, { recovered: true })
         }
-        session.history.push({ type: 'function_call_output', callId, output })
+        // Rendering deliberately omits provenance; recover the original trusted
+        // receipt proof from the ledger, never today's memory snapshot.
+        const sourceReceipts = await this.hostFor(work).recoverCell(work, call.stepId ?? callId)
+        session.history.push({ type: 'function_call_output', callId, output,
+          ...receiptMemoryMetadata(sourceReceipts ?? receipts ?? [], call.memorySources) })
       } else {
         receipts = await this.hostFor(work).recoverCell(work, call.stepId ?? callId)
         const tool = context.tools?.find(tool => tool.name === call.name)
@@ -1361,7 +1426,7 @@ export class AgentRuntime {
           receipts = [{ action: tool.action, idempotencyKey: key, result: await this.hostFor(work).executeAction(work,
             { ...identity, idempotencyKey: key, action: tool.action, args: JSON.parse(call.arguments) as Record<string, unknown> }) }]
         }
-        if (!receipts?.length) throw new Error('unresolved tool execution checkpoint; reconcile before continuing')
+        if (!receipts?.length) throw new AgentOSError('unresolved_checkpoint','unresolved tool execution checkpoint; reconcile before continuing')
         context.priorArtifacts = [...context.priorArtifacts ?? [], ...receipts.flatMap(({ result }) => result.ok ? result.artifacts ?? [] : [])]
         if (receipts.some(({ result }) => result.executionState === 'unknown')
           && receipts.some(({ result }) => result.directive?.type === 'defer')) {
@@ -1369,6 +1434,7 @@ export class AgentRuntime {
         }
         session.history.push({
           type: 'function_call_output', callId,
+          ...receiptMemoryMetadata(receipts, call.memorySources),
           output: call.name === 'ipython'
             ? boundedToolOutput({ recovered: true, localExecutionOutput: 'not_recovered', receipts }, undefined,
               execution.tools.some(tool => tool.action === 'observations.read') ? receiptReferences(receipts) : [])
@@ -1450,13 +1516,13 @@ export class AgentRuntime {
     if (signals.preemptRequested()) {
       if (session) {
         await this.hostFor(work).saveSession(work, session).catch((saveError: unknown) => {
-          log.error('preemption session save failed', { error: saveError })
+          log.error('preemption session save failed', { error: publicFailure(saveError) })
         })
       }
       await this.event(work, runId, {
         kind: 'run.preempted', stage: 'cancelled', visibility: 'internal', data: { lane: work.lane },
       }).catch((eventError: unknown) => {
-        log.error('preemption event failed', { error: eventError })
+        log.error('preemption event failed', { error: publicFailure(eventError) })
       })
       await this.hostFor(work).yieldWork(work)
       return
@@ -1465,7 +1531,7 @@ export class AgentRuntime {
     if (leaseLost) {
       // The lease is gone: another worker may already own the work. Log and
       // walk away — no completion call is valid without the lease.
-      log.warn('lease lost mid-run', { error: errorMessage(error) })
+      log.warn('lease lost mid-run', { error: publicFailure(error) })
       return
     }
     const cancelled = signals.lifecycle.signal.aborted
@@ -1479,12 +1545,12 @@ export class AgentRuntime {
       kind: cancelled ? 'run.cancelled' : 'run.failed', stage: status, visibility: 'user',
       data: {
         error: publicFailure(error),
-        ...(error instanceof ModelDriverError ? { modelDiagnostics: error.diagnostics } : {}),
+        ...(error instanceof ModelDriverError ? { modelDiagnostics: publicModelDiagnostics(error.diagnostics) } : {}),
         ...(error instanceof ModelBudgetExceededError ? { budgetLimit: error.diagnostics } : {}),
         ...(error instanceof HardLimitExceededError && error.diagnostics ? { compactionDiagnostics: error.diagnostics } : {}),
       },
     }).catch((eventError: unknown) => {
-      log.error('terminal event emission failed', { error: eventError })
+      log.error('terminal event emission failed', { error: publicFailure(eventError) })
     })
     const terminalReason = cancelled ? 'cancelled' : error instanceof HardLimitExceededError || error instanceof ModelContextBudgetError ? 'context_limit'
       : error instanceof ModelBudgetExceededError ? 'budget_limit' : isPublicTextPublicationFailure(error) ? 'execution_failed' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
@@ -1492,7 +1558,7 @@ export class AgentRuntime {
       status: 'blocked', verification: 'inconclusive', requestVersion: (session?.request?.revisions.length ?? 0) + 1,
       gaps: [cancelled ? 'Execution was cancelled' : publicFailure(error)],
     } }).catch((completeError: unknown) => {
-      log.error('terminal completion failed', { error: completeError })
+      log.error('terminal completion failed', { error: publicFailure(completeError) })
     })
   }
 }
@@ -1502,10 +1568,17 @@ function publicFailure(error: unknown): string {
   if (error instanceof HardLimitExceededError) return error.diagnostics?.reason === 'irreducible_context'
     ? 'Required input exceeds the model context limit. Reduce the request or attached material before retrying.'
     : 'The request and conversation exceed the model context limit after bounded recovery.'
-  if (error instanceof ModelDriverError) return error.diagnostics.kind === 'protocol'
-    ? 'Model returned an invalid response format' : `Model provider request failed${error.diagnostics.status ? ` (HTTP ${error.diagnostics.status})` : ''}`
+  if (error instanceof ModelDriverError) {
+    const diagnostics = publicModelDiagnostics(error.diagnostics)
+    return diagnostics['kind'] === 'protocol'
+      ? 'Model returned an invalid response format' : `Model provider request failed${diagnostics['status'] ? ` (HTTP ${diagnostics['status']})` : ''}`
+  }
   if (error instanceof AgentOSError) {
     switch (error.code) {
+      case 'unresolved_checkpoint': return 'unresolved tool execution checkpoint; reconcile before continuing'
+      case 'missing_trigger': return 'exactly one trigger message is required to capture the original request'
+      case 'read_wait_contract': return 'Read tools cannot request a terminal wait; declare a non-read effect for waiting tools'
+      case 'unknown_wait_contract': return 'Terminal wait contract requires a currently available tool with an explicit non-read effect'
       case 'budget_limit': return 'Model call, token, cost or execution-time budget exhausted'
       case 'content_acceptance_exhausted': return 'Content acceptance correction budget exhausted'
       case 'response_protocol_exhausted': return 'Final assessment protocol correction exhausted'
@@ -1515,5 +1588,5 @@ function publicFailure(error: unknown): string {
       case 'no_valid_response': return 'No valid answer was produced for the current request'
     }
   }
-  return errorMessage(error)
+  return 'Runtime operation failed'
 }

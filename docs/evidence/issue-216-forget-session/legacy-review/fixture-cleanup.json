@@ -1,0 +1,11 @@
+{
+  "source": "e10bcd68afe000c5515eeafa93159513062fd1c8",
+  "recordedAt": "2026-10-20T04:59:46.544093+00:00",
+  "testRunnerExitCode": 0,
+  "temporaryDirectoryCounts": {
+    "lingxios-forget-session-test-": 0,
+    "lingxios-forget-summary-test-": 0,
+    "lingxios-legacy-expiry-test-": 0
+  },
+  "scope": "Only prefixes created by the owning tests; no external runtime or database was stopped."
+}

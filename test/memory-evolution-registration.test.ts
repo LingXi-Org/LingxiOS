@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
+import { createHash } from 'node:crypto'
 import { createMemoryRuntime } from '../src/memory/runtime.js'
-import { freezeEvolutionBenchmark, type EvolutionBenchmark } from '../src/memory/evolution.js'
+import { freezeEvolutionBenchmark, executeEvolution, type EvolutionBenchmark } from '../src/memory/evolution.js'
 import type { MemoryOptions } from '../src/index.js'
-import type { SqlPool } from '../src/control-plane/pg-store.js'
+import { withTransaction, type SqlPool } from '../src/control-plane/pg-store.js'
 import { toolExecutor } from '../src/tools/executor.js'
 import { toolContractHash } from '../src/tools/contracts.js'
 import { memoryFixture, content, identity, scope } from './memory-fixture.js'
@@ -20,9 +21,9 @@ const evolutionOption = (benchmark = definition()) => ({ benchmarkId: benchmark.
 const candidate = { kind: 'strategy', scopeType: 'user', body: 'Inspect current receipts before retrying.' }
 const registry = /\bagent_evolution_benchmarks\b/
 
-async function fixture(evolution: NonNullable<MemoryOptions['evolution']> = evolutionOption()) {
+async function fixture(evolution: NonNullable<MemoryOptions['evolution']> = evolutionOption(), text?:string, grants=[scope]) {
   let revoked = false, rejectRegistry = false, registryQueries = 0, globalQueries = 0
-  const f = await memoryFixture({ evolution, resolveScopes: async () => revoked ? [] : [scope] })
+  const f = await memoryFixture({ evolution, resolveScopes: async () => revoked ? [] : grants })
   const query: SqlPool['query'] = async (sql, params) => {
     if (registry.test(sql)) { registryQueries++; assert.equal(rejectRegistry, false, 'unexpected benchmark registry access') }
     return f.pool.query(sql, params)
@@ -33,7 +34,7 @@ async function fixture(evolution: NonNullable<MemoryOptions['evolution']> = evol
   }
   const runtime = createMemoryRuntime(pool, f.options)
   const executor = toolExecutor(pool, runtime.tools)
-  const source = await f.source()
+  const source = await f.source({...text===undefined?{}:{text},scopes:grants})
   await f.db.query(`INSERT INTO lingxios.agent_results(id,work_id,request_version,fence,home_epoch,message)
     VALUES($1,$2,1,0,1,$3::jsonb)`, ['result:source', source.work.id, JSON.stringify(source.message)])
   await f.db.query('UPDATE lingxios.agent_work_items SET result_id=$2 WHERE id=$1', [source.work.id, 'result:source'])
@@ -193,4 +194,46 @@ for (const mode of ['cancel', 'deadline'] as const) it(`discards the shared acti
     assert.equal(await f.count('agent_evolution_benchmarks'), 0)
     assert.equal((await f.invoke('apply', f.input)).ok, true)
   } finally { await f.close() }
+})
+
+
+it('does not offer strategy candidates for a partial source page or roll back ordinary facts',async()=>{
+ const f=await fixture(evolutionOption(),'普通课程说明。'.repeat(2500)+'周六在图书馆做统计实验。')
+ try{
+  const loaded=await f.invoke('load',{})
+  assert.equal((loaded.value as {evolutionEnabled:boolean}).evolutionEnabled,false)
+  await assert.rejects(f.invoke('apply',f.input))
+  assert.equal(await f.count('agent_memories'),0)
+  const queries=f.registryQueries()
+  assert.equal((await f.invoke('apply',{...f.input,candidates:[]})).ok,true)
+  assert.equal(f.registryQueries(),queries)
+  assert.equal(await f.count('agent_evolution_benchmarks'),0)
+  assert.equal(await f.count('agent_memories'),1)
+  const progress=(await f.db.query<{status:string;segment_cursor:number}>('SELECT status,segment_cursor FROM lingxios.agent_memory_evidence_scopes')).rows[0]!
+  assert.equal(progress['status'],'pending');assert.ok(Number(progress['segment_cursor'])>0)
+ }finally{await f.close()}
+})
+
+it('evaluates only a complete accepted current scope while another scope remains pending',async()=>{
+ const other={...scope,scopeType:'course',scopeId:'course-one'}
+ const f=await fixture(evolutionOption(),undefined,[scope,other])
+ try{
+  assert.equal((await f.invoke('apply',f.input)).ok,true)
+  assert.deepEqual((await f.db.query('SELECT status FROM lingxios.agent_memory_evidence')).rows,[{status:'pending'}])
+  assert.equal(await f.count('agent_evolution_evaluations'),1)
+  await f.store.complete(f.job.id,f.job.fence,createHash('sha256').update(f.job.leaseToken).digest('hex'),{status:'completed'})
+  const evaluation=await f.store.claim('evaluation-worker');assert.equal(evaluation?.kind,'memory_evaluation')
+  const plan=await withTransaction(f.pool,db=>executeEvolution(db,evaluation!,[scope],'load',{}))
+  assert.ok(plan)
+  for(const status of ['pending','rejected']){
+   await f.db.query('UPDATE lingxios.agent_memory_evidence_scopes SET status=$1 WHERE scope_type=$2',[status,scope.scopeType])
+   await assert.rejects(withTransaction(f.pool,db=>executeEvolution(db,evaluation!,[scope],'load',{})),/completion.*revoked/)
+  }
+  await f.db.query("UPDATE lingxios.agent_memory_evidence_scopes SET status='processed' WHERE scope_type=$1",[scope.scopeType])
+  await f.db.query('UPDATE lingxios.agent_memory_evidence SET source_complete=false')
+  await assert.rejects(withTransaction(f.pool,db=>executeEvolution(db,evaluation!,[scope],'load',{})),/completion.*revoked/)
+  await f.db.query('UPDATE lingxios.agent_memory_evidence SET source_complete=true')
+  await f.api.forget(identity,scope)
+  await assert.rejects(withTransaction(f.pool,db=>executeEvolution(db,evaluation!,[scope],'load',{})),/revoked/)
+ }finally{await f.close()}
 })

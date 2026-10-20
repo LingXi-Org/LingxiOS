@@ -4,6 +4,8 @@ import { memoryFixture, scope } from './memory-fixture.js'
 import { drainMemoryCapture } from '../src/memory/capture.js'
 import { forgetMemoryScope } from '../src/memory/forget.js'
 import { withTransaction, type SqlPool } from '../src/control-plane/pg-store.js'
+import { createLingxiOS } from '../src/app/index.js'
+import { createLogger } from '../src/logging.js'
 
 it('durably captures only filtered committed sources, runs hooks without locks, and fences forgetting and cancellation', async () => {
   let release!: () => void, entered!: () => void
@@ -58,4 +60,29 @@ it('durably captures only filtered committed sources, runs hooks without locks, 
       assert.equal((await f.db.query('SELECT 1 FROM lingxios.agent_memory_evidence WHERE source_run_id=$1', [id])).rows.length, 0)
     }
   } finally { release?.(); await f.close() }
+})
+
+// Exercise the real app scheduler, durable capture queue, policy hook and JSON
+// logger together: an extension can embed private source text in its exception.
+it('background capture retries without leaking policy exception text to the actual logger sink', async () => {
+  const sentinel='PRIVATE_CAPTURE_SENTINEL_216',lines:string[]=[]
+  let calls=0
+  const f=await memoryFixture({writePolicy:()=>{calls++;throw new Error(sentinel)}})
+  const {work,message}=await f.source({id:'private-capture-error',capture:false})
+  await f.db.query(`INSERT INTO lingxios.agent_results(id,work_id,request_version,fence,home_epoch,message)
+    VALUES($1,$1,1,1,1,$2)`,[work.id,JSON.stringify(message)])
+  await f.db.query('UPDATE lingxios.agent_work_items SET result_id=$1 WHERE id=$1',[work.id])
+  await f.db.query('INSERT INTO lingxios.agent_memory_capture(result_id) VALUES($1)',[work.id])
+  const app=await createLingxiOS({database:f.pool,memory:f.options,performance:{notifications:false},
+    background:{minPollMs:10,maxPollMs:40,sweepIntervalMs:100},logger:createLogger({level:'debug',sink:line=>lines.push(line)})})
+  try {
+    const deadline=Date.now()+5000
+    while(!lines.some(line=>line.includes('Background operation failed')) && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,10))
+    assert.ok(calls>0,'the actual capture hook ran')
+    assert.ok(lines.some(line=>line.includes('Background operation failed')),'the scheduler failure reached the actual JSON sink')
+    assert.ok(!lines.join('\n').includes(sentinel),'neither message nor serialized stack includes the private exception')
+    const row=(await f.db.query<{attempts:number;completed_at:unknown;claim_token:unknown}>('SELECT attempts,completed_at,claim_token FROM lingxios.agent_memory_capture')).rows[0]!
+    assert.equal(row.attempts,1);assert.equal(row.completed_at,null);assert.equal(row.claim_token,null)
+    assert.equal((await f.db.query('SELECT 1 FROM lingxios.agent_memory_evidence')).rows.length,0)
+  } finally {await app.stop();await f.close()}
 })

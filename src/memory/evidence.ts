@@ -22,19 +22,34 @@ export async function prepareMemoryEvidence(database: SqlQueryable, work: Omit<W
   const currentScopes = scopes
   const input = JSON.stringify({ originalText: request.originalText,
     revisions: request.revisions.filter(item => !item.author || item.author.kind === 'human').map(item => ({ text: item.text,createdAt: item.createdAt })) })
-  let inputText = excerpt(input,16_000), assistantText = excerpt(message.body,16_000)
+  const segments: Array<{ role: 'user' | 'assistant'; start: number; end: number; body: string }> = []
+  let sourceComplete = true
   try {
-    for (const scope of currentScopes) {
-      const boundary = { scope,principalId:work.principalId,sourceWorkId:work.id,origin:'synthesized' as const }
-      inputText = await memoryWriteBody({...boundary,kind:'history_user',body:inputText},policy,signal)
-      if (assistantText.trim()) assistantText = await memoryWriteBody({...boundary,kind:'history_assistant',body:assistantText},policy,signal)
+    for (const [role,text] of [['user',input],['assistant',message.body]] as const) {
+      let offset=0
+      while (offset<text.length && segments.length<256) {
+        signal?.throwIfAborted()
+        const raw=excerpt(text.slice(offset),6000),end=offset+raw.length
+        if (raw.trim()) {
+          let body=raw
+          for (const scope of currentScopes) body=await memoryWriteBody({scope,principalId:work.principalId,sourceWorkId:work.id,
+            origin:'synthesized',kind:`history_${role}`,body},policy,signal)
+          if (Buffer.byteLength(body)>8000) throw new Error('memory evidence policy exceeds segment budget')
+          segments.push({role,start:offset,end,body})
+        }
+        offset=end
+      }
+      if (offset<text.length) sourceComplete=false
     }
   } catch (error) {
     if (error instanceof MemoryContentRejected) return
     throw error
   }
+  const inputText=excerpt(segments.filter(item=>item.role==='user').map(item=>item.body).join(''),16_000)
+  const assistantText=excerpt(segments.filter(item=>item.role==='assistant').map(item=>item.body).join(''),16_000)
   return { inputText, assistantText, inputHash: memoryDigest(input), sourceRef: request.sourceRef,
     inputTruncated: inputText.length < input.length, assistantTruncated: assistantText.length < message.body.length,
+    segments,sourceComplete,
     fingerprint: memoryDigest([request, message.body, message.envelope.requestVersion]) }
 }
 
@@ -50,11 +65,16 @@ export async function captureMemoryEvidence(database: SqlQueryable, work: Omit<W
   const currentScopes = epochs.map(({ tenantId, scopeType, scopeId }) => ({ tenantId, scopeType, scopeId }))
   const { inputText, assistantText } = evidence
   await database.query(`INSERT INTO lingxios.agent_memory_evidence
-    (source_run_id,tenant_id,agent_id,principal_id,session_id,request_version,source_ref,input_sha256,input_text,assistant_text,input_truncated,assistant_truncated,scopes,scope_epochs,search_text)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15) ON CONFLICT(source_run_id) DO NOTHING`,
+    (source_run_id,tenant_id,agent_id,principal_id,session_id,request_version,source_ref,input_sha256,input_text,assistant_text,input_truncated,assistant_truncated,scopes,scope_epochs,search_text,source_complete)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15,$16) ON CONFLICT(source_run_id) DO NOTHING`,
     [work.id,work.tenantId,work.agentId,work.principalId,work.sessionId,message.envelope.requestVersion,evidence.sourceRef,evidence.inputHash,
       inputText,assistantText,evidence.inputTruncated,evidence.assistantTruncated,JSON.stringify(currentScopes),JSON.stringify(epochs),
-      memorySearchText(`${inputText} ${assistantText}`)])
+      memorySearchText(`${inputText} ${assistantText}`),evidence.sourceComplete])
+  for (const [index,segment] of evidence.segments.entries()) await database.query(`INSERT INTO lingxios.agent_memory_evidence_segments
+    (source_run_id,segment_no,role,start_offset,end_offset,body)
+    SELECT $1,$2,$3,$4,$5,$6 WHERE EXISTS(SELECT 1 FROM lingxios.agent_memory_evidence
+      WHERE source_run_id=$1 AND input_sha256=$7 AND request_version=$8 AND status='pending') ON CONFLICT DO NOTHING`,
+    [work.id,index,segment.role,segment.start,segment.end,segment.body,evidence.inputHash,message.envelope.requestVersion])
   for (const epoch of epochs) await database.query(`INSERT INTO lingxios.agent_memory_evidence_scopes
     (tenant_id,agent_id,principal_id,scope_type,scope_id,epoch,source_run_id)
     SELECT $1,$2,$3,$4,$5,$6,$7 WHERE EXISTS(SELECT 1 FROM lingxios.agent_memory_evidence WHERE source_run_id=$7 AND status='pending')
@@ -67,7 +87,7 @@ export async function scheduleMemoryReflection(database: SqlPool, options: Memor
 }
 export async function scheduleMemoryReflectionInTransaction(client: SqlQueryable, options: MemoryOptions, manual?: { identity: MemoryIdentity; scope: MemoryScope }): Promise<{ jobIds: string[] }> {
   const { afterInteractions,idleMs } = memorySettings(options)
-    if (manual) await authorizeScope(options,manual.identity,client,manual.scope)
+    if (manual) await authorizeScope(options,manual.identity,client,manual.scope,'write')
     const jobIds: string[] = manual ? (await client.query(`SELECT DISTINCT w.id FROM lingxios.agent_work_items w
       JOIN lingxios.agent_memory_evidence_scopes s ON s.job_id=w.id
       WHERE s.tenant_id=$1 AND s.agent_id=$2 AND s.principal_id=$3 AND s.scope_type=$4 AND s.scope_id=$5 AND s.status='pending'
@@ -80,7 +100,7 @@ export async function scheduleMemoryReflectionInTransaction(client: SqlQueryable
         AND w.status IN ('succeeded','partial') AND w.cancel_requested_at IS NULL AND e.request_version=jsonb_array_length(w.steer_inputs)+1
         AND ($3::text IS NULL OR (s.tenant_id=$3 AND s.agent_id=$4 AND s.principal_id=$5 AND s.scope_type=$6 AND s.scope_id=$7))
       GROUP BY s.tenant_id,s.agent_id,s.principal_id,s.scope_type,s.scope_id,s.epoch
-      HAVING $3::text IS NOT NULL OR COUNT(*) >= $1 OR MAX(s.created_at)+$2::bigint*INTERVAL '1 millisecond'<=NOW()
+      HAVING $3::text IS NOT NULL OR COUNT(*) >= $1 OR MAX(s.segment_cursor)>0 OR MAX(s.created_at)+$2::bigint*INTERVAL '1 millisecond'<=NOW()
         OR MIN(s.created_at)<=(SELECT MAX(j.created_at) FROM lingxios.agent_work_items j
           WHERE j.kind='memory_synthesis' AND j.status IN ('succeeded','partial') AND j.tenant_id=s.tenant_id
             AND j.agent_id=s.agent_id AND j.principal_id=s.principal_id AND j.meta->>'scopeType'=s.scope_type
@@ -96,7 +116,7 @@ export async function scheduleMemoryReflectionInTransaction(client: SqlQueryable
       const active = (await client.query(`SELECT id FROM lingxios.agent_work_items WHERE kind='memory_synthesis' AND meta->>'reflectionKey'=$1
         AND (status IN ('queued','leased') OR (status='failed' AND attempts<3 AND cancel_requested_at IS NULL)) LIMIT 1`,[reflectionKey])).rows[0]
       if (active) { if (manual) jobIds.push(String(active['id'])); continue }
-      const candidates = (await client.query(`SELECT w.*,e.source_run_id FROM lingxios.agent_memory_evidence_scopes s
+      const candidates = (await client.query(`SELECT w.*,e.source_run_id,s.segment_cursor FROM lingxios.agent_memory_evidence_scopes s
         JOIN lingxios.agent_work_items w ON w.id=s.source_run_id JOIN lingxios.agent_memory_evidence e ON e.source_run_id=w.id
         WHERE s.tenant_id=$1 AND s.agent_id=$2 AND s.principal_id=$3 AND s.scope_type=$4 AND s.scope_id=$5 AND s.epoch=$6
           AND s.status='pending' AND s.job_id IS NULL AND e.status IN ('pending','processed') AND w.status IN ('succeeded','partial')
@@ -105,7 +125,7 @@ export async function scheduleMemoryReflectionInTransaction(client: SqlQueryable
         [scope.tenantId,bucket['agent_id'],bucket['principal_id'],scope.scopeType,scope.scopeId,epoch!.epoch])).rows
       const sourceRunIds: string[] = []
       for (const source of candidates) {
-        const scopes = await authorizedScopes(options,sourceIdentity(source),client).catch(error => {
+        const scopes = await authorizedScopes(options,sourceIdentity(source),client,undefined,'capture').catch(error => {
           if (error instanceof NoEffectError && error.code === 'forbidden') return []
           throw error
         })
@@ -114,7 +134,7 @@ export async function scheduleMemoryReflectionInTransaction(client: SqlQueryable
           WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3 AND source_run_id=$4`,[scope.tenantId,scope.scopeType,scope.scopeId,source['id']])
       }
       if (!sourceRunIds.length) continue
-      const id = `memory-synthesis:${memoryDigest([reflectionKey,sourceRunIds])}`
+      const id = `memory-synthesis:${memoryDigest([reflectionKey,sourceRunIds,candidates.map(row=>[row['id'],row['segment_cursor']])])}`
       await client.query(`INSERT INTO lingxios.agent_work_items(id,tenant_id,agent_id,principal_id,session_id,kind,lane,trigger_ref,meta)
         VALUES($1,$2,$3,$4,$5,'memory_synthesis','background',$6,$7::jsonb) ON CONFLICT(id) DO NOTHING`,
         [id,scope.tenantId,bucket['agent_id'],bucket['principal_id'],`memory:${reflectionKey}`,sourceRunIds[0],

@@ -1,0 +1,13 @@
+# Admission review follow-up
+
+Independent review of cb6f7f6 found four P2 issues: transaction-time deadline checking, missing request-version binding, lost typed timeout classification at a publication gate, and unlocked issued-call settlement. Original independent receipts remain untouched in `/tmp/issue216-admission-independent-cb6`.
+
+The failure model `docs/issue-216-admission-review-failure-model.md` preceded follow-up implementation. Author tests against unchanged cb6 source reproduced 5 failures and one passing user-cancel control (`author-red.txt`); the real PostgreSQL settlement probe also failed (`settlement-red.json`). After implementation, two stronger request-version controls were additionally checked against the frozen cb6 archive, both failing (`request-controls-baseline.txt`). These two controls were added during review, not presented as part of the initial six-case red.
+
+Exact follow-up source build exited0. `node --test --test-concurrency=1 dist/test/memory-admission-review.test.js dist/test/memory-model-admission.test.js dist/test/memory-context-budget.test.js dist/test/model-execution.test.js dist/test/model-fallback.test.js` passed30/30 (`final-green.txt`). This includes original gate/quota/retry/cancel/no-memory controls and new request loading, refreshed-context/old-call, actual clock and typed timeout cases.
+
+Additional affected public controls on the same source passed6/6 (`public-controls.txt`): `node --test --test-concurrency=1 dist/test/optional-memory-context.test.js dist/test/child-budget-admission.test.js`. They preserve strict mandatory authorization/explicit memory operations, optional memory degradation, and shared child/root reservation and settlement limits.
+
+The dedicated real PostgreSQL16.15 probe used an existing local image, network none, a private Unix socket/tmpfs and poolmax4; no credentials, production or shared database was used. Four controls passed (`settlement-green.json`): final-first prevents settlement before admission commit; record-first is observed waiting on the call lock and then rejects the settled call; parallel normal reserve/record completes; a lease that expires during admission is rejected. Both original-red and green containers were removed. Source SHA256 values are in the green receipt. Reproduction scripts are `/tmp/issue216-admission-author-followup/{settlement-red,settlement-green}.mjs`; original red remains preserved.
+
+This is local candidate evidence. The final independent review and root's combined PR34/history/privacy tests remain required. No publication, production migration or external provider request occurred.

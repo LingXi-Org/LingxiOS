@@ -23,6 +23,8 @@ import { readArtifact, persistArtifacts, stageArtifact, inspectArtifacts, create
 import { resolve } from 'node:path'
 import { snapshotAttachments, type RequestAttachment } from '../context/attachments.js'
 import { recoverWait } from './recover-wait.js'
+import { recoverMemoryDeletion } from './recover-memory-deletion.js'
+import { MEMORY_DELETION_CONFIRMATION } from '../memory/confirmation.js'
 import { continueInput, type InputContinuation } from './input.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { ConfigError } from '../errors.js'
@@ -228,8 +230,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       }
     } }
   const memory = options.memory ? createMemoryRuntime(options.database, options.memory, options.modelBudget) : undefined
-  async function optionalMemoryContext(work: Omit<WorkItem,'leaseToken'>, signal?: AbortSignal, profile?: 'fast' | 'deep') {
-    try { return await memory!.context(work,signal,profile) }
+  async function optionalMemoryContext(work: Omit<WorkItem,'leaseToken'>, signal?: AbortSignal, profile?: 'fast' | 'deep', requestVersion?: number, legacyMemoryProof?: boolean) {
+    try { return await memory!.context(work,signal,profile,requestVersion,legacyMemoryProof) }
     catch (error) {
       signal?.throwIfAborted()
       const failure = classifyToolFailure(error,'authorization')
@@ -301,7 +303,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         ...memory?[{name:'memory',methods:memory.tools.filter(tool=>tool.action.startsWith('memory.')).map(tool=>tool.action.split('.')[1]!)}]:[]]
     } },
     contextProvider: { ...(contextProvider.authorizeRequest ? { authorizeRequest: contextProvider.authorizeRequest.bind(contextProvider) } : {}),
-      async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal, loadOptions?: { responseProfile: import('../runtime/response-policy.js').ResponseProfile }) {
+      async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal, loadOptions?: { responseProfile: import('../runtime/response-policy.js').ResponseProfile; requestVersion?: number; legacyMemoryProof?: boolean }) {
       if (behavior && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) && work.meta?.['harnessHash'] !== behavior.hash) throw new Error('harness version mismatch; resume with the pinned deployment or drain the old run')
       const context = { responseProfile: loadOptions?.responseProfile ?? 'deep',
         ...await contextProvider.loadContext(work, signal, loadOptions), ...(behavior ? { harness: structuredClone(behavior) } : {}) }
@@ -325,7 +327,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       const previewVersion = (options.realtime?.allowDraft || options.realtime?.allowPublicText) ? Number((await options.database.query(
         'SELECT jsonb_array_length(steer_inputs)+1 AS version FROM lingxios.agent_work_items WHERE id=$1', [work.id])).rows[0]?.['version']) : 1
       return { ...context, publicTextAllowed: await publicText.allowed(work, previewVersion), previewAllowed: await realtime.allowed(work, previewVersion), ...(discoveredTools ? { discoveredTools } : {}),
-        ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await optionalMemoryContext(work, signal, context.responseProfile) } : {}) }
+        ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await optionalMemoryContext(work, signal, context.responseProfile,loadOptions?.requestVersion,loadOptions?.legacyMemoryProof) } : {}) }
     } },
     ...(options.delivery ? { delivery: options.delivery } : {}),
   }
@@ -427,7 +429,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     logger, metrics,
     work: new PgWorkStore(options.database), sessions,
     events: new PgEventStore(options.database, Boolean(integration?.delivery), publicText.append), actions: new PgActionLedger(options.database),
-    modelBudgets: new PgModelBudgetStore(options.database), modelBudget,
+    modelBudgets: new PgModelBudgetStore(options.database,memory?.admit), modelBudget,
     artifactStager: {
       stage: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal, options.objects),
       stream: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal, options.objects),
@@ -456,7 +458,10 @@ export async function createLingxiOS(options: LingxiOSOptions) {
               FOR UPDATE`, [work.id, work.fence, message.envelope.requestVersion])
           if (!current.rows.length) throw new Error('request changed or lease expired before message persistence')
           await authorizeConversationWork(client, work, work.conversation?.internal ? 'execute' : 'speak', true)
-          if (presentations.length) {
+          // A content-free deletion acknowledgment must never reattach earlier
+          // rendered content. Matching this text only suppresses attachments;
+          // it does not authorize a receipt or bypass any completion check.
+          if (presentations.length && message.body !== MEMORY_DELETION_CONFIRMATION) {
             const rendered = await client.query(`SELECT i.intent,r.result FROM lingxios.agent_action_intents i JOIN lingxios.agent_action_ledger r USING(idempotency_key)
               WHERE i.intent->>'workId'=$1 AND (i.intent->>'requestVersion')::integer=$2 AND i.intent->'action'->>'action'='presentation.render'
                 AND r.result->>'ok'='true' ORDER BY i.recorded_at,i.idempotency_key LIMIT 17`, [work.id, message.envelope.requestVersion])
@@ -563,6 +568,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     const db = deadlinePool(options.database, signal)
     const work = { ...leased, leaseToken: proof.leaseToken }
     const recovery = (async () => {
+      if (options.memory && await recoverMemoryDeletion(db,service,work,options.memory,signal)) return true
       await service.reconcilePending(work, signal)
       signal.throwIfAborted()
       await executeDecidedApprovals(db, service, work, signal)

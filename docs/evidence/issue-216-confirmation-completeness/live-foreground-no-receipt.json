@@ -1,0 +1,83 @@
+{
+  "source": "31449084232cb26c9ef1d15cd38e414e2a10cb51",
+  "providerHost": "api.siliconflow.cn",
+  "model": "zai-org/GLM-5.2",
+  "productionRequests": 0,
+  "cases": [
+    {
+      "name": "committed-deletion",
+      "passed": false,
+      "receipts": 0,
+      "results": 0,
+      "remaining": 1,
+      "confirmationMarkerCount": 0
+    }
+  ],
+  "requests": [
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 7372
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 5049
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 1353
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 1253
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 1291
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 1052
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 1056
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 1309
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 960
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 1064
+    },
+    {
+      "phase": "deletion",
+      "status": 200,
+      "elapsedMs": 1045
+    }
+  ],
+  "passed": false,
+  "failure": {
+    "type": "AssertionError",
+    "code": "ERR_ASSERTION",
+    "stage": "deletion",
+    "stackLocation": [
+      "",
+      "0 !== 1"
+    ]
+  }
+}

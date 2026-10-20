@@ -38,7 +38,15 @@ export function parseIPythonArguments(raw: string): { code: string } {
  */
 export function boundedToolOutput(value: unknown, maxChars: number = MAX_TOOL_OUTPUT_CHARS, observations: ObservationRef[] = []): string {
   if (!Number.isSafeInteger(maxChars) || maxChars < 128) throw new Error('tool output budget must be at least 128 characters')
-  const serialized = JSON.stringify(value) ?? 'null'
+  // Native provenance belongs to the durable receipt, never the displayed or
+  // model-facing rendering of that receipt. User business values stay intact.
+  const cleanReceipt = (receipt: { result: HostActionResult }) => {
+    const { memorySources: _sources, ...result } = receipt.result
+    return { ...receipt, result }
+  }
+  const rendered = value && typeof value === 'object' && 'receipts' in value
+    && Array.isArray(value.receipts) ? { ...value, receipts: value.receipts.map(cleanReceipt) } : value
+  const serialized = JSON.stringify(rendered) ?? 'null'
   if (serialized.length <= maxChars) return serialized
   const references: ObservationRef[] = []
   for (const ref of observations) {
@@ -55,7 +63,7 @@ export function boundedToolOutput(value: unknown, maxChars: number = MAX_TOOL_OU
 /** Keep the canonical receipt outside any truncated preview and the business value. */
 export function boundedDirectToolOutput(receipt: { action: string; idempotencyKey: string; result: HostActionResult },
   maxChars: number = MAX_TOOL_OUTPUT_CHARS, recovery?: { recovered: true }): string {
-  const { evidence: _evidence, ...result } = receipt.result
+  const { evidence: _evidence, memorySources: _sources, ...result } = receipt.result
   const observed = result.ok && result.value !== undefined && result.approval === undefined && result.directive === undefined && result.executionState !== 'unknown'
   const metadata = { receipt: { action: receipt.action, idempotencyKey: receipt.idempotencyKey,
     ...(observed ? { sha256: observationRef(receipt.idempotencyKey, JSON.parse(JSON.stringify(result.value))).sha256 } : {}) }, ...recovery }

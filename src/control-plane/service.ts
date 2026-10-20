@@ -16,6 +16,7 @@ import { appendReadEvidence } from '../context/research-evidence.js'
 import { appendResourceCheck } from '../context/resource-checks.js'
 import { createTaskContract } from '../context/task-contract.js'
 import { snapshotAttachments } from '../context/attachments.js'
+import { isMemorySummary, SUMMARY_PREFIX } from '../memory/history.js'
 /**
  * ControlPlaneService — transport-independent control-plane logic.
  *
@@ -33,6 +34,7 @@ import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { snapshotEvidence } from '../context/evidence.js'
 import { createResponseEnvelope, snapshotArtifacts } from '../outcome/envelope.js'
+import { MEMORY_DELETION_CONFIRMATION } from '../memory/confirmation.js'
 import { parseFinalCandidate } from '../outcome/assessment.js'
 import { businessActionDeliveryGap, requiresReview, validateCompletion } from '../outcome/completion.js'
 import type { KernelArtifact } from '../protocol/types.js'
@@ -459,6 +461,11 @@ export class ControlPlaneService {
       })()).then(async snapshot => ({ ...snapshot, session: await this.authorizeSession(work, snapshot.session) }))
     const [context, snapshot, dependencies] = await Promise.all([
       snapshotPromise.then(snapshot => this.deps.contextProvider.loadContext(work, signal, {
+        requestVersion: snapshot.requestVersion,
+        legacyMemoryProof: !!snapshot.session && (
+          (!!snapshot.session.summary && !snapshot.session.history.some(item => isMemorySummary(item) && 'role' in item && item.content === SUMMARY_PREFIX + snapshot.session!.summary && item.memorySources))
+          || snapshot.session.history.some(item => !item.memorySources && 'type' in item
+            && item.type === 'function_call' && item.name === 'ipython')),
         responseProfile: snapshot.session?.request && [snapshot.session.request.attachments,
           ...[...snapshot.session.request.inheritedRevisions ?? [], ...snapshot.session.request.revisions]
             .map(revision => revision.attachments ?? [])].some(attachments => attachments.length)
@@ -818,7 +825,12 @@ export class ControlPlaneService {
   // Final messages: stream-integrity verification
   // -------------------------------------------------------------------------
 
-  async commitResult(proof: LeaseProof, message: AssistantMessage): Promise<void> {
+  /** Third argument is server-only; never exposed by HostPort or HTTP handlers. */
+  async commitResult(proof: LeaseProof, message: AssistantMessage, internal?: { memoryDeletionConfirmation: true }): Promise<void> {
+    if (internal && (message.body !== MEMORY_DELETION_CONFIRMATION || message.envelope.goalOutcome.status !== 'partial'
+      || message.envelope.artifacts.length || message.envelope.assessment || message.publicTextPartId)) {
+      throw new ControlPlaneError(409, 'invalid receipt-only confirmation')
+    }
     if (!await this.deps.work.getLeased(proof.id, proof.fence, hashToken(proof.leaseToken))) {
       const issued = await this.deps.work.getAttempt(proof.id, proof.fence, hashToken(proof.leaseToken))
       if (issued) {
@@ -897,7 +909,8 @@ export class ControlPlaneService {
         }
         if ([...latest.values()].some(status => status !== 'pass')) throw new Error('known resource postconditions remain unresolved')
       }
-      expected = createResponseEnvelope(message.body, message.envelope.goalOutcome, evidence, artifacts, session.request.contract, session.request.resourceChecks, assessment)
+      expected = createResponseEnvelope(message.body, message.envelope.goalOutcome, evidence, artifacts,
+        internal ? undefined : session.request.contract, internal ? undefined : session.request.resourceChecks, assessment)
     } catch {
       throw new ControlPlaneError(409, 'response does not match its evidence or artifact records')
     }

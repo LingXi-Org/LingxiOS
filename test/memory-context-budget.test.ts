@@ -10,6 +10,8 @@ it('bounds core concurrency, defers optional recall and rejects revoked scopes o
   const scopes = [1, 2, 3].map(n => ({ tenantId: 't', scopeType: 'project', scopeId: String(n) }))
   let running = 0, peak = 0, mode: 'normal' | 'recall_timeout' | 'core_timeout' | 'error' | 'revoked' = 'normal', resolutions = 0
   const query: SqlPool['query'] = async sql => {
+    if (sql.startsWith('SELECT fence,meta,') || sql.startsWith('SELECT work.fence,')) return { rows: [{ fence: work.fence, meta: {}, request_version: 1 }], rowCount: 1 }
+    if (sql.startsWith('SELECT epoch,forgotten_at FROM lingxios.agent_memory_scopes')) return { rows: [{ epoch: 0, forgotten_at: null }], rowCount: 1 }
     if (sql.includes('jsonb_agg(core)')) {
       peak = Math.max(peak, ++running)
       await new Promise(resolve => setTimeout(resolve, mode === 'core_timeout' ? 120 : 5))
