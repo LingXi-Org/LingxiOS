@@ -27,6 +27,8 @@ export interface ModelTurnResult {
 }
 
 export interface ModelTurnRequest {
+  /** Runtime-owned final gate; queue wrappers run it after obtaining capacity. */
+  beforeProvider?: (() => void | Promise<void>) | undefined
   admission?: import('../resource-quota.js').ResourcePriority
   purpose?: Extract<ModelPurpose, 'execute' | 'approval-explanation'>
   tools?: readonly import('../tools/catalog.js').ToolDefinition[]
@@ -44,6 +46,7 @@ export interface ModelTurnRequest {
 }
 
 export interface StructuredCallRequest {
+  beforeProvider?: (() => void | Promise<void>) | undefined
   admission?: import('../resource-quota.js').ResourcePriority
   purpose?: Extract<ModelPurpose, 'content-review' | 'memory-synthesis' | 'approval-explanation'>
   instructions: string
@@ -60,6 +63,7 @@ export interface StructuredCallResult {
 }
 
 export interface CompactionRequest {
+  beforeProvider?: (() => void | Promise<void>) | undefined
   /** Only optional candidates may be interrupted to admit foreground work. */
   interruptible?: boolean
   admission?: import('../resource-quota.js').ResourcePriority
@@ -77,6 +81,8 @@ export interface CompactionResult {
 }
 
 export interface ModelDriver {
+  /** This wrapper consumes beforeProvider after its last internal capacity wait. */
+  deferredAdmission?: true
   readonly recovery?: import('./recovery.js').ModelRecoveryPolicy
   /** Only declare an independent user channel, or a JSON candidate with a top-level body string. */
   readonly previewFormat?: 'candidate-json' | 'user-text'

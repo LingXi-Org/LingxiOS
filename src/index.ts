@@ -61,8 +61,9 @@ export type { ModelCallObservation, ModelCallObserver } from './runtime/runtime.
 export type { CapabilityGrant, CodeExecutionMode, ContextMessage, ModelItem, PromptContext, TurnContext, WorkItem } from './protocol/types.js'
 export type { MemoryIdentity, MemoryScope, MemoryLayer, MemorySource, MemoryDocument, MemoryEntry, MemoryPage, MemoryListQuery,
   MemorySearchQuery, MemoryHit, MemoryHistoryHit, MemorySearchResult, MemoryContent, MemoryChange, MemoryApplyInput,
-  MemoryApplyResult, MemoryVersion, MemoryRestoreInput, MemoryDiagnostics, MemorySnapshot } from './memory/types.js'
+  MemoryScopeGrant, MemoryAllocation, MemoryApplyResult, MemoryVersion, MemoryRestoreInput, MemoryDiagnostics, MemorySnapshot } from './memory/types.js'
 export type { MemoryAPI } from './memory/service.js'
+export type { MemoryMigrationResult } from './memory/migration.js'
 export type { MemoryOptions } from './memory/runtime.js'
 export type { MemoryWritePolicy, MemoryWriteInput, MemoryWriteDecision } from './memory/policy.js'
 export type { EvolutionBenchmark, EvolutionCase, EvolutionCandidate, EvolutionReport, EvolutionReference } from './memory/evolution.js'

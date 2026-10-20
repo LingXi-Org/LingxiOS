@@ -1,0 +1,34 @@
+(node:1188307) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:1188333) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: pages long Chinese source material completely and durably fences page replay and forgetting
+ok 1 - pages long Chinese source material completely and durably fences page replay and forgetting
+  ---
+  duration_ms: 6064.986312
+  type: 'test'
+  ...
+# Subtest: reserves context space for relevant details and records traceable oversized core fragments
+ok 2 - reserves context space for relevant details and records traceable oversized core fragments
+  ---
+  duration_ms: 4179.02232
+  type: 'test'
+  ...
+# (node:1188334) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: continues unseen segments after rejected proposals and terminates without retrying rejected windows
+ok 3 - continues unseen segments after rejected proposals and terminates without retrying rejected windows
+  ---
+  duration_ms: 7532.433994
+  type: 'test'
+  ...
+1..3
+# tests 3
+# suites 0
+# pass 3
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 10587.934425

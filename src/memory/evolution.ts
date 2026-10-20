@@ -4,7 +4,7 @@ import type { SqlQueryable } from '../control-plane/pg-store.js'
 import type { WorkItem } from '../protocol/types.js'
 import type { MemoryScope } from './store.js'
 import { memoryWriteBody, type MemoryWritePolicy } from './policy.js'
-import { lockMemoryScopes, sameMemoryEpochs, type MemoryEpoch } from './forget.js'
+import { currentMemoryScopes, lockMemoryScopes, sameMemoryEpochs, type MemoryEpoch } from './forget.js'
 import { memorySearchText } from './text.js'
 
 export interface EvolutionCandidate { kind: 'experience' | 'skill' | 'strategy'; scopeType: string; body: string }
@@ -30,6 +30,25 @@ const identifier = (value: unknown): value is string => typeof value === 'string
 const candidateOf = (row: Record<string, unknown>): EvolutionCandidate => ({ kind: row['kind'] as EvolutionCandidate['kind'], scopeType: String(row['scope_type']), body: String(row['body']) })
 const referenceOf = (row: Record<string, unknown>): EvolutionReference => ({ tenantId: String(row['tenant_id']), id: String(row['id']),
   version: Number(row['version']), scopeType: String(row['scope_type']), scopeId: String(row['scope_id']) })
+
+async function completeSourceScopes(database: SqlQueryable, source: Record<string,unknown>, epochs: MemoryEpoch[]) {
+  if (source['status'] === 'superseded') return []
+  const recorded = source['scopes'] as MemoryScope[]
+  const current = (await currentMemoryScopes(database,epochs,String(source['source_run_id']))).filter(scope =>
+    recorded.some(item => item.tenantId === scope.tenantId && item.scopeType === scope.scopeType && item.scopeId === scope.scopeId)
+    && sameMemoryEpochs([scope],source['scope_epochs'] as MemoryEpoch[] ?? []))
+  const progress = (await database.query(`SELECT * FROM lingxios.agent_memory_evidence_scopes WHERE source_run_id=$1`,
+    [source['source_run_id']])).rows
+  const count = Number((await database.query(`SELECT COUNT(*)::integer AS count FROM lingxios.agent_memory_evidence_segments WHERE source_run_id=$1`,
+    [source['source_run_id']])).rows[0]?.['count'] ?? 0)
+  if (count ? source['source_complete'] !== true : source['input_truncated'] || source['assistant_truncated']) return []
+  if (progress.length) return current.filter(scope => progress.some(row => row['tenant_id'] === scope.tenantId
+    && row['scope_type'] === scope.scopeType && row['scope_id'] === scope.scopeId
+    && Number(row['epoch']) === scope.epoch && row['status'] === 'processed' && Number(row['segment_cursor']) >= count))
+  // Older complete unsegmented evidence has no scoped progress rows. Never
+  // promote a truncated prefix or a segmented source through this fallback.
+  return source['status'] === 'processed' && !count ? current : []
+}
 
 /** Trusted evaluation fixtures are frozen before proposal. No model-visible tool can replace them. */
 export async function freezeEvolutionBenchmark(database: SqlQueryable, tenantId: string, benchmark: EvolutionBenchmark) {
@@ -73,7 +92,7 @@ export async function proposeEvolution(database: SqlQueryable, work: Omit<WorkIt
     WHERE job.id=$1 AND job.fence=$2 AND job.kind='memory_synthesis' AND job.status='leased'
       AND job.lease_expires_at>NOW() AND job.cancel_requested_at IS NULL
       AND job.tenant_id=e.tenant_id AND job.agent_id=e.agent_id AND job.principal_id=e.principal_id
-      AND e.tenant_id=$3 AND e.agent_id=$4 AND e.principal_id=$5 AND e.status='processed'
+      AND e.tenant_id=$3 AND e.agent_id=$4 AND e.principal_id=$5 AND e.status<>'superseded'
       AND source.cancel_requested_at IS NULL AND source.status IN ('succeeded','partial') AND source.result_id IS NOT NULL
       AND e.request_version=jsonb_array_length(source.steer_inputs)+1 FOR UPDATE OF source,e`,
   [work.id,work.fence,work.tenantId,work.agentId,work.principalId,benchmarkId])
@@ -82,11 +101,15 @@ export async function proposeEvolution(database: SqlQueryable, work: Omit<WorkIt
   const recorded = source['scopes'] as MemoryScope[]
   if (!sameMemoryEpochs(epochs.filter(scope => recorded.some(item => item.scopeType === scope.scopeType && item.scopeId === scope.scopeId)),
     source['scope_epochs'] as MemoryEpoch[] ?? [])) throw new Error('evolution source was forgotten')
+  const complete = await completeSourceScopes(database,source,epochs)
   const ids: string[] = []
   for (const candidate of candidates) {
     const scope = scopes.find(item => item.tenantId === work.tenantId && item.scopeType === candidate.scopeType
       && recorded.some(saved => isDeepStrictEqual(saved,item)))
     if (!scope) throw new Error('candidate scope is unavailable')
+    if (!complete.some(item => item.tenantId === scope.tenantId && item.scopeType === scope.scopeType && item.scopeId === scope.scopeId)) {
+      throw new Error('evolution requires complete accepted evidence in the current scope')
+    }
     const body = await memoryWriteBody({ scope, principalId: work.principalId!, sourceWorkId: String(source['source_run_id']),
       origin: 'evolved', kind: candidate.kind, body: candidate.body }, policy)
     const id = `evolution:${digest([work.id,candidate])}`
@@ -114,19 +137,28 @@ export function evolutionCaseKey(caseId: string, repetition: number, variant: 'b
 
 export async function executeEvolution(database: SqlQueryable, work: Omit<WorkItem, 'leaseToken'>, scopes: MemoryScope[],
   method: 'load' | 'record' | 'finish', args: Record<string, unknown>): Promise<unknown> {
-  const { rows } = await database.query(`SELECT m.*,e.baseline,e.records,e.verdict,e.candidate_version,b.definition AS benchmark
+  const epochs = await lockMemoryScopes(database,scopes)
+  const { rows } = await database.query(`SELECT m.*,e.baseline,e.records,e.verdict,e.candidate_version,b.definition AS benchmark,
+      to_jsonb(source) AS source_evidence
     FROM lingxios.agent_work_items job JOIN lingxios.agent_memories m ON m.id=job.meta->>'memoryId' AND m.tenant_id=job.tenant_id
     JOIN lingxios.agent_evolution_evaluations e ON e.tenant_id=m.tenant_id AND e.memory_id=m.id
     JOIN lingxios.agent_evolution_benchmarks b ON b.tenant_id=e.tenant_id AND b.id=e.benchmark_id
     JOIN lingxios.agent_memory_evidence source ON source.source_run_id=job.meta->>'sourceRunId'
+    JOIN lingxios.agent_work_items source_work ON source_work.id=source.source_run_id
     WHERE job.id=$1 AND job.fence=$2 AND job.tenant_id=$3 AND job.agent_id=$4 AND job.principal_id=$5
       AND job.kind='memory_evaluation' AND job.status='leased' AND job.lease_expires_at>NOW() AND job.cancel_requested_at IS NULL
-      AND source.status='processed' AND source.tenant_id=job.tenant_id AND source.principal_id=job.principal_id
-      AND m.origin='evolved' AND m.status<>'expired' FOR UPDATE OF m,e`,
+      AND source.status<>'superseded' AND source.tenant_id=job.tenant_id AND source.principal_id=job.principal_id
+      AND source.agent_id=job.agent_id AND source_work.status IN ('succeeded','partial') AND source_work.cancel_requested_at IS NULL
+      AND source.request_version=jsonb_array_length(source_work.steer_inputs)+1
+      AND m.origin='evolved' AND m.status<>'expired' FOR UPDATE OF m,e,source,source_work`,
   [work.id,work.fence,work.tenantId,work.agentId,work.principalId])
   const row = rows[0]
   if (!row || !scopes.some(scope => scope.tenantId === work.tenantId && scope.scopeType === row['scope_type'] && scope.scopeId === row['scope_id'])) {
     throw new Error('evolution lease, scope or source was revoked')
+  }
+  const complete = await completeSourceScopes(database,row['source_evidence'] as Record<string,unknown>,epochs)
+  if (!complete.some(scope => scope.tenantId === work.tenantId && scope.scopeType === row['scope_type'] && scope.scopeId === row['scope_id'])) {
+    throw new Error('evolution source completion or epoch was revoked')
   }
   if (row['verdict'] !== 'pending') return method === 'load' ? null : { verdict: row['verdict'] }
   if (row['version'] !== row['candidate_version'] || row['status'] !== 'candidate') throw new Error('candidate changed during evaluation')

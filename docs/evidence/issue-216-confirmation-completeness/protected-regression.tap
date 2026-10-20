@@ -1,0 +1,134 @@
+(node:490023) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:490031) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: reports mixed long-source completeness across separate jobs
+ok 1 - reports mixed long-source completeness across separate jobs
+  ---
+  duration_ms: 6628.686272
+  type: 'test'
+  ...
+# Subtest: reports approved long-source completeness across separate jobs
+ok 2 - reports approved long-source completeness across separate jobs
+  ---
+  duration_ms: 3401.321789
+  type: 'test'
+  ...
+# Subtest: reports incomplete long-source completeness across separate jobs
+ok 3 - reports incomplete long-source completeness across separate jobs
+  ---
+  duration_ms: 3133.536802
+  type: 'test'
+  ...
+# Subtest: does not hide an unfinished or rejected scope behind a successful scope
+ok 4 - does not hide an unfinished or rejected scope behind a successful scope
+  ---
+  duration_ms: 5445.430472
+  type: 'test'
+  ...
+# Subtest: audits empty extraction coverage and bounds repair (false)
+ok 5 - audits empty extraction coverage and bounds repair (false)
+  ---
+  duration_ms: 3042.648616
+  type: 'test'
+  ...
+# Subtest: audits empty extraction coverage and bounds repair (true)
+ok 6 - audits empty extraction coverage and bounds repair (true)
+  ---
+  duration_ms: 3483.993569
+  type: 'test'
+  ...
+# Subtest: leaves cancelled-repair pending instead of advancing the source
+ok 7 - leaves cancelled-repair pending instead of advancing the source
+  ---
+  duration_ms: 2730.686048
+  type: 'test'
+  ...
+# Subtest: leaves missing-coverage-verdict pending instead of advancing the source
+ok 8 - leaves missing-coverage-verdict pending instead of advancing the source
+  ---
+  duration_ms: 2332.219798
+  type: 'test'
+  ...
+# (node:490718) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: records only bounded invariant codes for a rejected proposal and repair
+ok 9 - records only bounded invariant codes for a rejected proposal and repair
+  ---
+  duration_ms: 3282.612637
+  type: 'test'
+  ...
+# (node:490818) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: keeps protected records available for coverage while excluding them from writable model input
+ok 10 - keeps protected records available for coverage while excluding them from writable model input
+  ---
+  duration_ms: 3338.912916
+  type: 'test'
+  ...
+# (node:490889) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: finishes an assistant-only continuation without promoting assistant claims to human facts
+ok 11 - finishes an assistant-only continuation without promoting assistant claims to human facts
+  ---
+  duration_ms: 4178.477
+  type: 'test'
+  ...
+# Subtest: audits coverage of a no-change human page without proposing nonexistent mutations
+ok 12 - audits coverage of a no-change human page without proposing nonexistent mutations
+  ---
+  duration_ms: 2500.737509
+  type: 'test'
+  ...
+# Subtest: repairs one invalid or protected proposal before verification without relaxing writes
+ok 13 - repairs one invalid or protected proposal before verification without relaxing writes
+  ---
+  duration_ms: 2447.828136
+  type: 'test'
+  ...
+# Subtest: retires permanently revoked sources but preserves transient failures for a later retry
+ok 14 - retires permanently revoked sources but preserves transient failures for a later retry
+  ---
+  duration_ms: 2336.349269
+  type: 'test'
+  ...
+# Subtest: batches five committed interactions, keeps per-scope progress and learns with two independent model calls
+ok 15 - batches five committed interactions, keeps per-scope progress and learns with two independent model calls
+  ---
+  duration_ms: 2594.418202
+  type: 'test'
+  ...
+# Subtest: uses persisted idle timestamps, bounds batches and retries, and never schedules uncommitted sources
+ok 16 - uses persisted idle timestamps, bounds batches and retries, and never schedules uncommitted sources
+  ---
+  duration_ms: 2840.470207
+  type: 'test'
+  ...
+# Subtest: protects explicit memory, records conflicts, rejects unknown evidence and stale leases, and fences forgetting
+ok 17 - protects explicit memory, records conflicts, rejects unknown evidence and stale leases, and fences forgetting
+  ---
+  duration_ms: 2372.117456
+  type: 'test'
+  ...
+# Subtest: rechecks source permissions and request revisions between proposal and apply
+ok 18 - rechecks source permissions and request revisions between proposal and apply
+  ---
+  duration_ms: 2505.329613
+  type: 'test'
+  ...
+# Subtest: does not renew expired knowledge from an old request committed after expiry
+ok 19 - does not renew expired knowledge from an old request committed after expiry
+  ---
+  duration_ms: 2167.243797
+  type: 'test'
+  ...
+1..19
+# tests 19
+# suites 0
+# pass 19
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 61797.205282

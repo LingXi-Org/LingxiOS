@@ -1,0 +1,13 @@
+{
+  "source": "f0fc87fdf8a85e8d684a03a40024533aac6cb686",
+  "providerHost": "api.siliconflow.cn",
+  "model": "zai-org/GLM-5.2",
+  "productionRequests": 0,
+  "cases": [],
+  "requests": [],
+  "passed": false,
+  "failure": {
+    "type": "Error",
+    "code": null
+  }
+}

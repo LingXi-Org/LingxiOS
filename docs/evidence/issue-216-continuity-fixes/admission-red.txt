@@ -1,0 +1,82 @@
+(node:1199980) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:1199987) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: rejects an inventory snapshot when forgetting commits before context returns
+not ok 1 - rejects an inventory snapshot when forgetting commits before context returns
+  ---
+  duration_ms: 1909.779205
+  type: 'test'
+  location: '/workspace/LingxiOS-issue216-continuity-fixes/dist/test/memory-model-admission.test.js:11:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file:///workspace/LingxiOS-issue216-continuity-fixes/dist/test/memory-model-admission.test.js:33:9)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+# Subtest: fences forget at the request-event boundary before the next scripted provider call
+not ok 2 - fences forget at the request-event boundary before the next scripted provider call
+  ---
+  duration_ms: 1503.554272
+  type: 'test'
+  location: '/workspace/LingxiOS-issue216-continuity-fixes/dist/test/memory-model-admission.test.js:40:5'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file:///workspace/LingxiOS-issue216-continuity-fixes/dist/test/memory-model-admission.test.js:74:13)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: fences forget at the publication-gate boundary before the next scripted provider call
+not ok 3 - fences forget at the publication-gate boundary before the next scripted provider call
+  ---
+  duration_ms: 1596.693467
+  type: 'test'
+  location: '/workspace/LingxiOS-issue216-continuity-fixes/dist/test/memory-model-admission.test.js:40:5'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file:///workspace/LingxiOS-issue216-continuity-fixes/dist/test/memory-model-admission.test.js:74:13)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: fences forget at the retry boundary before the next scripted provider call
+not ok 4 - fences forget at the retry boundary before the next scripted provider call
+  ---
+  duration_ms: 1466.169864
+  type: 'test'
+  location: '/workspace/LingxiOS-issue216-continuity-fixes/dist/test/memory-model-admission.test.js:40:5'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file:///workspace/LingxiOS-issue216-continuity-fixes/dist/test/memory-model-admission.test.js:74:13)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+1..4
+# tests 4
+# suites 0
+# pass 0
+# fail 4
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6651.443858

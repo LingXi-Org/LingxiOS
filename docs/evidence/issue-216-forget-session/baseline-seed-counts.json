@@ -1,0 +1,104 @@
+{
+  "phase": "seed",
+  "source": "3628e9e7f0fee8c3ee0550789a4fc21b3681dd14",
+  "processId": 1216038,
+  "calls": [
+    {
+      "run": "seed",
+      "purpose": "turn",
+      "markerCount": 0,
+      "receiptCount": 0,
+      "summaryCount": 0,
+      "dynamicMemoryCount": 0
+    },
+    {
+      "run": "seed",
+      "purpose": "turn",
+      "markerCount": 1,
+      "receiptCount": 1,
+      "summaryCount": 0,
+      "dynamicMemoryCount": 0
+    },
+    {
+      "run": "warm-after-forget",
+      "purpose": "turn",
+      "markerCount": 1,
+      "receiptCount": 1,
+      "summaryCount": 0,
+      "dynamicMemoryCount": 0
+    },
+    {
+      "run": "compact-after-forget",
+      "purpose": "turn",
+      "markerCount": 1,
+      "receiptCount": 1,
+      "summaryCount": 0,
+      "dynamicMemoryCount": 0
+    },
+    {
+      "run": "compact-after-forget",
+      "purpose": "compaction",
+      "markerCount": 1,
+      "receiptCount": 1,
+      "summaryCount": 0,
+      "dynamicMemoryCount": 0
+    }
+  ],
+  "events": [
+    {
+      "id": "seed",
+      "kinds": [
+        "run.started",
+        "input.loaded",
+        "model.started",
+        "model.request.started",
+        "model.request.finished",
+        "model.completed",
+        "ipython.started",
+        "tool.started",
+        "tool.completed",
+        "ipython.completed",
+        "model.started",
+        "model.request.started",
+        "model.request.finished",
+        "model.completed",
+        "model.delta",
+        "response.committed"
+      ]
+    },
+    {
+      "id": "warm-after-forget",
+      "kinds": [
+        "run.started",
+        "input.loaded",
+        "model.started",
+        "model.request.started",
+        "model.request.finished",
+        "model.completed",
+        "model.delta",
+        "response.committed"
+      ]
+    },
+    {
+      "id": "compact-after-forget",
+      "kinds": [
+        "run.started",
+        "input.loaded",
+        "model.started",
+        "model.request.started",
+        "model.request.started",
+        "model.request.finished",
+        "model.request.finished",
+        "model.completed",
+        "model.delta",
+        "session.compacted",
+        "response.committed"
+      ]
+    }
+  ],
+  "memoryRows": 0,
+  "userRequestMarkerCount": 0,
+  "finalAnswerMarkerCount": 0,
+  "persistedHistoryMarkerCount": 1,
+  "persistedSummaryMarkerCount": 1
+}

@@ -42,6 +42,8 @@ try {
   await pool.query(await readFile(new URL('../db/migrations/013-distributed-workspaces.sql', import.meta.url), 'utf8'))
   await pool.query(await readFile(new URL('../db/migrations/013-distributed-workspaces.sql', import.meta.url), 'utf8'))
   await pool.query(await readFile(new URL('../db/migrations/014-terminal-feedback.sql', import.meta.url), 'utf8'))
+  await pool.query(await readFile(new URL('../db/migrations/015-memory-continuity.sql', import.meta.url), 'utf8'))
+  await pool.query(await readFile(new URL('../db/migrations/015-memory-continuity.sql', import.meta.url), 'utf8'))
   await checkStorage(pool)
   const budgetParent = { id: 'budget-root',tenantId: 'budget',principalId: 'human',agentId: 'agent',sessionId: 'budget-root',
     kind: 'turn',lane: 'interactive',triggerRef: 'budget-test',fence: 1,homeEpoch: 1 }

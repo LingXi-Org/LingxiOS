@@ -1,5 +1,5 @@
 import { modelExecution, DEFAULT_MODEL_BUDGET, type RootModelBudgetOptions } from '../model/execution.js'
-import { PgModelBudgetStore, PgWorkStore } from '../control-plane/pg-store.js'
+import { PgModelBudgetStore, PgWorkStore, workItemFromRow } from '../control-plane/pg-store.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { OpenAIEmbeddingDriver, type EmbeddingOptions } from '../model/embeddings.js'
 import { withTransaction, type SqlPool, type SqlQueryable } from '../control-plane/pg-store.js'
@@ -32,27 +32,41 @@ export function createSemanticMemory(database: SqlPool, options: EmbeddingOption
       return { ...result, usage: { ...result.usage, outputTokens: 0 } }
     })
   }
+  const enqueue = (work: Omit<WorkItem,'leaseToken'>, scope: MemoryScope, db: SqlQueryable = database, model: string | null = null) => db.query(`INSERT INTO lingxios.agent_work_items
+        (id,tenant_id,agent_id,principal_id,session_id,thread_id,kind,lane,trigger_ref,meta)
+        SELECT 'memory-index:'||md5(jsonb_build_array($1::text,m.id,m.version,$4::text,$5::text,$6::text,$7::text,$8::text,$11::text,COALESCE((SELECT epoch FROM lingxios.agent_memory_scopes WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3),0))::text),
+          $1,$5,$6,$7,$8,'memory_index','background',m.id,
+          jsonb_build_object('memoryId',m.id,'version',m.version,'modelKey',$4::text,'expectedModel',$11::text,'scopeType',m.scope_type,'scopeId',m.scope_id,'sourceWorkId',$9::text,'memoryEpoch',COALESCE((SELECT epoch FROM lingxios.agent_memory_scopes WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3),0))
+        FROM lingxios.agent_memories m LEFT JOIN lingxios.agent_memory_embeddings e ON e.tenant_id=m.tenant_id AND e.memory_id=m.id AND e.model_key=$4
+        WHERE m.tenant_id=$1 AND m.scope_type=$2 AND m.scope_id=$3 AND m.origin<>'evolved' AND m.status='active' AND (m.valid_until IS NULL OR m.valid_until>NOW())
+          AND (e.memory_id IS NULL OR e.version<>m.version OR ($11::text IS NOT NULL AND e.model<>$11))
+          AND EXISTS(SELECT 1 FROM lingxios.agent_work_items w WHERE w.id=$9 AND w.fence=$10 AND w.cancel_requested_at IS NULL)
+          AND NOT EXISTS(SELECT 1 FROM lingxios.agent_work_items active WHERE active.tenant_id=$1 AND active.kind='memory_index'
+            AND active.status IN ('queued','leased') AND active.cancel_requested_at IS NULL AND active.meta->>'memoryId'=m.id
+            AND (active.meta->>'version')::integer=m.version AND active.meta->>'modelKey'=$4
+            AND COALESCE((active.meta->>'memoryEpoch')::bigint,0)=COALESCE((SELECT epoch FROM lingxios.agent_memory_scopes WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3),0)
+            AND ($11::text IS NULL OR active.meta->>'expectedModel' IS NULL OR active.meta->>'expectedModel'=$11))
+          AND NOT EXISTS(SELECT 1 FROM lingxios.agent_work_items j WHERE j.id='memory-index:'||md5(jsonb_build_array($1::text,m.id,m.version,$4::text,$5::text,$6::text,$7::text,$8::text,$11::text,COALESCE((SELECT epoch FROM lingxios.agent_memory_scopes WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3),0))::text))
+        ORDER BY m.pinned DESC,m.updated_at DESC,m.id LIMIT 32 ON CONFLICT(id) DO NOTHING`,
+      [scope.tenantId, scope.scopeType, scope.scopeId, driver.cacheKey, work.agentId, work.principalId, work.sessionId, work.threadId ?? null, work.id, work.fence, model])
+
   const queries = new Map<string, { expires: number; value: ReturnType<OpenAIEmbeddingDriver['embed']> }>()
   return {
+    enqueue,
+    async status(scope:MemoryScope,db:SqlQueryable=database) {
+      const row=(await db.query(`SELECT COUNT(*)::integer AS eligible,COUNT(e.memory_id)::integer AS indexed
+        FROM lingxios.agent_memories m LEFT JOIN lingxios.agent_memory_embeddings e
+          ON e.tenant_id=m.tenant_id AND e.memory_id=m.id AND e.version=m.version AND e.model_key=$4
+        WHERE m.tenant_id=$1 AND m.scope_type=$2 AND m.scope_id=$3 AND m.origin<>'evolved' AND m.status='active'
+          AND (m.valid_until IS NULL OR m.valid_until>NOW())`,[scope.tenantId,scope.scopeType,scope.scopeId,driver.cacheKey])).rows[0]!
+      return {key:driver.cacheKey,eligible:Number(row['eligible']),indexed:Number(row['indexed'])}
+    },
     async recall(work: Omit<WorkItem, 'leaseToken'>, scope: MemoryScope, query: string, limit: number, signal?: AbortSignal): Promise<MemorySearchResult> {
       signal?.throwIfAborted()
       pageLimit(limit)
       if (scope.tenantId !== work.tenantId || query.length > 2000) throw new Error('invalid memory recall scope or query')
       // Backfill every eligible record over successive reads, without blocking the foreground on indexing.
-      const enqueue = (model: string | null) => database.query(`INSERT INTO lingxios.agent_work_items
-        (id,tenant_id,agent_id,principal_id,session_id,thread_id,kind,lane,trigger_ref,meta)
-        SELECT 'memory-index:'||md5(jsonb_build_array($1::text,m.id,m.version,$4::text,$5::text,$6::text,$7::text,$8::text,$11::text)::text),
-          $1,$5,$6,$7,$8,'memory_index','background',m.id,
-          jsonb_build_object('memoryId',m.id,'version',m.version,'modelKey',$4::text,'expectedModel',$11::text,'scopeType',m.scope_type,'scopeId',m.scope_id,'sourceWorkId',$9::text)
-        FROM lingxios.agent_memories m LEFT JOIN lingxios.agent_memory_embeddings e ON e.tenant_id=m.tenant_id AND e.memory_id=m.id AND e.model_key=$4
-        WHERE m.tenant_id=$1 AND m.scope_type=$2 AND m.scope_id=$3 AND m.origin<>'evolved' AND m.status='active' AND (m.valid_until IS NULL OR m.valid_until>NOW())
-          AND (e.memory_id IS NULL OR e.version<>m.version OR ($11::text IS NOT NULL AND e.model<>$11))
-          AND EXISTS(SELECT 1 FROM lingxios.agent_work_items w WHERE w.id=$9 AND w.fence=$10 AND w.status='leased'
-            AND w.lease_expires_at>NOW() AND w.cancel_requested_at IS NULL)
-          AND NOT EXISTS(SELECT 1 FROM lingxios.agent_work_items j WHERE j.id='memory-index:'||md5(jsonb_build_array($1::text,m.id,m.version,$4::text,$5::text,$6::text,$7::text,$8::text,$11::text)::text))
-        ORDER BY m.pinned DESC,m.updated_at DESC,m.id LIMIT 32 ON CONFLICT(id) DO NOTHING`,
-      [scope.tenantId, scope.scopeType, scope.scopeId, driver.cacheKey, work.agentId, work.principalId, work.sessionId, work.threadId ?? null, work.id, work.fence, model])
-      if (!query.trim()) { await enqueue(null); return searchMemories(database,scope,'',limit) }
+      if (!query.trim()) { await enqueue(work,scope); return searchMemories(database,scope,'',limit) }
       const key = createHash('sha256').update(JSON.stringify([scope.tenantId, work.principalId, work.id, work.fence, query])).digest('hex')
       let cached = queries.get(key)
       if (!cached || cached.expires <= Date.now()) {
@@ -68,7 +82,7 @@ export function createSemanticMemory(database: SqlPool, options: EmbeddingOption
         // Keep the rejected promise for the short TTL, preventing one outage from being retried every hop.
         return { ...await searchMemories(database,scope,query,limit),retrieval: 'keyword_embedding_unavailable' }
       }
-      await enqueue(vector.model)
+      await enqueue(work,scope,database,vector.model)
       // ponytail: exact scoped cosine scan; add pgvector indexing if measured scope size warrants it.
       return withTransaction(database, async client => {
         await client.query("SET LOCAL statement_timeout='3s'")
@@ -89,7 +103,8 @@ export function createSemanticMemory(database: SqlPool, options: EmbeddingOption
         add(keyword.items as MemoryHit[])
         add(rows.filter(row => Number(row['similarity'])>0).map(row => ({ ...memoryEntry(memoryDocument(row)),excerpt: excerpt(String(row['body']),1600),score: 0 })))
         return { items: [...ranks.values()].sort((a,b) => b.score-a.score || a.path.localeCompare(b.path)).slice(0,limit),
-          nextCursor: null,retrieval: 'hybrid' as const }
+          nextCursor: null,retrieval: rows.length ? 'hybrid' as const : 'hybrid_pending' as const,
+          index:{key:driver.cacheKey,model:vector.model,dimensions:vector.vectors[0]!.length,matchedCurrent:rows.length} }
       }).catch(async error => {
         signal?.throwIfAborted()
         if ((error as { code?: string }).code !== '57014') throw error
@@ -104,6 +119,7 @@ export function createSemanticMemory(database: SqlPool, options: EmbeddingOption
         FROM lingxios.agent_work_items w JOIN lingxios.agent_memories m ON m.tenant_id=w.tenant_id AND m.id=w.meta->>'memoryId'
         WHERE w.id=$1 AND w.fence=$2 AND w.status='leased' AND w.lease_expires_at>NOW() AND w.cancel_requested_at IS NULL
           AND w.tenant_id=$3 AND m.version=(w.meta->>'version')::integer AND m.scope_type=w.meta->>'scopeType' AND m.scope_id=w.meta->>'scopeId'
+          AND COALESCE((w.meta->>'memoryEpoch')::bigint,0)=COALESCE((SELECT epoch FROM lingxios.agent_memory_scopes p WHERE p.tenant_id=m.tenant_id AND p.scope_type=m.scope_type AND p.scope_id=m.scope_id),0)
           AND m.status='active' AND (m.valid_until IS NULL OR m.valid_until>NOW()) ${lock ? 'FOR UPDATE OF w,m' : ''}`,
       [work.id, work.fence, work.tenantId])
       await authorize(database)
@@ -126,6 +142,8 @@ export function createSemanticMemory(database: SqlPool, options: EmbeddingOption
           VALUES($1,$2,$3,$4,$5,$6::double precision[]) ON CONFLICT(tenant_id,memory_id,model_key)
           DO UPDATE SET version=EXCLUDED.version,model_key=EXCLUDED.model_key,model=EXCLUDED.model,embedding=EXCLUDED.embedding`,
         [work.tenantId, current['id'], current['version'], driver.cacheKey, result.model, embedding.map(value=>value/norm)])
+        const source=(await client.query('SELECT * FROM lingxios.agent_work_items WHERE id=$1 AND tenant_id=$2',[work.meta?.['sourceWorkId'],work.tenantId])).rows[0]
+        if(source) await enqueue(workItemFromRow(source,'',1),{tenantId:work.tenantId,scopeType:String(current['scope_type']),scopeId:String(current['scope_id'])},client,typeof work.meta?.['expectedModel']==='string'?work.meta['expectedModel']:null)
         return { outcome: 'indexed', usage: result.usage }
       })
     },

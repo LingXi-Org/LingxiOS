@@ -1,0 +1,9 @@
+
+> @lyyzka/lingxios@3.5.6 build
+> node scripts/build.mjs
+
+npm notice
+npm notice New major version of npm available! 10.9.9 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

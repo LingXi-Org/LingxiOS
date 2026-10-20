@@ -1,0 +1,71 @@
+{
+  "stage": "complete",
+  "mode": "page",
+  "providerRequests": 2,
+  "operations": [
+    {
+      "operation": "memory.reflect",
+      "ms": 43
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 28
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 28
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 28
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 26
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 28
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 23
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 22
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 24
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 18
+    },
+    {
+      "operation": "worker.runNext",
+      "ms": 8417
+    }
+  ],
+  "before": {
+    "status": "failed",
+    "attempts": 2
+  },
+  "samePage": true,
+  "after": {
+    "status": "succeeded",
+    "attempts": 3,
+    "fence": "3",
+    "terminal_reason": null
+  },
+  "validation": [],
+  "source": [
+    {
+      "status": "rejected",
+      "segment_cursor": 7
+    }
+  ],
+  "probeCompleted": true,
+  "featureAcceptance": false
+}
