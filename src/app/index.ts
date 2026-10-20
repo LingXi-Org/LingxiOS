@@ -23,6 +23,8 @@ import { readArtifact, persistArtifacts, stageArtifact, inspectArtifacts, create
 import { resolve } from 'node:path'
 import { snapshotAttachments, type RequestAttachment } from '../context/attachments.js'
 import { recoverWait } from './recover-wait.js'
+import { recoverMemoryDeletion } from './recover-memory-deletion.js'
+import { MEMORY_DELETION_CONFIRMATION } from '../memory/confirmation.js'
 import { continueInput, type InputContinuation } from './input.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { ConfigError } from '../errors.js'
@@ -456,7 +458,10 @@ export async function createLingxiOS(options: LingxiOSOptions) {
               FOR UPDATE`, [work.id, work.fence, message.envelope.requestVersion])
           if (!current.rows.length) throw new Error('request changed or lease expired before message persistence')
           await authorizeConversationWork(client, work, work.conversation?.internal ? 'execute' : 'speak', true)
-          if (presentations.length) {
+          // A content-free deletion acknowledgment must never reattach earlier
+          // rendered content. Matching this text only suppresses attachments;
+          // it does not authorize a receipt or bypass any completion check.
+          if (presentations.length && message.body !== MEMORY_DELETION_CONFIRMATION) {
             const rendered = await client.query(`SELECT i.intent,r.result FROM lingxios.agent_action_intents i JOIN lingxios.agent_action_ledger r USING(idempotency_key)
               WHERE i.intent->>'workId'=$1 AND (i.intent->>'requestVersion')::integer=$2 AND i.intent->'action'->>'action'='presentation.render'
                 AND r.result->>'ok'='true' ORDER BY i.recorded_at,i.idempotency_key LIMIT 17`, [work.id, message.envelope.requestVersion])
@@ -563,6 +568,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     const db = deadlinePool(options.database, signal)
     const work = { ...leased, leaseToken: proof.leaseToken }
     const recovery = (async () => {
+      if (options.memory && await recoverMemoryDeletion(db,service,work,options.memory,signal)) return true
       await service.reconcilePending(work, signal)
       signal.throwIfAborted()
       await executeDecidedApprovals(db, service, work, signal)

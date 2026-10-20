@@ -76,7 +76,7 @@ export function createMemoryRuntime(database: SqlPool, options: MemoryOptions, b
         if (evolution.benchmark) await freezeEvolutionBenchmark(context.database,context.work.tenantId,evolution.benchmark)
         await proposeEvolution(context.database,context.work,scopes,evolution.benchmarkId,parsed,options.writePolicy)
       }
-      return { ok: true, executionState: 'succeeded', value: method === 'load' && value ? { ...value, evolutionEnabled: !!evolution } : value }
+      return { ok: true, executionState: 'succeeded', value }
     },
   }))
   if (evolution) for (const method of ['load','record','finish'] as const) tools.push({

@@ -1,0 +1,39 @@
+{
+  "source": "b8bbef2762c782c75079c3f81113296e95d17bb1",
+  "provider": "scripted local model; actual AgentRuntime/native tools/PGlite",
+  "providerRequests": 0,
+  "productionRequests": 0,
+  "cases": [
+    {
+      "operation": "forget",
+      "passed": true,
+      "modelCalls": 1,
+      "modelInputMarkerCounts": [
+        1
+      ],
+      "status": "partial",
+      "committedDeletionReceipt": true,
+      "selectedMissing": true,
+      "remainingDocuments": 0,
+      "results": 1,
+      "epochAdvanced": true,
+      "admissionEpochStale": true
+    },
+    {
+      "operation": "apply-delete",
+      "passed": true,
+      "modelCalls": 1,
+      "modelInputMarkerCounts": [
+        1
+      ],
+      "status": "partial",
+      "committedDeletionReceipt": true,
+      "selectedMissing": true,
+      "remainingDocuments": 1,
+      "results": 1,
+      "epochAdvanced": true,
+      "admissionEpochStale": true
+    }
+  ],
+  "passed": true
+}

@@ -13,27 +13,37 @@ import { NoEffectError } from '../src/tools/definition.js'
 it('finishes an assistant-only continuation without promoting assistant claims to human facts',async()=>{
   const f=await memoryFixture()
   try {
-    const source=await f.source({text:'继续练习。',assistant:'The student has mastered everything.'})
-    await f.db.query('UPDATE lingxios.agent_memory_evidence_scopes SET segment_cursor=1 WHERE source_run_id=$1',[source.work.id])
+    const source=await f.source({text:'继续练习。',assistant:'The student has mastered everything. '.repeat(400)})
+    // Establish a real accepted prefix instead of fabricating an unproven cursor.
+    const first=(await f.reflection()).job;assert.ok(first)
+    await withTransaction(f.pool,async db=>{
+      await executeMemorySynthesis(db,first,'load',{},f.options)
+      await executeMemorySynthesis(db,first,'apply',{changes:[],conflicts:[],approved:true,confidence:1},f.options)
+    })
+    await f.store.complete(first.id,first.fence,createHash('sha256').update(first.leaseToken).digest('hex'),{status:'completed'})
     const {job}=await f.reflection();assert.ok(job)
     const context={signal:new AbortController().signal,emit:async()=>{},host:{executeAction:async(_work:WorkItem,action:{action:string;args:Record<string,unknown>})=>({
       ok:true,executionState:'succeeded',value:await withTransaction(f.pool,db=>executeMemorySynthesis(db,job,action.action.split('.')[1]!,action.args,f.options)),
     })},model:{structured:async()=>{throw new Error('assistant-only evidence must not infer human facts')}}} as unknown as WorkProcessorContext
     await memorySynthesisProcessor.process(job,context)
     const state=(await f.db.query<{status:string;segment_cursor:number}>('SELECT status,segment_cursor FROM lingxios.agent_memory_evidence_scopes WHERE source_run_id=$1',[source.work.id])).rows[0]!
-    assert.equal(state.status,'processed');assert.equal(state.segment_cursor,2)
+    assert.equal(state.status,'processed');assert.equal(state.segment_cursor,4)
     assert.equal((await f.api.list(identity,scope)).items.length,0)
   } finally {await f.close()}
 })
 
-it('advances a no-change evidence page without asking a model to approve nonexistent mutations',async()=>{
+it('audits coverage of a no-change human page without proposing nonexistent mutations',async()=>{
   const f=await memoryFixture()
   try {
     const source=await f.source();const {job}=await f.reflection();assert.ok(job)
     let calls=0
     const context={signal:new AbortController().signal,emit:async()=>{},host:{executeAction:async(_work:WorkItem,action:{action:string;args:Record<string,unknown>})=>({
       ok:true,executionState:'succeeded',value:await withTransaction(f.pool,db=>executeMemorySynthesis(db,job,action.action.split('.')[1]!,action.args,f.options)),
-    })},model:{structured:async()=>{assert.equal(++calls,1);return {value:{changes:[],conflicts:[]}}}}} as unknown as WorkProcessorContext
+    })},model:{structured:async(input:{instructions:string})=>{
+      if(++calls===1)return {value:{changes:[],conflicts:[]}}
+      assert.equal(calls,2);assert.match(input.instructions,/coverage/)
+      return {value:{approved:true,complete:true,confidence:1}}
+    }}} as unknown as WorkProcessorContext
     await memorySynthesisProcessor.process(job,context)
     assert.equal((await f.db.query<{status:string}>('SELECT status FROM lingxios.agent_memory_evidence_scopes WHERE source_run_id=$1',[source.work.id])).rows[0]?.status,'processed')
     assert.equal((await f.api.list(identity,scope)).items.length,0)
@@ -57,7 +67,7 @@ it('repairs one invalid or protected proposal before verification without relaxi
       if(calls===1) return {value:{changes:[{sourceRunIds:[source.work.id],change:{action:'update',id:saved.id,expectedVersion:1,content:content('Overwrite')}}],conflicts:[]}}
       if(calls===2){assert.match(request.instructions,/Repair/);return {value:{changes:[{sourceRunIds:[source.work.id],change:{action:'create',content:content('Independent observation','new.md')}}],conflicts:[]}}}
       assert.equal(calls,3);assert.match(request.instructions,/Independently audit/)
-      return {value:{approved:true,confidence:1}}
+      return {value:{approved:true,complete:true,confidence:1}}
     }}} as unknown as WorkProcessorContext
     await memorySynthesisProcessor.process(job,context)
     assert.equal(calls,3)
@@ -105,7 +115,7 @@ it('batches five committed interactions, keeps per-scope progress and learns wit
     })},model:{structured:async(request:{instructions:string;input:unknown})=>{
       calls++
       if(calls===2){assert.match(request.instructions,/Independently audit/);assert.deepEqual((request.input as {changes:unknown}).changes,changes)}
-      return{value:calls===1?{changes,conflicts:[]}:{approved:true,confidence:0.95},model:'test',usage:{available:true,inputTokens:500,outputTokens:100}}
+      return{value:calls===1?{changes,conflicts:[]}:{approved:true,complete:true,confidence:0.95},model:'test',usage:{available:true,inputTokens:500,outputTokens:100}}
     }}} as unknown as WorkProcessorContext
     await memorySynthesisProcessor.process(job,context)
     assert.equal(calls,2)

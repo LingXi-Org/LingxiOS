@@ -1,0 +1,53 @@
+(node:337392) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:337399) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: records only bounded invariant codes for a rejected proposal and repair
+not ok 1 - records only bounded invariant codes for a rejected proposal and repair
+  ---
+  duration_ms: 8069.965181
+  type: 'test'
+  location: '/workspace/issue216-fix/dist/test/memory-synthesis-diagnostics.test.js:7:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    
+    + []
+    - [
+    -   {
+    -     phase: 'proposal',
+    -     reason: 'unknown_source'
+    -   },
+    -   {
+    -     phase: 'repair',
+    -     reason: 'unknown_source'
+    -   }
+    - ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0:
+      phase: 'proposal'
+      reason: 'unknown_source'
+    1:
+      phase: 'repair'
+      reason: 'unknown_source'
+  actual:
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///workspace/issue216-fix/dist/test/memory-synthesis-diagnostics.test.js:28:16)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 8431.408951

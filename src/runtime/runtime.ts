@@ -1,4 +1,5 @@
 import { PublicTextWriter, isPublicTextPublicationFailure, isPublicTextSafetyFailure } from './public-text.js'
+import { isMemoryDeletionReceipt } from '../memory/confirmation.js'
 import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from './wait.js'
 import { inputWaitQuestion } from '../protocol/input-wait.js'
@@ -1237,6 +1238,10 @@ export class AgentRuntime {
           deliverables: draft['deliverables'], constraints: draft['constraints'], actions: draft['actions'], acceptance: draft['acceptance'],
         })
         await this.hostFor(work).saveSession(work, session)
+      }
+      if (receipts.some(receipt => isMemoryDeletionReceipt(receipt.action,receipt.result))) {
+        await this.hostFor(work).saveSession(work,session)
+        if (await this.hostFor(work).recoverWork?.(work,signals.lifecycle.signal)) return {nextStreamPartIndex,terminal:true}
       }
       const defer = execution.directives.find((directive) => directive.type === 'defer')
       // Custom HostPorts may bypass the control-plane contract check. Already

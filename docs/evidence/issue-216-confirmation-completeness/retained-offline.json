@@ -1,0 +1,53 @@
+{
+  "stage": "complete",
+  "mode": "offline",
+  "providerRequests": 0,
+  "operations": [
+    {
+      "operation": "memory.reflect",
+      "ms": 36
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 20
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 22
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 21
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 20
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 25
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 23
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 30
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 29
+    },
+    {
+      "operation": "memory.reflect",
+      "ms": 25
+    }
+  ],
+  "before": {
+    "status": "failed",
+    "attempts": 2
+  },
+  "probeCompleted": true,
+  "featureAcceptance": false
+}

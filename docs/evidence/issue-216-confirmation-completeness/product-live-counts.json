@@ -1,0 +1,51 @@
+{
+  "passed": false,
+  "qualification": "source candidate",
+  "nativeSource": "47e1a847ec0d42d6e664625d6444ce3a1971cf5d",
+  "productSource": "cef2349c71f576ca53e76a1b12eacfdec5f75eba",
+  "failure": "Abort timeout during bounded product live-continuity",
+  "states": [
+    {
+      "kind": "memory_index",
+      "status": "succeeded",
+      "count": 3
+    },
+    {
+      "kind": "memory_synthesis",
+      "status": "failed",
+      "count": 1
+    },
+    {
+      "kind": "memory_synthesis",
+      "status": "succeeded",
+      "count": 6
+    },
+    {
+      "kind": "turn",
+      "status": "partial",
+      "count": 4
+    }
+  ],
+  "source": [
+    {
+      "status": "pending",
+      "segment_cursor": 5,
+      "segments": 7
+    }
+  ],
+  "failures": [
+    {
+      "status": "failed",
+      "attempts": 2,
+      "categories": [],
+      "terminalReason": "execution_failed"
+    }
+  ],
+  "usage": {
+    "calls": 41,
+    "costMicros": 463940,
+    "embeddingCalls": 7,
+    "measured": 41
+  },
+  "underlyingCause": "not established by sanitized diagnostics"
+}
