@@ -42,7 +42,7 @@ export interface ModelTurnRequest {
   /** Raw assistant content; never deliver without a declared format and trusted preview policy. */
   onTextDelta?: (((delta: string) => void) | ((delta: string) => Promise<void>)) | undefined
   /** Runtime-owned retry boundary; clears any draft from the preceding provider attempt. */
-  onAttempt?: ((callId: string) => void | Promise<void>) | undefined
+  onAttempt?: (((callId: string) => void) | ((callId: string) => Promise<void>)) | undefined
 }
 
 export interface StructuredCallRequest {
