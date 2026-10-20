@@ -29,6 +29,7 @@ export interface MemoryBatch {
   omittedMemories: number
   evolutionEnabled: boolean
 }
+type Progress = { epoch:number;version:number;hash:string;next:number;rejected:number;covered:boolean }
 
 export function parseMemoryChanges(value: unknown): SynthesisChange[] {
   if (!Array.isArray(value) || value.length>12) throw new Error('memory synthesis requires at most 12 changes')
@@ -128,7 +129,17 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
     await client.query(`UPDATE lingxios.agent_work_items SET meta=jsonb_set(meta,'{memorySnapshot}',$2::jsonb) WHERE id=$1`,
       [work.id,JSON.stringify({ fence: work.fence,epoch: epoch!.epoch,sources: sourceVersions(),
         memories: currentMemories.map(item => ({ id: item.id,version: item.version })) })])
-    return { scope,epoch: epoch!.epoch,evidence,currentMemories,omittedMemories: Number(rows[0]?.['total'] ?? 0)-currentMemories.length,evolutionEnabled: !!options.evolution }
+    const source = sources.find(row => row['source_run_id'] === meta['sourceRunId'])
+    const item = evidence.find(item => item.sourceRunId === meta['sourceRunId'])
+    const prior = (source?.['source_meta'] as { memoryProcessing?: Record<string,Progress> } | undefined)
+      ?.memoryProcessing?.[memoryDigest(scopeParams(scope))]
+    // Optional procedures may only use a fully accepted source in this scope.
+    // A candidate on an intermediate page must not roll back ordinary facts.
+    const evolutionEnabled = !!options.evolution && !!item?.userText.trim() && item.segment.sourceComplete
+      && item.segment.next >= item.segment.total && (item.segment.start === 0 || !!prior
+        && prior.epoch === epoch!.epoch && prior.version === item.requestVersion && prior.hash === item.inputSha256
+        && prior.next === item.segment.start && prior.covered && prior.rejected === 0)
+    return { scope,epoch: epoch!.epoch,evidence,currentMemories,omittedMemories: Number(rows[0]?.['total'] ?? 0)-currentMemories.length,evolutionEnabled }
   }
   const changes = parseMemoryChanges(args['changes']),conflicts = parseMemoryConflicts(args['conflicts'] ?? [])
   if (typeof args['approved']!=='boolean' || typeof args['confidence']!=='number' || !Number.isFinite(args['confidence'])
@@ -170,7 +181,6 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
     // Source work is already locked with the evidence and scope. This bounded,
     // content-free checkpoint survives separate page jobs and process restarts.
     // Never infer acceptance of an old prefix from its cursor alone.
-    type Progress = { epoch:number;version:number;hash:string;next:number;rejected:number;covered:boolean }
     const source = sources.find(row => row['source_run_id'] === item.sourceRunId)!
     const sourceMeta = source['source_meta'] as Record<string,unknown>
     const processing = { ...(sourceMeta['memoryProcessing'] as Record<string,Progress> | undefined) }
