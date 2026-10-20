@@ -40,8 +40,10 @@ export interface ActionContext {
   deadlineAt: string
   /** Bind a skill delivery obligation to this work/request inside a transactional
    * authoring tool's execute phase. Rolls back with the product write on failure.
-   * Read, external, authorization and verification phases cannot activate. */
-  activateSkillDelivery(skill: Pick<import('../skills/definition.js').SkillIndex, 'name' | 'version' | 'hash'>): Promise<import('../skills/delivery.js').SkillActivation>
+   * Read, external, authorization and verification phases cannot activate.
+   * Runtime contexts always supply it; optional for legacy structural callers.
+   * Authoring integrations must reject an unavailable method, never skip it. */
+  activateSkillDelivery?(skill: Pick<import('../skills/definition.js').SkillIndex, 'name' | 'version' | 'hash'>): Promise<import('../skills/delivery.js').SkillActivation>
   createArtifact(input: ArtifactInput): Promise<KernelArtifact>
 }
 

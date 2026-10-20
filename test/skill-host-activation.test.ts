@@ -108,3 +108,7 @@ it('a failed authoring transaction preserves an already committed explicit activ
     assert.equal((await f.pool.query('SELECT count(*)::int AS count FROM product_documents')).rows[0]!['count'], 0)
   } finally { await f.close() }
 })
+
+// Public port additions must not break existing non-opt-in context implementations.
+const acceptLegacyContext = (context: Omit<ActionContext, 'activateSkillDelivery'>): ActionContext => context
+void acceptLegacyContext
