@@ -73,3 +73,22 @@ Authentication and credentials were not changed; no further remote operation was
 attempted. The previously confirmed remote head is `7c9bc943ee42870f450926fda8d3ebb7447a024e`.
 The local follow-up commit and bundle can be reviewed and transferred by the
 integrator. No merge, package publication, deployment or issue closure occurred.
+
+## Resume: confirmed proposal failure mechanism (before fix)
+
+On 2026-10-20 the existing GitHub channel was rechecked as lyyzka with repository
+push permission and PR36 was advanced normally to 6a022d52. No credentials were
+changed. A fresh product qualification database preserved the original failure.
+The same automatic tail again remained at 5/7; its proposal tried a duplicate
+path and its repair tried to update a protected document. Four earlier proposals
+also attempted protected updates. The unchanged validator blocked these writes.
+
+The native model input currently puts protected explicit/locked records in the
+same currentMemories collection as editable synthesized records, while telling
+the model both to consolidate existing records and never modify protected ones.
+Make the writable collection contain only editable records and provide all
+protected records separately, explicitly limited to read/coverage/conflicts.
+Keep the original batch and transactional validator authoritative. Do not filter
+invalid changes into accepted empty changes. Test the partition and successful
+new fact plus unchanged protected value before the implementation; retain the
+existing rejection, version, epoch and coverage tests.
