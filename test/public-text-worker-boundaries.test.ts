@@ -62,15 +62,18 @@ for(const scenario of ['default','candidate-json','retry','write-failure','withh
       assert.equal(wire,2);assert.equal(state.message?.body,'Hello.')
       assert.deepEqual(view.publicTextParts?.map(part=>[part.text,part.reason]),[['First partial.','superseded'],['Hello.','completed']])
       assert.notEqual(view.publicTextParts?.[0]?.attemptId,view.publicTextParts?.[1]?.attemptId)
+      assert.deepEqual(view.publicTextParts?.map(part=>part.acceptedResultId),[null,state.run.resultId])
     }else if(scenario==='withheld'){
       assert.equal(wire,2);assert.equal(state.message?.body,'Hello.')
       assert.deepEqual(view.publicTextParts?.map(part=>part.reason),['superseded','completed'])
+      assert.deepEqual(view.publicTextParts?.map(part=>part.acceptedResultId),[null,state.run.resultId])
     }else if(scenario==='safety-reject'){
       assert.equal(wire,2);assert.equal(state.message?.body,'Hello.')
       assert.deepEqual(view.publicTextParts?.map(part=>part.text),['Hello.'])
     }else if(scenario==='safety-slow'){
       assert.equal(wire,1);assert.equal(state.message?.body,'safe delayed complete')
       assert.deepEqual(view.publicTextParts?.map(part=>[part.text,part.reason]),[['safe','interrupted']])
+      assert.equal(view.publicTextParts?.[0]?.acceptedResultId,state.run.resultId)
     }else{
       assert.equal(wire,1,'publication failure must not retry the provider')
       assert.equal(view.publicTextParts?.length,0);assert.equal(state.message,null)

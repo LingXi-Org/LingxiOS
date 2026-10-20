@@ -51,6 +51,9 @@ export class PublicTextWriter {
     private readonly emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>,private readonly signal:AbortSignal,
     private readonly assess?:((input:Readonly<PublicTextSafetyInput>)=>PublicTextSafetyDecision)|undefined){}
 
+  /** Only successfully appended deltas can be associated with a final candidate. */
+  get partId():string|undefined{return this.chunks?this.identity.partId:undefined}
+
   private approval(text:string,isFinal:boolean):number {
     let decision:PublicTextSafetyDecision
     try{decision=this.assess ? this.assess(Object.freeze({text,isFinal,approvedThrough:this.approvedThrough})) : {safeThrough:text.length}}
@@ -124,8 +127,14 @@ export class PublicTextWriter {
     const through=this.approval(finalText,true)
     if(!this.suspended){
       if(!finalText.startsWith(this.received))throw new PublicTextSafetyError('invalid_decision')
-      const approved=finalText.slice(this.approvedThrough,through)
-      this.approvedThrough=through
+      // EOF safety checks the whole result, but publication only archives
+      // bytes actually received through onTextDelta. A non-streaming driver
+      // return is the separate final-answer channel, not another commentary part.
+      let observedThrough=Math.min(through,this.received.length)
+      if(observedThrough>0&&highSurrogate(finalText.charCodeAt(observedThrough-1))
+        &&lowSurrogate(finalText.charCodeAt(observedThrough)))observedThrough--
+      const approved=this.received.slice(this.approvedThrough,observedThrough)
+      this.approvedThrough=observedThrough
       if(approved)await this.publish(approved)
       await this.flush()
     }

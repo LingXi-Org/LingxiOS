@@ -83,3 +83,15 @@ it('one-character input runs the cumulative policy at bounded coalescing boundar
     t.diagnostic(`16000 one-character deltas: ${calls} policy calls, ${(performance.now()-start).toFixed(2)}ms`)
   }finally{f.writer.dispose()}
 })
+it('EOF validates the complete result without inventing public chunks absent from provider deltas',async()=>{
+  for(const prefix of ['', 'observed prefix']){
+    let complete='';const f=fixture(input=>{if(input.isFinal)complete=input.text;return {safeThrough:input.text.length}})
+    try{
+      if(prefix)await f.writer.push(prefix)
+      await f.writer.finish(prefix+' unseen final suffix');await f.writer.end('completed')
+      assert.equal(complete,prefix+' unseen final suffix')
+      assert.equal(published(f),prefix)
+      if(!prefix)assert.equal(f.events.length,0)
+    }finally{f.writer.dispose()}
+  }
+})

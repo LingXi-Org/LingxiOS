@@ -21,6 +21,8 @@ export interface PublicTextPart extends PublicTextIdentity {
   chunkCount: number
   /** Explicit public.text.ended sequence; null for lifecycle-derived termination. */
   endedSeq: number | null
+  /** Set only by a durable committed result explicitly referencing this source part. */
+  acceptedResultId: string | null
   status: 'running' | 'complete' | 'incomplete'
   reason: PublicTextEndReason | null
 }

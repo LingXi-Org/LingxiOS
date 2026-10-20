@@ -403,7 +403,8 @@ export class AgentRuntime {
     let streamedText = ''
     let finalText = ''
     let finalEnvelope: ResponseEnvelope | undefined
-    let lastGood: { text: string; envelope: ResponseEnvelope } | undefined
+    let finalPublicTextPartId: string | undefined
+    let lastGood: { text: string; envelope: ResponseEnvelope; publicTextPartId?: string } | undefined
     let terminalError: Error | undefined
     let acceptanceGaps: string[] = []
     const artifacts: KernelArtifact[] = [...context.priorArtifacts ?? []]
@@ -412,7 +413,7 @@ export class AgentRuntime {
     let protocolCorrection: ModelItem | null = null
     let pendingCompaction: ReturnType<typeof prepareCompaction> | undefined
 
-    const rememberCandidate = async (body: string, liveContext: TurnContext, gaps: string[] = []) => {
+    const rememberCandidate = async (body: string, liveContext: TurnContext, gaps: string[] = [], publicTextPartId = this.publications.get(runId)?.partId) => {
       const text = body.trim()
       const assessment: GoalAssessment = { status: 'partial', checks: [], gaps }
       if (!text || text.length > 100_000 || this.policy.validateAssistantText(text, liveContext)
@@ -424,14 +425,15 @@ export class AgentRuntime {
         evidence(), artifacts, session.request?.contract, session.request?.resourceChecks)
       } catch { return /* Invalid citations or artifacts must never become a partial delivery. */ }
       await this.hostFor(work).saveStep(work, { id: `candidate:${randomUUID()}`, kind: 'runtime.candidate',
-        requestVersion: envelope.requestVersion, input: {}, output: JSON.stringify(envelope), artifacts: [] })
-      lastGood = { text, envelope }
+        requestVersion: envelope.requestVersion, input: publicTextPartId ? { publicTextPartId } : {}, output: JSON.stringify(envelope), artifacts: [] })
+      lastGood = { text, envelope, ...publicTextPartId ? { publicTextPartId } : {} }
     }
     const savedCandidate = context.executionSteps?.findLast(step => step.kind === 'runtime.candidate'
       && step.requestVersion === (session.request?.revisions.length ?? 0) + 1)
     if (savedCandidate?.output) {
       const candidate = JSON.parse(savedCandidate.output) as ResponseEnvelope
-      await rememberCandidate(candidate.body, context, candidate.goalOutcome.gaps)
+      await rememberCandidate(candidate.body, context, candidate.goalOutcome.gaps,
+        typeof savedCandidate.input['publicTextPartId'] === 'string' ? savedCandidate.input['publicTextPartId'] : undefined)
     }
 
     const applySteering = async () => {
@@ -885,6 +887,7 @@ export class AgentRuntime {
           continue
         }
         await this.publications.get(runId)?.end('completed')
+        finalPublicTextPartId = this.publications.get(runId)?.partId
         session.history.push(...turn.output)
         finalText = turn.text.trim()
         if (finalText) {
@@ -964,6 +967,7 @@ export class AgentRuntime {
         throw new AgentOSError('response_protocol_exhausted', 'Retained answer no longer satisfies the response policy')
       }
       finalText = lastGood.text
+      finalPublicTextPartId = lastGood.publicTextPartId
       finalEnvelope = createResponseEnvelope(finalText, {
         status: 'partial', verification: 'inconclusive', requestVersion: (session.request?.revisions.length ?? 0) + 1, gaps,
       }, evidence(), artifacts, session.request?.contract, session.request?.resourceChecks)
@@ -983,6 +987,7 @@ export class AgentRuntime {
       version: 2, runId, agentId: work.agentId, sessionId: work.sessionId,
       ...(work.threadId !== undefined ? { threadId: work.threadId } : {}),
       body: durableText,
+      ...finalPublicTextPartId ? { publicTextPartId: finalPublicTextPartId } : {},
       envelope: finalEnvelope,
     }
     this.previews.get(runId)?.buffer.close()

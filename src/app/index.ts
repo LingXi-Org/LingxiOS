@@ -473,6 +473,19 @@ export async function createLingxiOS(options: LingxiOSOptions) {
             }
             if (components.length) message = { ...message, envelope: { ...message.envelope, presentations: components } }
           }
+          if (message.publicTextPartId !== undefined) {
+            if (typeof message.publicTextPartId !== 'string' || !message.publicTextPartId.length || message.publicTextPartId.length > 1000) {
+              throw new Error('invalid public text source identity')
+            }
+            // A retained candidate may come from an older provider attempt/fence,
+            // but never from another run or request version. This reference is
+            // committed atomically with the accepted message and its public event.
+            const source = await client.query(`SELECT data FROM lingxios.agent_run_events WHERE run_id=$1
+              AND kind='public.text.delta' AND data->>'partId'=$2 ORDER BY seq LIMIT 1`, [work.id,message.publicTextPartId])
+            const identity = source.rows[0]?.['data'] as Record<string,unknown> | undefined
+            if (!identity || identity['requestVersion'] !== message.envelope.requestVersion
+              || !Number.isSafeInteger(identity['fence']) || Number(identity['fence']) > work.fence) throw new Error('public text source is not part of the accepted request')
+          }
           const resultId = 'result:' + createHash('sha256').update(JSON.stringify([work.id, message])).digest('hex')
           const previous = await client.query(`SELECT result.id,result.message FROM lingxios.agent_work_items work
             JOIN lingxios.agent_results result ON result.id=work.result_id WHERE work.id=$1`, [work.id])
@@ -522,6 +535,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
             FROM lingxios.agent_run_events WHERE run_id=$1`,
           [work.id,(work.fence-1)*RUN_SEQUENCE_SPAN,work.tenantId,work.agentId,
             JSON.stringify({ resultId,requestVersion: message.envelope.requestVersion,
+              ...message.publicTextPartId ? { publicTextPartId: message.publicTextPartId } : {},
               candidateHash: candidateHash({ body: message.body, requestVersion: message.envelope.requestVersion, artifacts: message.envelope.artifacts }) }),
             integration.delivery ? JSON.stringify(work) : null])
         })

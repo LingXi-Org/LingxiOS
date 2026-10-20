@@ -64,6 +64,11 @@ export function consumePublicTextAttempts(view: RunView, attempts: readonly Publ
   }
   return settlePublicText({...view,publicTextAttempts:[...known.values()].sort((a,b)=>a.fence-b.fence)})
 }
+function associatePublicText(view:RunView,partId:unknown,resultId:unknown,requestVersion:unknown,fence:number):RunView {
+  if(typeof partId!=='string'||!partId||typeof resultId!=='string'||!resultId||!Number.isSafeInteger(requestVersion))return view
+  return {...view,publicTextParts:(view.publicTextParts??[]).map(part=>part.partId===partId&&part.requestVersion===requestVersion&&part.fence<=fence
+    ? {...part,acceptedResultId:resultId}:part)}
+}
 function archivePublicText(view: RunView, event: RunEvent): RunView {
   const data = publicTextPayload(event)
   if (!data) return view
@@ -74,21 +79,23 @@ function archivePublicText(view: RunView, event: RunEvent): RunView {
     if (data.chunkIndex !== (prior?.chunkCount ?? 0)) throw new Error('public text chunk sequence is incomplete')
     const part: PublicTextPart = prior ? { ...prior,text:prior.text+data.text,lastSeq:event.seq,chunkCount:prior.chunkCount+1 }
       : { version:1,runId:event.runId,requestVersion:data.requestVersion,fence:data.fence,attemptId:data.attemptId,
-        partId:data.partId,partIndex:data.partIndex,text:data.text,firstSeq:event.seq,lastSeq:event.seq,chunkCount:1,endedSeq:null,status:'running',reason:null }
+        partId:data.partId,partIndex:data.partIndex,text:data.text,firstSeq:event.seq,lastSeq:event.seq,chunkCount:1,endedSeq:null,acceptedResultId:null,status:'running',reason:null }
     if (prior) parts[index]=part; else parts.push(part)
   } else {
     if (!prior || prior.chunkCount !== data.chunkCount) throw new Error('public text end is missing its committed chunks')
     parts[index]={ ...prior,lastSeq:event.seq,endedSeq:event.seq,reason:data.reason,status:publicTextStatus(data.reason) }
   }
-  return settlePublicText({ ...view,publicTextParts:parts.sort((a,b)=>a.firstSeq-b.firstSeq) })
+  const next = { ...view,publicTextParts:parts.sort((a,b)=>a.firstSeq-b.firstSeq) }
+  return settlePublicText(view.message ? associatePublicText(next,view.message.publicTextPartId,view.resultId,view.message.envelope.requestVersion,view.messageFence) : next)
 }
 
 /** Consume ordered, replayable public events. Draft text is never a committed message. */
 export function consumeRunEvent(view: RunView, event: RunEvent): RunView {
   if (event.runId !== view.runId || event.visibility !== 'user' || !Number.isSafeInteger(event.seq) || event.seq <= view.lastSeq) return view
-  const next = { ...view, lastSeq: event.seq }
+  let next = { ...view, lastSeq: event.seq }
   if (event.kind === 'public.text.delta' || event.kind === 'public.text.ended') return archivePublicText(next,event)
   const fence = Math.floor((event.seq - 1) / RUN_SEQUENCE_SPAN) + 1
+  if (event.kind === 'response.committed') next=associatePublicText(next,event.data['publicTextPartId'],event.data['resultId'],event.data['requestVersion'],fence)
   if (fence < view.fence) return next
   next.fence = fence
   if (event.kind === 'run.started' && fence > view.messageFence) {
@@ -128,6 +135,7 @@ export function consumeAssistantMessage(view: RunView, message: AssistantMessage
     throw new Error('committed message has an inconsistent envelope')
   }
   if (!commit?.resultId || !Number.isSafeInteger(commit.fence) || commit.fence < 1) throw new Error('committed result identity is required')
+  view=associatePublicText(view,message.publicTextPartId,commit.resultId,message.envelope.requestVersion,commit.fence)
   if (view.message && commit.fence === view.messageFence && commit.resultId === view.resultId) return view
   if (message.envelope.requestVersion < view.requestVersion || commit.fence < view.messageFence
     || commit.fence === view.messageFence && view.resultId !== commit.resultId) return view

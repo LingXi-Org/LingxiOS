@@ -75,3 +75,35 @@ it('a revised request in the same fence marks its unfinished prior version super
   view=consumeRunState(view,{...state(1,2),publicTextAttempts:[{fence:1,reason:'failed'}]})
   assert.equal(view.publicTextParts?.[0]?.reason,'superseded')
 })
+
+it('only committed result identity associates an accepted public part, including state-first and old-fence replay',()=>{
+  const message={version:2 as const,runId:'run',agentId:'agent',sessionId:'room',body:'final',publicTextPartId:'part-2',
+    envelope:{version:1 as const,evidenceSnapshotId:'evidence',body:'final',requestVersion:1,goalOutcome:{status:'satisfied' as const,verification:'inconclusive' as const,requestVersion:1},citations:[],artifacts:[]}}
+  const committedState:RunState={...state(1,1,'succeeded'),message,run:{...state().run,status:'succeeded',resultId:'result-1',resultFence:1}}
+  const items=[event(1,{chunkIndex:0,text:'final'}),event(2,{chunkCount:1,reason:'tool'},true),
+    event(3,{partId:'part-2',attemptId:'call-2',chunkIndex:0,text:'final'}),
+    event(4,{partId:'part-2',attemptId:'call-2',chunkCount:1,reason:'completed'},true)]
+  let live=createRunView('run'),replay=consumeRunState(createRunView('run'),committedState)
+  for(const item of items){live=consumeRunEvent(live,item);replay=consumeRunEvent(replay,item)}
+  assert.deepEqual(parts(live).map(part=>part['acceptedResultId']),[null,null],'completed alone is not committed acceptance')
+  assert.deepEqual(parts(replay).map(part=>part['acceptedResultId']),[null,'result-1'])
+  const commit:RunEvent={runId:'run',seq:5,kind:'response.committed',stage:'completed',visibility:'user',data:{resultId:'result-1',requestVersion:1,publicTextPartId:'part-2'}}
+  live=consumeRunState(consumeRunEvent(live,commit),committedState)
+  replay=consumeRunEvent(replay,commit)
+  assert.deepEqual(parts(live),parts(replay))
+  let old=consumeRunState(createRunView('run'),state(2,2))
+  for(const item of [...items,commit])old=consumeRunEvent(old,item)
+  assert.deepEqual(parts(old).map(part=>part['acceptedResultId']),[null,'result-1'])
+  assert.equal(old.message,null,'old accepted history must not replace the current answer')
+  assert.equal(old.fence,2)
+})
+
+it('a retained older-fence source associates only within the exact request version',()=>{
+  let view=consumeRunState(createRunView('run'),state(3,2))
+  view=consumeRunEvent(view,event(1,{chunkIndex:0,text:'older candidate'}))
+  view=consumeRunEvent(view,{runId:'run',seq:100001,kind:'response.committed',stage:'completed',visibility:'user',data:{resultId:'accepted-old',publicTextPartId:'part-1',requestVersion:1}})
+  assert.equal(view.publicTextParts?.[0]?.acceptedResultId,'accepted-old')
+  assert.equal(view.publicTextParts?.[0]?.reason,'superseded','acceptance does not rewrite attempt termination')
+  view=consumeRunEvent(view,{runId:'run',seq:200001,kind:'response.committed',stage:'completed',visibility:'user',data:{resultId:'wrong-version',publicTextPartId:'part-1',requestVersion:2}})
+  assert.equal(view.publicTextParts?.[0]?.acceptedResultId,'accepted-old')
+})
