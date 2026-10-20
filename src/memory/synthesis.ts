@@ -68,7 +68,7 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
   if (!job) throw new Error('memory synthesis lease is unavailable')
   const meta = job['meta'] as Record<string,unknown>
   if (meta['scopeType']!==scope.scopeType || meta['scopeId']!==scope.scopeId || Number(meta['epoch'])!==epoch!.epoch) return method==='load' ? null : { outcome: 'forgotten',changeCount: 0 }
-  const sources = (await client.query(`SELECT e.*,s.segment_cursor,w.thread_id,w.created_at AS source_started_at,w.steer_inputs,
+  const sources = (await client.query(`SELECT e.*,s.segment_cursor,w.thread_id,w.created_at AS source_started_at,w.steer_inputs,w.meta AS source_meta,
     (SELECT COUNT(*)::integer FROM lingxios.agent_memory_evidence_segments p WHERE p.source_run_id=e.source_run_id) AS segment_count
     FROM lingxios.agent_memory_evidence_scopes s JOIN lingxios.agent_memory_evidence e USING(source_run_id)
     JOIN lingxios.agent_work_items w ON w.id=e.source_run_id
@@ -167,17 +167,34 @@ export async function executeMemorySynthesis(client: SqlQueryable, work: Omit<Wo
     }
   }
   for (const item of evidence) {
+    // Source work is already locked with the evidence and scope. This bounded,
+    // content-free checkpoint survives separate page jobs and process restarts.
+    // Never infer acceptance of an old prefix from its cursor alone.
+    type Progress = { epoch:number;version:number;hash:string;next:number;rejected:number;covered:boolean }
+    const source = sources.find(row => row['source_run_id'] === item.sourceRunId)!
+    const sourceMeta = source['source_meta'] as Record<string,unknown>
+    const processing = { ...(sourceMeta['memoryProcessing'] as Record<string,Progress> | undefined) }
+    const key = memoryDigest(scopeParams(scope)), prior = processing[key]
+    const matching = prior?.epoch === epoch!.epoch && prior.version === item.requestVersion
+      && prior.hash === item.inputSha256 && prior.next === item.segment.start
+    const progress: Progress = {epoch:epoch!.epoch,version:item.requestVersion,hash:item.inputSha256,next:item.segment.next,
+      rejected:(matching ? prior.rejected : 0) + (approved ? 0 : 1),
+      covered:item.segment.start === 0 || !!matching && prior.covered}
+    processing[key] = progress
+    await client.query(`UPDATE lingxios.agent_work_items SET meta=jsonb_set(meta,'{memoryProcessing}',$2::jsonb) WHERE id=$1`,
+      [item.sourceRunId,JSON.stringify(processing)])
     const complete=item.segment.sourceComplete && item.segment.next>=item.segment.total
     await client.query(`UPDATE lingxios.agent_memory_evidence_scopes SET segment_cursor=$3,status=$4,
       job_id=CASE WHEN $4='pending' AND $5 THEN NULL ELSE job_id END
       WHERE job_id=$1 AND source_run_id=$2 AND status='pending'`,[work.id,item.sourceRunId,item.segment.next,
-      complete ? approved?'processed':'rejected' : 'pending',item.segment.next<item.segment.total])
+      complete ? progress.covered && progress.rejected === 0 ? 'processed' : 'rejected' : 'pending',item.segment.next<item.segment.total])
   }
   await client.query(`UPDATE lingxios.agent_memory_evidence_scopes SET job_id=NULL WHERE job_id=$1 AND status='pending'
     AND NOT(source_run_id=ANY($2::text[]))`,[work.id,evidence.map(item=>item.sourceRunId)])
-  await client.query(`UPDATE lingxios.agent_memory_evidence e SET status=CASE WHEN EXISTS(SELECT 1 FROM lingxios.agent_memory_evidence_scopes s
-      WHERE s.source_run_id=e.source_run_id AND s.status='processed') THEN 'processed'
-      WHEN EXISTS(SELECT 1 FROM lingxios.agent_memory_evidence_scopes s WHERE s.source_run_id=e.source_run_id AND s.status='pending') THEN 'pending' ELSE 'rejected' END
+  await client.query(`UPDATE lingxios.agent_memory_evidence e SET status=CASE
+      WHEN EXISTS(SELECT 1 FROM lingxios.agent_memory_evidence_scopes s WHERE s.source_run_id=e.source_run_id AND s.status='pending') THEN 'pending'
+      WHEN EXISTS(SELECT 1 FROM lingxios.agent_memory_evidence_scopes s WHERE s.source_run_id=e.source_run_id AND s.status='rejected') THEN 'rejected'
+      WHEN EXISTS(SELECT 1 FROM lingxios.agent_memory_evidence_scopes s WHERE s.source_run_id=e.source_run_id AND s.status='processed') THEN 'processed' ELSE 'superseded' END
     WHERE e.source_run_id=ANY($1::text[]) AND e.status<>'superseded'`,[evidence.map(item => item.sourceRunId)])
   return { outcome: approved?'committed':'rejected',changeCount: approved?changes.length:0 }
 }

@@ -97,7 +97,7 @@ export interface MemoryDiagnostics {
   conflicts: Array<{ id: string; sourceRunIds: string[]; reason: string; memoryIds: string[] }>
   failedReflections: Array<{ id: string; attempts: number; error: string | null }>
   nextCursor: string | null
-  maintenance?: {pendingSources:number;incompleteSources:number;processedSources:number;pendingSegments:number}
+  maintenance?: {pendingSources:number;incompleteSources:number;processedSources:number;pendingSegments:number;rejectedSources?:number;retryableSources?:number}
   index?: {key:string;eligible:number;indexed:number}
 }
 export interface MemorySnapshot {

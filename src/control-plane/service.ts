@@ -34,6 +34,7 @@ import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { snapshotEvidence } from '../context/evidence.js'
 import { createResponseEnvelope, snapshotArtifacts } from '../outcome/envelope.js'
+import { MEMORY_DELETION_CONFIRMATION } from '../memory/confirmation.js'
 import { parseFinalCandidate } from '../outcome/assessment.js'
 import { businessActionDeliveryGap, requiresReview, validateCompletion } from '../outcome/completion.js'
 import type { KernelArtifact } from '../protocol/types.js'
@@ -824,7 +825,12 @@ export class ControlPlaneService {
   // Final messages: stream-integrity verification
   // -------------------------------------------------------------------------
 
-  async commitResult(proof: LeaseProof, message: AssistantMessage): Promise<void> {
+  /** Third argument is server-only; never exposed by HostPort or HTTP handlers. */
+  async commitResult(proof: LeaseProof, message: AssistantMessage, internal?: { memoryDeletionConfirmation: true }): Promise<void> {
+    if (internal && (message.body !== MEMORY_DELETION_CONFIRMATION || message.envelope.goalOutcome.status !== 'partial'
+      || message.envelope.artifacts.length || message.envelope.assessment || message.publicTextPartId)) {
+      throw new ControlPlaneError(409, 'invalid receipt-only confirmation')
+    }
     if (!await this.deps.work.getLeased(proof.id, proof.fence, hashToken(proof.leaseToken))) {
       const issued = await this.deps.work.getAttempt(proof.id, proof.fence, hashToken(proof.leaseToken))
       if (issued) {
@@ -903,7 +909,8 @@ export class ControlPlaneService {
         }
         if ([...latest.values()].some(status => status !== 'pass')) throw new Error('known resource postconditions remain unresolved')
       }
-      expected = createResponseEnvelope(message.body, message.envelope.goalOutcome, evidence, artifacts, session.request.contract, session.request.resourceChecks, assessment)
+      expected = createResponseEnvelope(message.body, message.envelope.goalOutcome, evidence, artifacts,
+        internal ? undefined : session.request.contract, internal ? undefined : session.request.resourceChecks, assessment)
     } catch {
       throw new ControlPlaneError(409, 'response does not match its evidence or artifact records')
     }
