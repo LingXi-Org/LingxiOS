@@ -1,0 +1,55 @@
+{
+  "source": "b8bbef2762c782c75079c3f81113296e95d17bb1",
+  "node": "22.23.3",
+  "fixture": "new exclusive synthetic database on existing local PostgreSQL service",
+  "providerRequests": 0,
+  "productionRequests": 0,
+  "cases": [
+    {
+      "name": "final-first",
+      "passed": true,
+      "lockObserved": true,
+      "settledWhileFinalPending": false,
+      "persistedBeforeCommit": false,
+      "finalAllowed": true,
+      "budget": {
+        "calls": 1,
+        "tokens": 0
+      }
+    },
+    {
+      "name": "record-first",
+      "passed": true,
+      "lockObserved": true,
+      "returnedBeforeSettlement": false,
+      "rejectedUnsettled": true
+    },
+    {
+      "name": "parallel-reserve-record",
+      "passed": true,
+      "completed": true,
+      "reserveAllowed": true
+    },
+    {
+      "name": "lease-after-wait",
+      "passed": true,
+      "rejected": true,
+      "zeroTokenSettlement": true
+    },
+    {
+      "name": "deadline-after-wait",
+      "passed": true,
+      "rejected": true,
+      "zeroTokenSettlement": true
+    }
+  ],
+  "passed": true,
+  "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+  "cleanedUp": true,
+  "sourceHashes": {
+    "src/control-plane/pg-store.ts": "341ab046242d1f74e4e01f8f552b2cec970d056a59e78d46af830434e1f070f3",
+    "src/memory/admission.ts": "049876ca04b44840b087715b8136cb3b14eafb454d90118422b0d4470f4bc97c",
+    "src/memory/runtime.ts": "1458c76a82e9f6cf325cafb198777f7ea49c30eeeba4ec25697d4f354ff9c206",
+    "src/model/execution.ts": "0c0e38839e0f0c11f65c54d922fdba213f74784bf37a64f91709395103c6fec5"
+  }
+}

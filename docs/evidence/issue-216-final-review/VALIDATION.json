@@ -1,0 +1,162 @@
+{
+  "recordedAtUtc": "2026-10-20T05:46:29.765727+00:00",
+  "nativeSource": "b8bbef2762c782c75079c3f81113296e95d17bb1",
+  "nativeCandidateVersion": "3.5.8",
+  "productSource": "cef2349c71f576ca53e76a1b12eacfdec5f75eba",
+  "handoffSource": "4c13bf6adfc9e7b8891d45f2d1afb3665d3f860f",
+  "nativeMainObserved": "1e3493d46012ef9fc1747f102132ac599643bc19",
+  "productMainObserved": "535873b941815b41961a44f56e479257cbb71626",
+  "qualification": "Exact b8 full source build packed through public exports into PR224. Not a published package or final integrated product candidate.",
+  "runtimeSchema": 13,
+  "productMigration": 47,
+  "results": {
+    "build": true,
+    "productTypes": true,
+    "originalNegatives": {
+      "passed": 53,
+      "failed": 0,
+      "ms": 97948.404747
+    },
+    "publicControls": {
+      "passed": 22,
+      "failed": 0,
+      "ms": 35088.737699
+    },
+    "nativeTwoPhase": {
+      "passed": 50,
+      "failed": 0,
+      "ms": 124340.63698
+    },
+    "legacyModelCounts": {
+      "e8": [
+        0,
+        1,
+        1
+      ],
+      "b8": [
+        0,
+        0,
+        0
+      ]
+    },
+    "legacyCompatibility": {
+      "passed": 3,
+      "failed": 0
+    },
+    "realPostgres": {
+      "cb6": {
+        "passed": 1,
+        "failed": 4
+      },
+      "b8": {
+        "passed": 5,
+        "failed": 0
+      }
+    },
+    "productIntegration": {
+      "passed": 37,
+      "failed": 1,
+      "ms": 215133.075675
+    },
+    "actualProvider": {
+      "passed": 0,
+      "failed": 1,
+      "ms": 97030.776648,
+      "ledgerCalls": 33,
+      "embeddingCalls": 8,
+      "measuredCalls": 33,
+      "costMicros": 370137
+    },
+    "browser": {
+      "passed": 3,
+      "failed": 0,
+      "seconds": 32.8
+    },
+    "selfDeletionConfirmation": {
+      "passed": 0,
+      "failed": 2
+    }
+  },
+  "invalidExecutionExcluded": {
+    "selfDeletionFirstFixture": "Direct AgentRuntime omitted the official worker review wrapper. No mutation committed; not a valid product failure. Fixed fixture uses createWorker without changing assertions or runtime.",
+    "browserFirstLaunch": "Default /home/agent/.cache/ms-playwright absent; official engine executed zero tests. Reused existing /workspace/.lingxi-setup/cache/ms-playwright for successful run; no security or installation change."
+  },
+  "pending": [
+    "safe durable confirmation after a committed in-turn forget/selective delete, including recovery",
+    "bounded handling/diagnostics of rejected synthesis windows; real-provider middle fact remains missing",
+    "final Loop integration SHA with coordinated formal package/lockfile",
+    "final image Worker acceptance: handoff reports bubblewrap failure; not rerun here",
+    "production rollout/acceptance owned by sole integrator"
+  ],
+  "productionRequests": 0,
+  "packagePublished": false,
+  "merged": false,
+  "deployed": false,
+  "issueClosed": false,
+  "trackedRuntimeEdits": false,
+  "rawLocalArtifacts": {
+    "build.log": {
+      "path": "/workspace/shared/issue216-final-review/build.log",
+      "sha256": "67ce767cce75428bac758e0a6cdd9797ee2de0fdd1306c4ffb3a622ac0ec39b3"
+    },
+    "build-red.log": {
+      "path": "/workspace/shared/issue216-final-review/build-red.log",
+      "sha256": "c3b14f51f4c39b7ec49e92777afd52c4b50f0d180748e19de078285f3164e39a"
+    },
+    "build-admission-red.log": {
+      "path": "/workspace/shared/issue216-final-review/build-admission-red.log",
+      "sha256": "7980b10f6c27607ad12162432c00b95b6a38869a142f0eaee548fe08552e5c40"
+    },
+    "pack.log": {
+      "path": "/workspace/shared/issue216-final-review/pack.log",
+      "sha256": "cc829bf4f2ab28becf811096ed6a22bb58937da5ff11720fba0d7879e1d70454"
+    },
+    "product-types.log": {
+      "path": "/workspace/shared/issue216-final-review/product-types.log",
+      "sha256": "a79db68e1ff10b0c298ccd05e6c93dc763ec832a528b0cca738a76ca150115b0"
+    },
+    "original-negatives.tap": {
+      "path": "/workspace/shared/issue216-final-review/original-negatives.tap",
+      "sha256": "5c70a5c1c8ddb00d2117664ba1f2c0320f689537c3d8e99e907de0620dc83c65"
+    },
+    "public-controls.tap": {
+      "path": "/workspace/shared/issue216-final-review/public-controls.tap",
+      "sha256": "1af7b18fc368366abc396a3c5792b91394948f1bbc2a228020ecaa6c2e1a60ad"
+    },
+    "two-phase-native.tap": {
+      "path": "/workspace/shared/issue216-final-review/two-phase-native.tap",
+      "sha256": "2908fa40cac7ca9a8c99f82d6ac865a75424ad2b80d13f41d6388fe5904d7a86"
+    },
+    "product-integration.log": {
+      "path": "/workspace/shared/issue216-final-review/product-integration.log",
+      "sha256": "cbeda72d1b21d171ce6928bc12e243325428c243acb9702f2c4d6c988fa20e8a"
+    },
+    "product-live.log": {
+      "path": "/workspace/shared/issue216-final-review/product-live.log",
+      "sha256": "f815b28ee90bbeb4e91475b138bc4a6bd20b8a7756e6a1936c576a3dfc9673d4"
+    },
+    "browser-build.log": {
+      "path": "/workspace/shared/issue216-final-review/browser-build.log",
+      "sha256": "11ff4ff9b82d715f049c9cfd36b57d9b341df5fdf164d03ac1c1aa823c4d6fa9"
+    },
+    "browser.log": {
+      "path": "/workspace/shared/issue216-final-review/browser.log",
+      "sha256": "458848941053e07077ae2d5466b82a149b001c5e275d7068433d40523770e84d"
+    },
+    "browser-cached.log": {
+      "path": "/workspace/shared/issue216-final-review/browser-cached.log",
+      "sha256": "ce74d0e50395588460258a2c715356008f08256e858710467951c26e361f81bd"
+    },
+    "self-deletion-probe-invalid-fixture.mjs": {
+      "path": "/workspace/shared/issue216-final-review/self-deletion-probe-invalid-fixture.mjs",
+      "sha256": "beebda1bc70fb1636fceae00379ff116d00d1579d8cc4da787104d6fc2d228ff"
+    },
+    "self-deletion-invalid-fixture.json": {
+      "path": "/workspace/shared/issue216-final-review/self-deletion-invalid-fixture.json",
+      "sha256": "454fa1500b4c8ea21b2eafa296a6190076f28b7658fa06089e1be9c3d0f37759"
+    }
+  },
+  "packageSha256": {
+    "lyyzka-lingxios-3.5.8.tgz": "c8fe967a0af3ff4dcd51fdf5af756051f87c850dcbfd382a526895a4704bdfec"
+  }
+}

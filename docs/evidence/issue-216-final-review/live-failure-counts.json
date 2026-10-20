@@ -1,0 +1,89 @@
+{
+  "nativeSource": "b8bbef2762c782c75079c3f81113296e95d17bb1",
+  "product": "cef2349c71f576ca53e76a1b12eacfdec5f75eba",
+  "passed": false,
+  "model": "zai-org/GLM-5.2",
+  "embeddingModel": "BAAI/bge-m3",
+  "failure": "background captures the middle fact",
+  "productionRequests": 0,
+  "usage": [
+    {
+      "calls": 33,
+      "cost_micros": 370137,
+      "embedding_calls": 8,
+      "measured": 33
+    }
+  ],
+  "sourceEvidence": [
+    {
+      "status": "processed",
+      "segment_cursor": 7,
+      "segments": 7,
+      "source_complete": true,
+      "middle_in_source": true,
+      "corrected_tail_in_source": true
+    }
+  ],
+  "documents": [
+    {
+      "scope_type": "learner",
+      "documents": 4,
+      "middle_facts": 0,
+      "current_tail_facts": 1
+    }
+  ],
+  "synthesis": [
+    {
+      "outcome": "committed",
+      "changes": "0",
+      "jobs": 4
+    },
+    {
+      "outcome": "committed",
+      "changes": "1",
+      "jobs": 1
+    },
+    {
+      "outcome": "rejected",
+      "changes": "0",
+      "jobs": 2
+    }
+  ],
+  "index": [
+    {
+      "current_vectors": 4,
+      "dimensions": 1024,
+      "spaces": 1
+    }
+  ],
+  "retrieval": [
+    {
+      "modes": [
+        "hybrid",
+        "hybrid_pending",
+        "hybrid_pending",
+        "hybrid_pending",
+        "hybrid_pending"
+      ],
+      "counts": {
+        "core": 1,
+        "recalled": 2,
+        "directory": 1,
+        "strategies": 0
+      }
+    }
+  ],
+  "checksPassedBeforeFailure": [
+    "explicit-long-input-middle-tail",
+    "immediate-new-room-actual-model-input-and-answer",
+    "current-1024-index",
+    "nonlexical-semantic-answer",
+    "proactive-hybrid-reference-injection",
+    "source-cursor-completed"
+  ],
+  "notReached": [
+    "background-new-room-answer",
+    "effective-revision-answer",
+    "post-forget-index-removal"
+  ]
+}

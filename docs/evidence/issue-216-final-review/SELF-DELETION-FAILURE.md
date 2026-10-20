@@ -1,0 +1,11 @@
+# Newly reproduced product blocker: committed deletion loses its confirmation
+
+Exact native candidate b8bbef2762c782c75079c3f81113296e95d17bb1 with Loop PR224 cef2349c71f576ca53e76a1b12eacfdec5f75eba. Existing, unchanged `server/src/__integration__/native-memory.test.ts:131` fails: all completed runs must reach durable IM delivery. 37/38 product checks pass; this one does not.
+
+The final explicit memory.forget tool succeeds and commits. Native runTurn next loads context (`src/runtime/runtime.ts:509`); rememberMemoryAdmission (`src/memory/admission.ts:41`) correctly refuses the old scope epoch. The foreground run fails, no final result/outbox record is created. The existing PostgreSQL fixture contains 13 turn runs (12 partial, 1 failed) and 12/12 delivered outbox rows; the failed trigger is the explicit forget. This is not a missing acknowledgement from WuKongIM. The original assertion and 15-second bound remain unchanged.
+
+Failure inventory before independent reproduction: full-scope forget and selective memory.apply delete both advance the epoch; neither may dispatch an old-context model request. A positive confirmation must come only after an actual committed receipt, without claiming unrelated remaining work is complete. Recovery after the commit/response crash gap, request revisions, cancellation, multiple calls in a batch, retained unaffected facts, and product current-audience delivery must remain valid. Never fix this by ignoring or advancing old admission proof, deleting valid tests, pretending an enqueued action committed, or replaying writes under a new identity.
+
+The independent local PGlite/actual AgentRuntime probe uses a scripted model and native verified mutation tools. It will record only operation kind, model-call and sentinel counts, committed receipt status, remaining documents, epoch mismatch, result count and final run status. It does not use a live provider or product database. A failed confirmation check is retained as a new issue216 failure, not converted to a green expectation.
+
+This correction spans committed action/turn confirmation and durable recovery semantics. No speculative protocol or product patch is being installed into the reviewed release branch. It remains a native integration blocker for the sole integrator, within issue216 (not a deferred second-phase issue).

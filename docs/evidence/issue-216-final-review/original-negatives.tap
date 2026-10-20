@@ -1,0 +1,115 @@
+# Subtest: checks the actual budget clock after final authorization awaits
+ok 1 - checks the actual budget clock after final authorization awaits
+# Subtest: binds context and the existing call to the original request revision
+ok 2 - binds context and the existing call to the original request revision
+# Subtest: does not attach a newer memory revision to an older control-plane context snapshot
+ok 3 - does not attach a newer memory revision to an older control-plane context snapshot
+# Subtest: captures the model input revision before publication waits and later context refreshes
+ok 4 - captures the model input revision before publication waits and later context refreshes
+# Subtest: rejects a request revision changed while memory inventory is in flight
+ok 5 - rejects a request revision changed while memory inventory is in flight
+# Subtest: preserves root-deadline classification before a provider starts
+ok 6 - preserves root-deadline classification before a provider starts
+# Subtest: preserves provider-deadline classification before a provider starts
+ok 7 - preserves provider-deadline classification before a provider starts
+# Subtest: preserves user-cancel classification before a provider starts
+ok 8 - preserves user-cancel classification before a provider starts
+# Subtest: lets the current stable-scope owner delete after historic room revocation without allowing rewrites
+ok 9 - lets the current stable-scope owner delete after historic room revocation without allowing rewrites
+# Subtest: rejects native rollback when stable forgetting is the only remaining activation state
+ok 10 - rejects native rollback when stable forgetting is the only remaining activation state
+# Subtest: keeps empty pre-activation rollback available and rejects epoch or timestamp fences independently
+ok 11 - keeps empty pre-activation rollback available and rejects epoch or timestamp fences independently
+# Subtest: retains authorized memory and ordinary items, but invalidates old tool pairs and their mixed summary
+ok 12 - retains authorized memory and ordinary items, but invalidates old tool pairs and their mixed summary
+# Subtest: withholds unproven legacy summaries with memory enabled, independently of expiring evidence
+ok 13 - withholds unproven legacy summaries with memory enabled, independently of expiring evidence
+# Subtest: control proof neither enters provider input nor consumes memory body allocation
+ok 14 - control proof neither enters provider input nor consumes memory body allocation
+# Subtest: uses canonical legacy cell evidence without hiding unrelated ordinary tool observations
+ok 15 - uses canonical legacy cell evidence without hiding unrelated ordinary tool observations
+# Subtest: cannot promote a mixed or replayed old epoch into a newer proof
+ok 16 - cannot promote a mixed or replayed old epoch into a newer proof
+# Subtest: finds legacy implicit memory exposure from server event counts without reading any body
+ok 17 - finds legacy implicit memory exposure from server event counts without reading any body
+# Subtest: invalidates an unproven summary after counts snapshot exposure without a memory tool
+ok 18 - invalidates an unproven summary after counts snapshot exposure without a memory tool
+# Subtest: invalidates an unproven summary after core snapshot exposure without a memory tool
+ok 19 - invalidates an unproven summary after core snapshot exposure without a memory tool
+# Subtest: invalidates an unproven summary after directory snapshot exposure without a memory tool
+ok 20 - invalidates an unproven summary after directory snapshot exposure without a memory tool
+# Subtest: invalidates an unproven summary after recalled snapshot exposure without a memory tool
+ok 21 - invalidates an unproven summary after recalled snapshot exposure without a memory tool
+# Subtest: invalidates an unproven summary after strategies snapshot exposure without a memory tool
+ok 22 - invalidates an unproven summary after strategies snapshot exposure without a memory tool
+# Subtest: invalidates an unproven summary after expired-counts snapshot exposure without a memory tool
+ok 23 - invalidates an unproven summary after expired-counts snapshot exposure without a memory tool
+# Subtest: rejects an inventory snapshot when forgetting commits before context returns
+ok 24 - rejects an inventory snapshot when forgetting commits before context returns
+# Subtest: fences forget at the request-event boundary before the next scripted provider call
+ok 25 - fences forget at the request-event boundary before the next scripted provider call
+# Subtest: fences forget at the publication-gate boundary before the next scripted provider call
+ok 26 - fences forget at the publication-gate boundary before the next scripted provider call
+# Subtest: fences forget at the retry boundary before the next scripted provider call
+ok 27 - fences forget at the retry boundary before the next scripted provider call
+# Subtest: fences forget at the quota-queue boundary before the next scripted provider call
+ok 28 - fences forget at the quota-queue boundary before the next scripted provider call
+# Subtest: fences forget at the nested-quota-queue boundary before the next scripted provider call
+ok 29 - fences forget at the nested-quota-queue boundary before the next scripted provider call
+# Subtest: carries the actual AgentRuntime context proof past model.started before provider dispatch
+ok 30 - carries the actual AgentRuntime context proof past model.started before provider dispatch
+# Subtest: preserves normal attempt accounting and current authorization
+ok 31 - preserves normal attempt accounting and current authorization
+# Subtest: preserves revoked attempt accounting and current authorization
+ok 32 - preserves revoked attempt accounting and current authorization
+# Subtest: preserves cancelled-gate attempt accounting and current authorization
+ok 33 - preserves cancelled-gate attempt accounting and current authorization
+# Subtest: preserves rejected-gate attempt accounting and current authorization
+ok 34 - preserves rejected-gate attempt accounting and current authorization
+# Subtest: preserves no-memory attempt accounting and current authorization
+ok 35 - preserves no-memory attempt accounting and current authorization
+# Subtest: uses only server-recorded epochs and never charges a forged final admission
+ok 36 - uses only server-recorded epochs and never charges a forged final admission
+# Subtest: defines already-admitted calls without resurrecting forgotten memory or admitting a later attempt
+ok 37 - defines already-admitted calls without resurrecting forgotten memory or admitting a later attempt
+# Subtest: continues unseen segments after rejected proposals and terminates without retrying rejected windows
+ok 38 - continues unseen segments after rejected proposals and terminates without retrying rejected windows
+# Subtest: excludes forgotten memory-only receipts from later turns, compaction and a process restart
+ok 39 - excludes forgotten memory-only receipts from later turns, compaction and a process restart
+# Subtest: invalidates summary derived before forget across restart while retaining current authorized messages
+ok 40 - invalidates summary derived before forget across restart while retaining current authorized messages
+# Subtest: invalidates legacy derived before forget across restart while retaining current authorized messages
+ok 41 - invalidates legacy derived before forget across restart while retaining current authorized messages
+# Subtest: keeps diagnostic copies content-free while preserving protected recovery (memory-success)
+ok 42 - keeps diagnostic copies content-free while preserving protected recovery (memory-success)
+# Subtest: keeps diagnostic copies content-free while preserving protected recovery (memory-failed)
+ok 43 - keeps diagnostic copies content-free while preserving protected recovery (memory-failed)
+# Subtest: keeps diagnostic copies content-free while preserving protected recovery (memory-unknown)
+ok 44 - keeps diagnostic copies content-free while preserving protected recovery (memory-unknown)
+# Subtest: keeps diagnostic copies content-free while preserving protected recovery (memory-throw)
+ok 45 - keeps diagnostic copies content-free while preserving protected recovery (memory-throw)
+# Subtest: keeps diagnostic copies content-free while preserving protected recovery (driver-generic-memory)
+ok 46 - keeps diagnostic copies content-free while preserving protected recovery (driver-generic-memory)
+# Subtest: keeps diagnostic copies content-free while preserving protected recovery (driver-generic-no-memory)
+ok 47 - keeps diagnostic copies content-free while preserving protected recovery (driver-generic-no-memory)
+# Subtest: keeps diagnostic copies content-free while preserving protected recovery (driver-diagnostics)
+ok 48 - keeps diagnostic copies content-free while preserving protected recovery (driver-diagnostics)
+# Subtest: keeps diagnostic copies content-free while preserving protected recovery (completed-diagnostics)
+ok 49 - keeps diagnostic copies content-free while preserving protected recovery (completed-diagnostics)
+# Subtest: keeps diagnostic copies content-free while preserving protected recovery (provider-finish-reason)
+ok 50 - keeps diagnostic copies content-free while preserving protected recovery (provider-finish-reason)
+# Subtest: keeps diagnostic copies content-free while preserving protected recovery (heartbeat)
+ok 51 - keeps diagnostic copies content-free while preserving protected recovery (heartbeat)
+# Subtest: projects bounded diagnostic metadata without changing the original recovery object
+ok 52 - projects bounded diagnostic metadata without changing the original recovery object
+# Subtest: drops malformed diagnostic fields and bounds reasons without converting failures to success
+ok 53 - drops malformed diagnostic fields and bounds reasons without converting failures to success
+1..53
+# tests 53
+# suites 0
+# pass 53
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 97948.404747
