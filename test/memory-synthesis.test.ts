@@ -10,6 +10,32 @@ import type { WorkItem } from '../src/protocol/types.js'
 import type { WorkProcessorContext } from '../src/runtime/runtime.js'
 import { NoEffectError } from '../src/tools/definition.js'
 
+// Real-provider failure: an invalid/protected proposal must get at most one
+// budgeted repair before independent review; neither attempt may mutate facts.
+it('repairs one invalid or protected proposal before verification without relaxing writes',async()=>{
+  const f=await memoryFixture()
+  try {
+    const saved=(await f.api.initialize(identity,{scope,documents:[content('Explicit preference')],idempotencyKey:'seed',sourceRef:'settings'})).documents[0]!
+    const source=await f.source({text:'New independent observation'})
+    const {job}=await f.reflection();assert.ok(job)
+    const invoke=(method:string,args:Record<string,unknown>)=>withTransaction(f.pool,db=>executeMemorySynthesis(db,job,method,args,f.options))
+    let calls=0
+    const context={signal:new AbortController().signal,emit:async()=>{},host:{executeAction:async(_work:WorkItem,action:{action:string;args:Record<string,unknown>})=>({
+      ok:true,executionState:'succeeded',value:await invoke(action.action.split('.')[1]!,action.args),
+    })},model:{structured:async(request:{instructions:string})=>{
+      calls++
+      if(calls===1) return {value:{changes:[{sourceRunIds:[source.work.id],change:{action:'update',id:saved.id,expectedVersion:1,content:content('Overwrite')}}],conflicts:[]}}
+      if(calls===2){assert.match(request.instructions,/Repair/);return {value:{changes:[{sourceRunIds:[source.work.id],change:{action:'create',content:content('Independent observation','new.md')}}],conflicts:[]}}}
+      assert.equal(calls,3);assert.match(request.instructions,/Independently audit/)
+      return {value:{approved:true,confidence:1}}
+    }}} as unknown as WorkProcessorContext
+    await memorySynthesisProcessor.process(job,context)
+    assert.equal(calls,3)
+    assert.equal((await f.api.read(identity,scope,saved.id))!.body,'Explicit preference')
+    assert.equal((await f.api.list(identity,scope)).items.length,2)
+  } finally {await f.close()}
+})
+
 it('retires permanently revoked sources but preserves transient failures for a later retry', async () => {
   const f = await memoryFixture({ reflection: { afterInteractions: 1 } })
   try {

@@ -41,6 +41,11 @@ export function createSemanticMemory(database: SqlPool, options: EmbeddingOption
         WHERE m.tenant_id=$1 AND m.scope_type=$2 AND m.scope_id=$3 AND m.origin<>'evolved' AND m.status='active' AND (m.valid_until IS NULL OR m.valid_until>NOW())
           AND (e.memory_id IS NULL OR e.version<>m.version OR ($11::text IS NOT NULL AND e.model<>$11))
           AND EXISTS(SELECT 1 FROM lingxios.agent_work_items w WHERE w.id=$9 AND w.fence=$10 AND w.cancel_requested_at IS NULL)
+          AND NOT EXISTS(SELECT 1 FROM lingxios.agent_work_items active WHERE active.tenant_id=$1 AND active.kind='memory_index'
+            AND active.status IN ('queued','leased') AND active.cancel_requested_at IS NULL AND active.meta->>'memoryId'=m.id
+            AND (active.meta->>'version')::integer=m.version AND active.meta->>'modelKey'=$4
+            AND COALESCE((active.meta->>'memoryEpoch')::bigint,0)=COALESCE((SELECT epoch FROM lingxios.agent_memory_scopes WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3),0)
+            AND ($11::text IS NULL OR active.meta->>'expectedModel' IS NULL OR active.meta->>'expectedModel'=$11))
           AND NOT EXISTS(SELECT 1 FROM lingxios.agent_work_items j WHERE j.id='memory-index:'||md5(jsonb_build_array($1::text,m.id,m.version,$4::text,$5::text,$6::text,$7::text,$8::text,$11::text,COALESCE((SELECT epoch FROM lingxios.agent_memory_scopes WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3),0))::text))
         ORDER BY m.pinned DESC,m.updated_at DESC,m.id LIMIT 32 ON CONFLICT(id) DO NOTHING`,
       [scope.tenantId, scope.scopeType, scope.scopeId, driver.cacheKey, work.agentId, work.principalId, work.sessionId, work.threadId ?? null, work.id, work.fence, model])

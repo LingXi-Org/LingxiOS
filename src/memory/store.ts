@@ -165,7 +165,12 @@ export async function applyMemoryChanges(database: SqlQueryable, scope: MemorySc
     || !context.sources.length || context.sources.length > 64 || context.sources.some(source => !source.sourceRef || !source.authorId)) throw new Error('memory write requires provenance')
   const [epoch] = await lockMemoryScopes(database,[scope])
   if (epoch!.epoch !== context.epoch) throw new Error('memory scope was forgotten')
-  for (const source of context.sources) if (source.workId && !(await currentMemoryScopes(database,[epoch!],source.workId)).length) throw new Error('memory source predates forgetting')
+  // Current authenticated deletion cannot reintroduce content. It may target a
+  // second surviving document through an older run's UI binding; expectedVersion,
+  // current grants and the reviewed epoch still fence the operation. Writes and
+  // restores continue to reject every source that predates forgetting.
+  const deletionOnly=context.explicit && changes.length>0 && changes.every(change=>change.action==='delete')
+  for (const source of context.sources) if (!deletionOnly && source.workId && !(await currentMemoryScopes(database,[epoch!],source.workId)).length) throw new Error('memory source predates forgetting')
   const fingerprint = memoryDigest({ identity,scope,changes,sources: context.sources.map(({ observedAt: _time,...source }) => source),explicit: context.explicit })
   const previous = (await database.query(`SELECT fingerprint,result FROM lingxios.agent_memory_commands
     WHERE tenant_id=$1 AND scope_type=$2 AND scope_id=$3 AND epoch=$4 AND action_id=$5`, [...scopeParams(scope),context.epoch,context.actionId])).rows[0]

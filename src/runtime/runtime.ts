@@ -12,6 +12,7 @@ import { abortable } from '../deadline.js'
 import { deadlineHost } from '../host/deadline-host.js'
 import { checkpointHost } from '../host/checkpoint-host.js'
 import { fitMemorySnapshot } from '../memory/context.js'
+import { memoryEventValue } from '../memory/telemetry.js'
 import type { MemorySnapshot } from '../memory/types.js'
 /**
  * AgentRuntime — the product-agnostic agent loop.
@@ -141,6 +142,7 @@ export class AgentRuntime {
   private readonly processors = new Map<string, WorkProcessor | 'conversation'>()
   private readonly eventSeqByRun = new Map<string, number>()
   private readonly eventTails = new Map<string, Promise<void>>()
+  private readonly privateMemoryRuns = new Set<string>()
   private readonly hostsByRun = new Map<string, HostPort>()
   private readonly controls = new Map<string, AttemptSignals>()
   private readonly workspaces = new Map<string, WorkspaceState | null>()
@@ -170,7 +172,7 @@ export class AgentRuntime {
       preview.task = uploadPreview(buffer, frames => this.host.streamPreview!(work, frames, uploadSignal), uploadSignal).catch(error => {
         buffer.close()
         if (!signal.aborted && !stop.signal.aborted) {
-          this.logger.warn('preview channel unavailable; final result remains durable', { workId: work.id, error: errorMessage(error) })
+          this.logger.warn('preview channel unavailable; final result remains durable', { workId: work.id, error: publicFailure(error) })
           this.metrics?.counter('agentos_preview_resets_total', 'Preview lost; durable final result is unaffected').inc({ reason: 'transport' })
         }
       })
@@ -218,6 +220,15 @@ export class AgentRuntime {
   }
 
   private async event(work: WorkItem, runId: string, event: Omit<RunEvent, 'runId' | 'seq'>): Promise<number> {
+    if(this.privateMemoryRuns.has(runId)) {
+      const data={...event.data}
+      // These are diagnostic copies, not the authorized session or action ledger.
+      if(event.kind==='ipython.completed') delete data['output']
+      if(event.kind==='response.assessed') delete data['body']
+      if('error' in data) data['error']='Operation failed; inspect the structured status'
+      if('violation' in data) data['violation']='Response failed validation'
+      event={...event,data}
+    }
     if (['response.withheld', 'run.failed', 'run.cancelled'].includes(event.kind)) this.previews.get(runId)?.buffer.discard()
     const seq = (this.eventSeqByRun.get(runId) ?? 0) + 1
     this.eventSeqByRun.set(runId, seq)
@@ -288,6 +299,7 @@ export class AgentRuntime {
   async runWork(work: WorkItem, signal?: AbortSignal): Promise<void> {
     const began = performance.now()
     const runId = work.id
+    if(work.kind.startsWith('memory_')) this.privateMemoryRuns.add(runId)
     this.eventSeqByRun.set(runId, Math.max(0, work.fence - 1) * RUN_SEQUENCE_SPAN)
     const signals = this.startSignals(work, signal)
     this.controls.set(runId, signals)
@@ -358,6 +370,7 @@ export class AgentRuntime {
       this.eventSeqByRun.delete(runId)
       this.eventTails.delete(runId)
       this.hostsByRun.delete(runId)
+      this.privateMemoryRuns.delete(runId)
     }
   }
 
@@ -375,6 +388,7 @@ export class AgentRuntime {
       event => this.event(work, runId, event), 'fast-model') : undefined
     const contextBegan = performance.now()
     const context = await (host.loadInitialContext?.(work) ?? host.loadContext(work))
+    if(context.memory || context.capabilities.includes('memory') || context.tools?.some(tool=>tool.action.startsWith('memory.'))) this.privateMemoryRuns.add(runId)
     await this.event(work, runId, {
       kind: 'input.loaded', stage: 'completed', visibility: 'internal',
       data: { triggerRef: work.triggerRef, durationMs: performance.now() - contextBegan, responseProfile: context.responseProfile ?? 'deep' },
@@ -383,6 +397,16 @@ export class AgentRuntime {
     const initialExecution = executionSnapshot(context, this.policy)
     const session = await this.restoreSession(work, { ...context, tools: initialExecution.tools }, initialExecution)
     if (!session) return
+    sessionRef.session = session
+    // A queued request can already have human revisions when it is first
+    // claimed. Admit those revisions before the first version-fenced step.
+    await signals.refresh()
+    if (signals.leaseLost()) throw signals.leaseLost()!
+    signals.lifecycle.signal.throwIfAborted()
+    for (const steer of signals.drainSteer()) if (session.request && !session.request.revisions.some(item=>item.id===steer.id)) {
+      session.request.revisions.push(steer)
+      delete session.request.contract
+    }
     if (context.harness) {
       const binding = { runtime: releaseVersions.runtime, harness: context.harness.hash, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
@@ -582,7 +606,7 @@ export class AgentRuntime {
       const modelInput = modelInputFor(session.history), modelItems = modelInput.items
       const inputSha256 = createHash('sha256').update(JSON.stringify(modelInput)).digest('hex')
       const modelCallId = model.nextCallId?.() ?? `${work.id}:${work.fence}:model:${hop + 1}`
-      const sample = Number.parseInt(inputSha256.slice(0, 8), 16) / 0xffffffff < this.modelTrace.sampleRate
+      const sample = !this.privateMemoryRuns.has(runId) && Number.parseInt(inputSha256.slice(0, 8), 16) / 0xffffffff < this.modelTrace.sampleRate
       const tracePayload = (value: unknown) => this.modelTrace.redact ? this.modelTrace.redact(structuredClone(value)) : value
       const traceExpiresAt = new Date(Date.now() + this.modelTrace.retentionDays * 86_400_000).toISOString()
       await this.event(work, runId, { kind: 'model.started', stage: 'started', visibility: 'internal', data: {
@@ -1077,7 +1101,7 @@ export class AgentRuntime {
           const toolResult = result.approval
             ? { status: 'awaiting-approval', approvalId: result.approval.id }
             : result.ok
-              ? { status: 'completed', value: JSON.parse(boundedToolOutput(result.value ?? null)) as unknown }
+              ? { status: 'completed', value: action.action.startsWith('memory.') ? memoryEventValue(result.value) : JSON.parse(boundedToolOutput(result.value ?? null)) as unknown }
               : result.executionState === 'unknown'
                 ? { status: 'unknown', error: result.error ?? 'host action outcome is unknown', reconciliationRequired: true }
                 : { status: 'failed', error: result.error ?? 'host action failed' }
@@ -1315,7 +1339,7 @@ export class AgentRuntime {
           receipts = [{ action: tool.action, idempotencyKey: key, result: await this.hostFor(work).executeAction(work,
             { ...identity, idempotencyKey: key, action: tool.action, args: JSON.parse(call.arguments) as Record<string, unknown> }) }]
         }
-        if (!receipts?.length) throw new Error('unresolved tool execution checkpoint; reconcile before continuing')
+        if (!receipts?.length) throw new AgentOSError('unresolved_checkpoint','unresolved tool execution checkpoint; reconcile before continuing')
         context.priorArtifacts = [...context.priorArtifacts ?? [], ...receipts.flatMap(({ result }) => result.ok ? result.artifacts ?? [] : [])]
         if (receipts.some(({ result }) => result.executionState === 'unknown')
           && receipts.some(({ result }) => result.directive?.type === 'defer')) {
@@ -1404,13 +1428,13 @@ export class AgentRuntime {
     if (signals.preemptRequested()) {
       if (session) {
         await this.hostFor(work).saveSession(work, session).catch((saveError: unknown) => {
-          log.error('preemption session save failed', { error: saveError })
+          log.error('preemption session save failed', { error: publicFailure(saveError) })
         })
       }
       await this.event(work, runId, {
         kind: 'run.preempted', stage: 'cancelled', visibility: 'internal', data: { lane: work.lane },
       }).catch((eventError: unknown) => {
-        log.error('preemption event failed', { error: eventError })
+        log.error('preemption event failed', { error: publicFailure(eventError) })
       })
       await this.hostFor(work).yieldWork(work)
       return
@@ -1438,7 +1462,7 @@ export class AgentRuntime {
         ...(error instanceof HardLimitExceededError && error.diagnostics ? { compactionDiagnostics: error.diagnostics } : {}),
       },
     }).catch((eventError: unknown) => {
-      log.error('terminal event emission failed', { error: eventError })
+      log.error('terminal event emission failed', { error: publicFailure(eventError) })
     })
     const terminalReason = cancelled ? 'cancelled' : error instanceof HardLimitExceededError || error instanceof ModelContextBudgetError ? 'context_limit'
       : error instanceof ModelBudgetExceededError ? 'budget_limit' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
@@ -1446,7 +1470,7 @@ export class AgentRuntime {
       status: 'blocked', verification: 'inconclusive', requestVersion: (session?.request?.revisions.length ?? 0) + 1,
       gaps: [cancelled ? 'Execution was cancelled' : publicFailure(error)],
     } }).catch((completeError: unknown) => {
-      log.error('terminal completion failed', { error: completeError })
+      log.error('terminal completion failed', { error: publicFailure(completeError) })
     })
   }
 }
@@ -1459,6 +1483,10 @@ function publicFailure(error: unknown): string {
     ? 'Model returned an invalid response format' : `Model provider request failed${error.diagnostics.status ? ` (HTTP ${error.diagnostics.status})` : ''}`
   if (error instanceof AgentOSError) {
     switch (error.code) {
+      case 'unresolved_checkpoint': return 'unresolved tool execution checkpoint; reconcile before continuing'
+      case 'missing_trigger': return 'exactly one trigger message is required to capture the original request'
+      case 'read_wait_contract': return 'Read tools cannot request a terminal wait; declare a non-read effect for waiting tools'
+      case 'unknown_wait_contract': return 'Terminal wait contract requires a currently available tool with an explicit non-read effect'
       case 'budget_limit': return 'Model call, token, cost or execution-time budget exhausted'
       case 'content_acceptance_exhausted': return 'Content acceptance correction budget exhausted'
       case 'response_protocol_exhausted': return 'Final assessment protocol correction exhausted'
@@ -1468,5 +1496,5 @@ function publicFailure(error: unknown): string {
       case 'no_valid_response': return 'No valid answer was produced for the current request'
     }
   }
-  return errorMessage(error)
+  return 'Runtime operation failed'
 }

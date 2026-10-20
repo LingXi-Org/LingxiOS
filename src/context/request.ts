@@ -1,3 +1,4 @@
+import { AgentOSError } from '../errors.js'
 import type { CodeExecutionMode, ModelItem, SteerInput, TurnContext } from '../protocol/types.js'
 import { snapshotEvidence, type EvidenceSnapshot } from './evidence.js'
 import type { TaskContract } from './task-contract.js'
@@ -40,7 +41,7 @@ export interface RequestSnapshot {
 
 export function snapshotRequest(context: TurnContext): RequestSnapshot {
   const matches = context.messages.filter((item) => item.ref === context.work.triggerRef)
-  if (matches.length !== 1) throw new Error('exactly one trigger message is required to capture the original request')
+  if (matches.length !== 1) throw new AgentOSError('missing_trigger','exactly one trigger message is required to capture the original request')
   const message = matches[0]!
   const configuredCode = context.work.meta?.['codeExecution']
   const configuredDelivery = context.work.meta?.['deliveryMode']
