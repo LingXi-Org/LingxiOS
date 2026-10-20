@@ -116,6 +116,8 @@ export interface StoreLeaseProof {
 export interface ModelBudgetLimits {
   /** Final idempotent admission after publication hooks; epochs are server-owned. */
   memoryAdmission?: true
+  /** Version captured by the runtime from its server-authored memory context. */
+  memoryRequestVersion?: number
   /** Conservative configured model-profile bounds for admission before a child has a prompt. */
   childAdmission?: { inputTokens: number; outputTokens: number; executionMs: number }
   pricing?: import('../model/execution.js').ModelPricing
@@ -231,7 +233,7 @@ export interface ContextProvider {
   /** Reauthorize persisted source material before session reads, tools and delivery. */
   authorizeRequest?(work: Omit<WorkItem, 'leaseToken'>, request: import('../context/request.js').RequestSnapshot): Promise<void>
   loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal,
-    options?: { responseProfile: import('../runtime/response-policy.js').ResponseProfile }): Promise<{
+    options?: { responseProfile: import('../runtime/response-policy.js').ResponseProfile; requestVersion?: number }): Promise<{
     responseProfile?: import('../runtime/response-policy.js').ResponseProfile
     /** Optional authoritative grants resolved with this context; never reused across requests. */
     grants?: CapabilityGrant[]

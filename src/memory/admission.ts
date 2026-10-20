@@ -16,7 +16,7 @@ export async function readMemoryEpochs(db: SqlQueryable, scopes: MemoryScope[]):
   })
 }
 
-interface Admission { fence: number; epochs: MemoryEpoch[] }
+interface Admission { fence: number; requestVersion: number; epochs: MemoryEpoch[]; calls?: Record<string,number> }
 function equalEpoch(a: MemoryEpoch,b: MemoryEpoch): boolean {
   return sameScope(a,b) && a.epoch===b.epoch && a.forgottenAt===b.forgottenAt
 }
@@ -30,9 +30,10 @@ async function check(db: SqlQueryable,options: MemoryOptions,work: Omit<WorkItem
 /** In a short transaction. Only this server-owned context path records epochs;
  * workers request admission with a boolean and cannot supply replacement epochs.
  * Keep the first epoch for every scope across this run, including lease retries. */
-export async function rememberMemoryAdmission(db: SqlQueryable,options: MemoryOptions,work: Omit<WorkItem,'leaseToken'>,epochs: MemoryEpoch[]) {
-  const row=(await db.query('SELECT fence,meta FROM lingxios.agent_work_items WHERE id=$1 AND tenant_id=$2 FOR UPDATE',[work.id,work.tenantId])).rows[0]
+export async function rememberMemoryAdmission(db: SqlQueryable,options: MemoryOptions,work: Omit<WorkItem,'leaseToken'>,epochs: MemoryEpoch[],requestVersion: number) {
+  const row=(await db.query('SELECT fence,meta,jsonb_array_length(steer_inputs)+1 AS request_version FROM lingxios.agent_work_items WHERE id=$1 AND tenant_id=$2 FOR UPDATE',[work.id,work.tenantId])).rows[0]
   if (!row || Number(row['fence'])!==work.fence) throw new Error('memory context attempt is stale')
+  if (!Number.isSafeInteger(requestVersion) || requestVersion<1 || Number(row['request_version'])!==requestVersion) throw new Error('memory context request revision is stale')
   const previous=(row['meta'] as Record<string,unknown>|null)?.['memoryAdmission'] as Admission|undefined
   const merged=[...previous?.epochs ?? []]
   for (const epoch of epochs) {
@@ -42,7 +43,7 @@ export async function rememberMemoryAdmission(db: SqlQueryable,options: MemoryOp
   }
   await check(db,options,work,merged)
   await db.query(`UPDATE lingxios.agent_work_items SET meta=jsonb_set(COALESCE(meta,'{}'::jsonb),'{memoryAdmission}',$2::jsonb)
-    WHERE id=$1`,[work.id,JSON.stringify({fence:work.fence,epochs:merged})])
+    WHERE id=$1`,[work.id,JSON.stringify({fence:work.fence,requestVersion,epochs:merged,...previous?.calls ? {calls:previous.calls} : {}})])
 }
 
 /** The caller already owns the work lock in the model-budget transaction.

@@ -227,8 +227,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       }
     } }
   const memory = options.memory ? createMemoryRuntime(options.database, options.memory, options.modelBudget) : undefined
-  async function optionalMemoryContext(work: Omit<WorkItem,'leaseToken'>, signal?: AbortSignal, profile?: 'fast' | 'deep') {
-    try { return await memory!.context(work,signal,profile) }
+  async function optionalMemoryContext(work: Omit<WorkItem,'leaseToken'>, signal?: AbortSignal, profile?: 'fast' | 'deep', requestVersion?: number) {
+    try { return await memory!.context(work,signal,profile,requestVersion) }
     catch (error) {
       signal?.throwIfAborted()
       const failure = classifyToolFailure(error,'authorization')
@@ -300,7 +300,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         ...memory?[{name:'memory',methods:memory.tools.filter(tool=>tool.action.startsWith('memory.')).map(tool=>tool.action.split('.')[1]!)}]:[]]
     } },
     contextProvider: { ...(contextProvider.authorizeRequest ? { authorizeRequest: contextProvider.authorizeRequest.bind(contextProvider) } : {}),
-      async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal, loadOptions?: { responseProfile: import('../runtime/response-policy.js').ResponseProfile }) {
+      async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal, loadOptions?: { responseProfile: import('../runtime/response-policy.js').ResponseProfile; requestVersion?: number }) {
       if (behavior && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) && work.meta?.['harnessHash'] !== behavior.hash) throw new Error('harness version mismatch; resume with the pinned deployment or drain the old run')
       const context = { responseProfile: loadOptions?.responseProfile ?? 'deep',
         ...await contextProvider.loadContext(work, signal, loadOptions), ...(behavior ? { harness: structuredClone(behavior) } : {}) }
@@ -324,7 +324,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       const previewVersion = options.realtime?.allowDraft ? Number((await options.database.query(
         'SELECT jsonb_array_length(steer_inputs)+1 AS version FROM lingxios.agent_work_items WHERE id=$1', [work.id])).rows[0]?.['version']) : 1
       return { ...context, previewAllowed: await realtime.allowed(work, previewVersion), ...(discoveredTools ? { discoveredTools } : {}),
-        ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await optionalMemoryContext(work, signal, context.responseProfile) } : {}) }
+        ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await optionalMemoryContext(work, signal, context.responseProfile,loadOptions?.requestVersion) } : {}) }
     } },
     ...(options.delivery ? { delivery: options.delivery } : {}),
   }

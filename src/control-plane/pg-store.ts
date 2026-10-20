@@ -665,20 +665,33 @@ export class PgModelBudgetStore implements ModelBudgetStore {
 
   async reserve(rootWorkId: string, callId: string, limits: ModelBudgetLimits, proof?: import('./stores.js').StoreLeaseProof): Promise<ModelBudgetReservation> {
     return withTransaction(this.pool, async client => {
+      let contextVersion: number | undefined
       if (proof) {
         const owner = await client.query(`SELECT * FROM lingxios.agent_work_items
           WHERE id=$1 AND fence=$2 AND lease_token_hash=$3 AND status='leased'
             AND lease_expires_at>NOW() AND cancel_requested_at IS NULL FOR UPDATE`,
           [proof.workId, proof.fence, proof.leaseTokenHash])
         if (!owner.rows.length) throw new Error('model reservation requires a live uncancelled attempt')
+        const memory = (owner.rows[0]!['meta'] as Record<string,unknown>|null)?.['memoryAdmission'] as
+          {fence:number;requestVersion:number;calls?:Record<string,number>}|undefined
+        const currentVersion=(owner.rows[0]!['steer_inputs'] as unknown[]).length+1
+        if (memory) contextVersion=memory.requestVersion
+        if (limits.memoryRequestVersion!==undefined && (!Number.isSafeInteger(limits.memoryRequestVersion)
+          || limits.memoryRequestVersion!==currentVersion || limits.memoryRequestVersion!==contextVersion
+          || memory?.fence!==proof.fence)) throw new Error('model reservation memory context request revision is stale')
         if (limits.memoryAdmission) {
           if (limits.memoryAdmission!==true || !this.admitMemory) throw new Error('memory model admission is unavailable')
           const issued=await client.query(`SELECT 1 FROM lingxios.agent_model_budget_calls
-            WHERE root_work_id=$1 AND call_id=$2 AND work_id=$3 AND fence=$4 AND lease_token_hash=$5 AND input_tokens IS NULL`,
+            WHERE root_work_id=$1 AND call_id=$2 AND work_id=$3 AND fence=$4 AND lease_token_hash=$5 AND input_tokens IS NULL FOR UPDATE`,
             [rootWorkId,callId,proof.workId,proof.fence,proof.leaseTokenHash])
           if (!issued.rows.length) throw new Error('memory model admission requires its unsettled reservation')
+          if (!memory || memory.fence!==proof.fence || memory.requestVersion!==currentVersion
+            || memory.calls?.[callId]!==currentVersion) throw new Error('memory model admission request revision differs from its context or reserved call')
           await this.admitMemory(client,workItemFromRow(owner.rows[0]!, '', 1))
-          const row=(await client.query('SELECT *,NOW()>=deadline_at AS expired FROM lingxios.agent_model_budgets WHERE root_work_id=$1',[rootWorkId])).rows[0]!
+          const row=(await client.query(`SELECT budget.*,clock_timestamp()>=deadline_at AS expired,
+            work.lease_expires_at<=clock_timestamp() AS lease_expired FROM lingxios.agent_model_budgets budget
+            JOIN lingxios.agent_work_items work ON work.id=$2 WHERE budget.root_work_id=$1`,[rootWorkId,proof.workId])).rows[0]!
+          if (row['lease_expired']) throw new Error('model reservation requires a live uncancelled attempt')
           return {allowed:!row['expired'],...row['expired'] ? {dimension:'deadline' as const} : {},
             remainingCalls:Math.max(0,Number(row['max_model_calls'])-Number(row['model_calls'])),
             remainingTokens:Math.max(0,Number(row['max_tokens'])-Number(row['tokens'])),
@@ -729,6 +742,11 @@ export class PgModelBudgetStore implements ModelBudgetStore {
           await client.query(`UPDATE lingxios.agent_model_budgets SET model_calls=model_calls+1,tokens=tokens+$2,cost_micros=cost_micros+$3,
             updated_at=NOW() WHERE root_work_id=$1`,[rootWorkId,tokens,cost])
           await client.query('DELETE FROM lingxios.agent_model_budget_holds WHERE root_work_id=$1 AND work_id=$2',[rootWorkId,workId])
+          // Server-authored context binding, bounded by successful root call reservations.
+          // Context refreshes preserve entries so an old call cannot borrow a new revision.
+          if (proof && contextVersion!==undefined) await client.query(`UPDATE lingxios.agent_work_items
+            SET meta=jsonb_set(meta,'{memoryAdmission,calls}',COALESCE(meta#>'{memoryAdmission,calls}','{}'::jsonb)||jsonb_build_object($2::text,$3::integer))
+            WHERE id=$1`,[proof.workId,callId,contextVersion])
         }
       }
       const row = (await client.query('SELECT * FROM lingxios.agent_model_budgets WHERE root_work_id=$1',[rootWorkId])).rows[0]!
