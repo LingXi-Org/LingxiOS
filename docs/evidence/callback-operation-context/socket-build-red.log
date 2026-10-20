@@ -1,0 +1,14 @@
+(node:821463) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+> @lyyzka/lingxios@3.5.6 build
+> node scripts/build.mjs
+
+(node:821484) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+src/control-plane/wakeup.ts(34,11): error TS2430: Interface 'NotificationClient' incorrectly extends interface 'SqlClient'.
+  Types of property 'on' are incompatible.
+    Type '(event: string, listener: (message?: unknown) => void) => unknown' is not assignable to type '(event: "error", listener: (error: Error) => void) => unknown'.
+      Types of parameters 'listener' and 'listener' are incompatible.
+        Types of parameters 'error' and 'message' are incompatible.
+          Type 'unknown' is not assignable to type 'Error'.
