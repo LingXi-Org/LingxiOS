@@ -835,7 +835,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         [...resultReadParams(identity), afterSeq])
         const events = rows.map(row => ({ runId: String(row['run_id']), seq: Number(row['seq']), kind: String(row['kind']),
           stage: row['stage'] as RunEvent['stage'], visibility: 'user' as const, data: row['data'] as Record<string, unknown> }))
-        return { events, nextSeq: events.at(-1)?.seq ?? afterSeq, publicTextAttempts: await readPublicTextAttempts(database,identity.runId,events.map(event=>Math.floor((event.seq-1)/100_000)+1)) }
+        const publicTextAttempts = await readPublicTextAttempts(database,identity.runId,events.map(event=>Math.floor((event.seq-1)/100_000)+1))
+        return { events, nextSeq: events.at(-1)?.seq ?? afterSeq, ...(publicTextAttempts.length ? { publicTextAttempts } : {}) }
       })
     },
     async readUsage(identity: MessageIdentity) {

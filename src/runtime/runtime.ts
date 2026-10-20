@@ -609,35 +609,40 @@ export class AgentRuntime {
       let firstBody = false
       try {
         protocolCorrection = null
+        const generationSignal = signals.generationSignal()
         turn = await model.run({
           instructions,
           ...(session.promptContext.manifest ? { prompt: session.promptContext.manifest } : {}),
           items: modelItems,
           tools: modelTools,
           codeExecution,
-          signal: signals.generationSignal(),
-          onAttempt: async callId => {
-            await this.publications.get(runId)?.end('superseded')
-            this.publications.delete(runId)
-            this.modelAttempts.set(runId,callId)
-            if (publishes) {
-              const requestVersion=(session.request?.revisions.length ?? 0)+1
-              const partId='public:'+createHash('sha256').update(JSON.stringify([runId,requestVersion,work.fence,callId,0])).digest('hex')
-              this.publications.set(runId,new PublicTextWriter({version:1,requestVersion,fence:work.fence,attemptId:callId,partId,partIndex:0},
-                event=>this.event(work,runId,event),signals.generationSignal(),
-                this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined))
+          signal: generationSignal,
+          onAttempt: callId => {
+            const start = () => {
+              generationSignal.throwIfAborted()
+              this.publications.delete(runId)
+              this.modelAttempts.set(runId,callId)
+              if (publishes) {
+                const requestVersion=(session.request?.revisions.length ?? 0)+1
+                const partId='public:'+createHash('sha256').update(JSON.stringify([runId,requestVersion,work.fence,callId,0])).digest('hex')
+                this.publications.set(runId,new PublicTextWriter({version:1,requestVersion,fence:work.fence,attemptId:callId,partId,partIndex:0},
+                  event=>this.event(work,runId,event),generationSignal,
+                  this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined))
+              }
+              // Reserve the reply first; optional compaction must not consume its budget.
+              if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
+                && estimateTokens(session.history, model) + overheadTokens >= backgroundLimit) {
+                sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
+                  { ...this.compaction, softRatio: backgroundLimit / this.compaction.contextWindowTokens }, generationSignal, overheadTokens))
+              }
+              providerBegan = performance.now()
+              parser = new CandidateBodyParser()
+              firstBody = false
+              if (preview) preview.reset(callId, (session.request?.revisions.length ?? 0) + 1)
+              else this.previews.get(runId)?.buffer.discard()
             }
-            // Reserve the reply first; optional compaction must not consume its budget.
-            if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
-              && estimateTokens(session.history, model) + overheadTokens >= backgroundLimit) {
-              sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
-                { ...this.compaction, softRatio: backgroundLimit / this.compaction.contextWindowTokens }, signals.generationSignal(), overheadTokens))
-            }
-            providerBegan = performance.now()
-            parser = new CandidateBodyParser()
-            firstBody = false
-            if (preview) preview.reset(callId, (session.request?.revisions.length ?? 0) + 1)
-            else this.previews.get(runId)?.buffer.discard()
+            const previous = this.publications.get(runId)
+            return previous ? previous.end('superseded').then(start) : start()
           },
           onTextDelta: async delta => {
             if (publishes) {

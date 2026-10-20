@@ -216,23 +216,29 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
         throw new Error('approval explanations cannot execute tools')
       }
       check(request)
-      return invoke('agent-turn', request, async (signal, callId, diagnostics,selected) => {
-        await request.onAttempt?.(callId)
-        const began = performance.now()
-        let firstTextMs: number | undefined
-        let active = true
-        const result = (selected as ModelDriver).run({ ...request, admission, signal, onTextDelta: delta => {
-            if (!active || signal.aborted) return
-            if (delta) firstTextMs ??= performance.now() - began
-            return request.onTextDelta?.(delta)
-          } })
-        const finished = () => {
-          active = false
-          diagnostics['providerDurationMs'] = performance.now() - began
-          if (firstTextMs !== undefined) diagnostics['providerFirstContentMs'] = firstTextMs
+      return invoke('agent-turn', request, (signal, callId, diagnostics,selected) => {
+        const start = () => {
+          signal.throwIfAborted()
+          const began = performance.now()
+          let firstTextMs: number | undefined
+          let active = true
+          const result = (selected as ModelDriver).run({ ...request, admission, signal, onTextDelta: delta => {
+              if (!active || signal.aborted) return
+              if (delta) firstTextMs ??= performance.now() - began
+              return request.onTextDelta?.(delta)
+            } })
+          const finished = () => {
+            active = false
+            diagnostics['providerDurationMs'] = performance.now() - began
+            if (firstTextMs !== undefined) diagnostics['providerFirstContentMs'] = firstTextMs
+          }
+          void result.then(finished, finished)
+          return result
         }
-        void result.then(finished, finished)
-        return result
+        const gate = request.onAttempt?.(callId)
+        // Preserve existing promise timing for synchronous hooks and absent hooks.
+        // A real async gate must finish before the provider starts, and can outlive cancellation.
+        return gate && typeof gate.then === 'function' ? gate.then(start) : start()
       },model,route('agent-turn',request))
     },
     structured: request => {
