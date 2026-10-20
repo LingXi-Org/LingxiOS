@@ -23,7 +23,7 @@ const row = { id: 'r', tenant_id: 't', agent_id: 'a', session_id: 's', principal
   kind: 'turn', lane: 'interactive', fence: 1, status: 'succeeded', request_version: 1, attempts: 0,
   created_at: new Date().toISOString(), available_at: new Date().toISOString(), steer_inputs: [], message: null }
 const empty = { rows: [], rowCount: 0 }
-const pool: SqlPool = { async query(sql) { return sql.includes('agent_run_events') ? empty : { rows: [row], rowCount: 1 } },
+const pool: SqlPool = { async query(sql) { return sql.startsWith('SELECT event.* FROM lingxios.agent_run_events') ? empty : { rows: [row], rowCount: 1 } },
   async connect() { return { query: pool.query, release() {} } } }
 
 for (const fail of [false, true]) it(`detaches finished workspace, outbox and memory operations from shutdown (failure=${fail})`, async () => {

@@ -78,6 +78,7 @@ export function workItemFromRow(row: Record<string, unknown>, leaseToken: string
     createdAt: new Date(row['created_at'] as string | Date).toISOString(),
     availableAt: new Date(row['available_at'] as string | Date).toISOString(),
     attempts: Number(row['attempts'] ?? 0),
+    ...(Array.isArray(row['steer_inputs']) ? { requestVersion: row['steer_inputs'].length + 1 } : {}),
     preemptions: Number(row['preemptions'] ?? 0),
     leaseToken,
     ...(row['meta'] ? { meta: row['meta'] as Record<string, unknown> } : {}),
@@ -485,10 +486,20 @@ function sessionFromRow(row: Record<string, unknown>): SessionRecord {
 }
 
 export class PgEventStore implements EventStore {
-  constructor(private readonly pool: SqlPool, private readonly queueDelivery = false) {}
+  constructor(private readonly pool: SqlPool, private readonly queueDelivery = false,
+    private readonly publicText?: (event: StoredRunEvent, proof: import('./stores.js').StoreLeaseProof | undefined,
+      work: Omit<WorkItem,'leaseToken'> | undefined, append: (database: SqlQueryable) => Promise<boolean>) => Promise<boolean>) {}
 
   async append(event: StoredRunEvent, proof?: import('./stores.js').StoreLeaseProof, work?: Omit<WorkItem, 'leaseToken'>): Promise<boolean> {
-    const { rows } = await this.pool.query(
+    if (event.kind.startsWith('public.text.')) {
+      if (!this.publicText) throw new Error('public text publication is not enabled')
+      return this.publicText(event,proof,work,db=>this.appendStored(db,event,proof,work))
+    }
+    return this.appendStored(this.pool,event,proof,work)
+  }
+  private async appendStored(database: SqlQueryable, event: StoredRunEvent, proof?: import('./stores.js').StoreLeaseProof,
+    work?: Omit<WorkItem,'leaseToken'>): Promise<boolean> {
+    const { rows } = await database.query(
       `INSERT INTO lingxios.agent_run_events (run_id, seq, tenant_id, agent_id, kind, stage, visibility, data, recorded_at, expires_at, delivery_work)
        SELECT $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,CASE WHEN $13::text IS NULL THEN NULL ELSE $13::timestamptz END,$14::jsonb
         WHERE $10::text IS NULL OR EXISTS (SELECT 1 FROM lingxios.agent_work_items

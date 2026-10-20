@@ -1,3 +1,4 @@
+import { publicTextPublication, readPublicTextAttempts, type PublicTextAttempt } from './public-text.js'
 import { DEFAULT_MODEL_BUDGET } from '../model/execution.js'
 import { readTerminalFeedback, terminalFeedback } from './terminal.js'
 import { classifyToolFailure } from '../tools/failure.js'
@@ -321,9 +322,9 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         if (discovered.rows.length > 1024) throw new Error('too many materialized tool schemas')
         discoveredTools = discovered.rows.map(row => String(row['name']))
       }
-      const previewVersion = options.realtime?.allowDraft ? Number((await options.database.query(
+      const previewVersion = (options.realtime?.allowDraft || options.realtime?.allowPublicText) ? Number((await options.database.query(
         'SELECT jsonb_array_length(steer_inputs)+1 AS version FROM lingxios.agent_work_items WHERE id=$1', [work.id])).rows[0]?.['version']) : 1
-      return { ...context, previewAllowed: await realtime.allowed(work, previewVersion), ...(discoveredTools ? { discoveredTools } : {}),
+      return { ...context, publicTextAllowed: await publicText.allowed(work, previewVersion), previewAllowed: await realtime.allowed(work, previewVersion), ...(discoveredTools ? { discoveredTools } : {}),
         ...(memory && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) ? { memory: await optionalMemoryContext(work, signal, context.responseProfile) } : {}) }
     } },
     ...(options.delivery ? { delivery: options.delivery } : {}),
@@ -396,6 +397,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     } finally { active = false; scope.dispose() }
   }
 
+  const publicText = publicTextPublication(options.database, options.realtime?.allowPublicText)
   const service = new ControlPlaneService({
     ...(options.responsePolicy ? { responsePolicy: options.responsePolicy } : {}),
     authorizeWork: async work => { await authorizeConversationWork(options.database, work) },
@@ -424,7 +426,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     },
     logger, metrics,
     work: new PgWorkStore(options.database), sessions,
-    events: new PgEventStore(options.database, Boolean(integration?.delivery)), actions: new PgActionLedger(options.database),
+    events: new PgEventStore(options.database, Boolean(integration?.delivery), publicText.append), actions: new PgActionLedger(options.database),
     modelBudgets: new PgModelBudgetStore(options.database), modelBudget,
     artifactStager: {
       stage: (work, artifact, bytes, signal) => stageArtifact(homesRoot, work, artifact, bytes, signal, options.objects),
@@ -470,6 +472,24 @@ export async function createLingxiOS(options: LingxiOSOptions) {
               components.push(structuredClone((row['result'] as { value: { presentation: TrustedPresentation } }).value.presentation))
             }
             if (components.length) message = { ...message, envelope: { ...message.envelope, presentations: components } }
+          }
+          if (message.publicTextPartId !== undefined) {
+            if (typeof message.publicTextPartId !== 'string' || !message.publicTextPartId.length || message.publicTextPartId.length > 1000) {
+              throw new Error('invalid public text source identity')
+            }
+            // A retained candidate may come from an older provider attempt/fence,
+            // but never from another run or request version. This reference is
+            // committed atomically with the accepted message and its public event.
+            const source = await client.query(`SELECT data FROM lingxios.agent_run_events WHERE run_id=$1
+              AND kind='public.text.delta' AND data->>'partId'=$2 ORDER BY seq LIMIT 1`, [work.id,message.publicTextPartId])
+            const identity = source.rows[0]?.['data'] as Record<string,unknown> | undefined
+            if (!identity || identity['requestVersion'] !== message.envelope.requestVersion
+              || !Number.isSafeInteger(identity['fence']) || Number(identity['fence']) > work.fence) throw new Error('public text source is not part of the accepted request')
+            const candidate = await client.query(`SELECT 1 FROM lingxios.agent_steps WHERE work_id=$1 AND request_version=$2
+              AND kind IN ('runtime.candidate','runtime.public_text_source') AND completed_at IS NOT NULL AND input->>'publicTextPartId'=$3
+              AND input->>'publicTextBodyHash'=$4 LIMIT 1`, [work.id,message.envelope.requestVersion,message.publicTextPartId,
+              createHash('sha256').update(message.body).digest('hex')])
+            if (!candidate.rows.length) throw new Error('public text source is not bound to the accepted candidate')
           }
           const resultId = 'result:' + createHash('sha256').update(JSON.stringify([work.id, message])).digest('hex')
           const previous = await client.query(`SELECT result.id,result.message FROM lingxios.agent_work_items work
@@ -520,6 +540,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
             FROM lingxios.agent_run_events WHERE run_id=$1`,
           [work.id,(work.fence-1)*RUN_SEQUENCE_SPAN,work.tenantId,work.agentId,
             JSON.stringify({ resultId,requestVersion: message.envelope.requestVersion,
+              ...message.publicTextPartId ? { publicTextPartId: message.publicTextPartId } : {},
               candidateHash: candidateHash({ body: message.body, requestVersion: message.envelope.requestVersion, artifacts: message.envelope.artifacts }) }),
             integration.delivery ? JSON.stringify(work) : null])
         })
@@ -802,7 +823,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       )
       return (rows[0]?.['goal_outcome'] as GoalOutcome | undefined) ?? null
     },
-    async readEvents(identity: MessageIdentity, afterSeq = 0, operation?: RuntimeOperationContext): Promise<{ events: RunEvent[]; nextSeq: number }> {
+    async readEvents(identity: MessageIdentity, afterSeq = 0, operation?: RuntimeOperationContext): Promise<{ events: RunEvent[]; nextSeq: number; publicTextAttempts?: PublicTextAttempt[] }> {
       return withRuntimeOperation(options.database, operation, async database => {
         await authorizeRunRead(database, identity)
         if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new Error('event cursor must be a non-negative safe integer')
@@ -814,7 +835,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         [...resultReadParams(identity), afterSeq])
         const events = rows.map(row => ({ runId: String(row['run_id']), seq: Number(row['seq']), kind: String(row['kind']),
           stage: row['stage'] as RunEvent['stage'], visibility: 'user' as const, data: row['data'] as Record<string, unknown> }))
-        return { events, nextSeq: events.at(-1)?.seq ?? afterSeq }
+        const publicTextAttempts = await readPublicTextAttempts(database,identity.runId,events.map(event=>Math.floor((event.seq-1)/100_000)+1))
+        return { events, nextSeq: events.at(-1)?.seq ?? afterSeq, ...(publicTextAttempts.length ? { publicTextAttempts } : {}) }
       })
     },
     async readUsage(identity: MessageIdentity) {

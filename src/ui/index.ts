@@ -1,3 +1,7 @@
+import type { PublicTextAttempt } from '../app/public-text.js'
+export type { PublicTextAttempt } from '../app/public-text.js'
+import { publicTextPayload, publicTextStatus, type PublicTextPart, type PublicTextEndReason } from '../protocol/public-text.js'
+export type { PublicTextPart, PublicTextEndReason, PublicTextIdentity, PublicTextDelta, PublicTextEnded } from '../protocol/public-text.js'
 import type { AssistantMessage, RunEvent } from '../protocol/types.js'
 export { releaseVersions } from '../versions.js'
 export type { ConversationIdentity, ThreadIdentity, Audience, Visibility, IMDeliveryContext, IMDeliveryReceipt } from '../collaboration/types.js'
@@ -15,6 +19,9 @@ export type { CitationEvidence } from '../context/evidence.js'
 export type { TrustedPresentation } from '../presentation/definition.js'
 
 export interface RunView {
+  /** Durable published commentary; older snapshots may omit this additive field. */
+  publicTextParts?: readonly PublicTextPart[]
+  publicTextAttempts?: readonly PublicTextAttempt[]
   preview?: { attemptId: string; seq: number; fence: number; requestVersion: number } | null
   previewClosedFence?: number
   runId: string
@@ -31,15 +38,64 @@ export interface RunView {
 }
 
 export function createRunView(runId: string): RunView {
-  return { runId, lastSeq: 0, draft: '', message: null, goalOutcome: null, requestVersion: 0, fence: 0,
+  return { runId, publicTextParts: [], lastSeq: 0, draft: '', message: null, goalOutcome: null, requestVersion: 0, fence: 0,
     messageFence: 0, resultId: null, lifecycle: null, delivery: null }
+}
+
+function settlePublicText(view: RunView): RunView {
+  const parts = view.publicTextParts ?? []
+  return { ...view, publicTextParts: parts.map(part => {
+    if (part.endedSeq != null) return part
+    const attempt = view.publicTextAttempts?.find(attempt => attempt.fence === part.fence)
+    const reason: PublicTextEndReason | null = part.fence === view.fence && part.requestVersion < view.requestVersion
+      ? 'superseded' : attempt?.reason ?? (part.fence < view.fence || part.requestVersion < view.requestVersion ? 'superseded'
+        : part.fence === view.fence && part.requestVersion === view.requestVersion
+          ? view.lifecycle === 'cancelled' ? 'cancelled' : view.lifecycle === 'failed' ? 'failed'
+            : view.lifecycle && !['leased','queued'].includes(view.lifecycle) ? 'interrupted' : null : null)
+    return reason ? { ...part, reason, status: publicTextStatus(reason) } : part
+  }) }
+}
+/** Merge bounded attempt metadata accompanying an authorized event page. */
+export function consumePublicTextAttempts(view: RunView, attempts: readonly PublicTextAttempt[]): RunView {
+  const known = new Map((view.publicTextAttempts ?? []).map(attempt=>[attempt.fence,attempt]))
+  for (const attempt of attempts) {
+    if (!Number.isSafeInteger(attempt.fence) || attempt.fence<1 || !['failed','cancelled','interrupted','superseded'].includes(attempt.reason)) throw new Error('invalid public text attempt state')
+    known.set(attempt.fence,{...attempt})
+  }
+  return settlePublicText({...view,publicTextAttempts:[...known.values()].sort((a,b)=>a.fence-b.fence)})
+}
+function associatePublicText(view:RunView,partId:unknown,resultId:unknown,requestVersion:unknown,fence:number):RunView {
+  if(typeof partId!=='string'||!partId||typeof resultId!=='string'||!resultId||!Number.isSafeInteger(requestVersion))return view
+  return {...view,publicTextParts:(view.publicTextParts??[]).map(part=>part.partId===partId&&part.requestVersion===requestVersion&&part.fence<=fence
+    ? {...part,acceptedResultId:resultId}:part)}
+}
+function archivePublicText(view: RunView, event: RunEvent): RunView {
+  const data = publicTextPayload(event)
+  if (!data) return view
+  const parts = [...view.publicTextParts ?? []], index = parts.findIndex(part => part.partId === data.partId)
+  const prior = parts[index]
+  if (prior && ['requestVersion','fence','attemptId','partIndex'].some(key => Reflect.get(prior,key)!==Reflect.get(data,key))) throw new Error('public text identity changed')
+  if ('text' in data) {
+    if (data.chunkIndex !== (prior?.chunkCount ?? 0)) throw new Error('public text chunk sequence is incomplete')
+    const part: PublicTextPart = prior ? { ...prior,text:prior.text+data.text,lastSeq:event.seq,chunkCount:prior.chunkCount+1 }
+      : { version:1,runId:event.runId,requestVersion:data.requestVersion,fence:data.fence,attemptId:data.attemptId,
+        partId:data.partId,partIndex:data.partIndex,text:data.text,firstSeq:event.seq,lastSeq:event.seq,chunkCount:1,endedSeq:null,acceptedResultId:null,status:'running',reason:null }
+    if (prior) parts[index]=part; else parts.push(part)
+  } else {
+    if (!prior || prior.chunkCount !== data.chunkCount) throw new Error('public text end is missing its committed chunks')
+    parts[index]={ ...prior,lastSeq:event.seq,endedSeq:event.seq,reason:data.reason,status:publicTextStatus(data.reason) }
+  }
+  const next = { ...view,publicTextParts:parts.sort((a,b)=>a.firstSeq-b.firstSeq) }
+  return settlePublicText(view.message ? associatePublicText(next,view.message.publicTextPartId,view.resultId,view.message.envelope.requestVersion,view.messageFence) : next)
 }
 
 /** Consume ordered, replayable public events. Draft text is never a committed message. */
 export function consumeRunEvent(view: RunView, event: RunEvent): RunView {
   if (event.runId !== view.runId || event.visibility !== 'user' || !Number.isSafeInteger(event.seq) || event.seq <= view.lastSeq) return view
-  const next = { ...view, lastSeq: event.seq }
+  let next = { ...view, lastSeq: event.seq }
+  if (event.kind === 'public.text.delta' || event.kind === 'public.text.ended') return archivePublicText(next,event)
   const fence = Math.floor((event.seq - 1) / RUN_SEQUENCE_SPAN) + 1
+  if (event.kind === 'response.committed') next=associatePublicText(next,event.data['publicTextPartId'],event.data['resultId'],event.data['requestVersion'],fence)
   if (fence < view.fence) return next
   next.fence = fence
   if (event.kind === 'run.started' && fence > view.messageFence) {
@@ -65,7 +121,7 @@ export function consumeRunEvent(view: RunView, event: RunEvent): RunView {
     next.lifecycle = event.kind === 'run.failed' ? 'failed' : 'cancelled'
     next.draft = ''; next.preview = null; next.previewClosedFence = fence
   }
-  return next
+  return settlePublicText(next)
 }
 
 /** Call only for messages received from the product's committed-message channel. */
@@ -79,6 +135,7 @@ export function consumeAssistantMessage(view: RunView, message: AssistantMessage
     throw new Error('committed message has an inconsistent envelope')
   }
   if (!commit?.resultId || !Number.isSafeInteger(commit.fence) || commit.fence < 1) throw new Error('committed result identity is required')
+  view=associatePublicText(view,message.publicTextPartId,commit.resultId,message.envelope.requestVersion,commit.fence)
   if (view.message && commit.fence === view.messageFence && commit.resultId === view.resultId) return view
   if (message.envelope.requestVersion < view.requestVersion || commit.fence < view.messageFence
     || commit.fence === view.messageFence && view.resultId !== commit.resultId) return view
@@ -93,15 +150,16 @@ export function consumeAssistantMessage(view: RunView, message: AssistantMessage
 /** Use a consistent public readRunState snapshot after replay and after every control operation. */
 export function consumeRunState(view: RunView, state: RunState): RunView {
   const { run } = state
+  if (run.id===view.runId && state.publicTextAttempts) view=consumePublicTextAttempts(view,state.publicTextAttempts)
   if (run.id !== view.runId || run.requestVersion < view.requestVersion || run.fence < view.fence) return view
   if (run.fence === view.messageFence && (run.resultFence ?? 0) < view.messageFence) return view
   let next = view
   if (state.message && run.resultId && run.resultFence) next = consumeAssistantMessage(next,state.message,{ resultId: run.resultId, fence: run.resultFence })
-  return { ...next, fence: run.fence, requestVersion: run.requestVersion, lifecycle: run.status,
+  return settlePublicText({ ...next, fence: run.fence, requestVersion: run.requestVersion, lifecycle: run.status,
     goalOutcome: run.goalOutcome, delivery: state.delivery,
     ...!['queued','leased'].includes(run.status) ? { previewClosedFence: run.fence } : {},
     ...['queued','leased'].includes(run.status) && run.fence === view.fence && run.requestVersion === view.requestVersion
-      ? {} : { draft: '', preview: null } }
+      ? {} : { draft: '', preview: null } })
 }
 
 /** Gaps discard the draft; reconnect the SSE source to obtain a complete snapshot. */

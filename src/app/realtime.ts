@@ -1,3 +1,4 @@
+import { readPublicTextAttempts, type PublicTextPolicy } from './public-text.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { readRunState, readRunRecord, runStateFromRow, type RunIdentity, type RunState } from './jobs.js'
 import { workItemFromRow, type SqlPool } from '../control-plane/pg-store.js'
@@ -17,6 +18,8 @@ export type RunStreamEvent = { type: 'event'; event: RunEvent }
   | { type: 'reset'; runId: string; reason: 'unavailable' | 'superseded' }
 
 export interface RealtimeOptions {
+  /** Trusted permission to durably publish independent user text, rechecked for each append. */
+  allowPublicText?: PublicTextPolicy
   /** Trusted host policy: explicitly allow pre-acceptance body drafts for this request. Default is false. */
   allowDraft?: (work: Omit<WorkItem, 'leaseToken'>, requestVersion: number) => boolean | Promise<boolean>
   maxSubscribers?: number
@@ -157,6 +160,7 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
           const record = await abortable(readRunRecord(database, identity), signal)
           if (!record) throw new Error('run is no longer available to this identity')
           const state = runStateFromRow(record)
+          if (record['has_public_text']) state.publicTextAttempts = await readPublicTextAttempts(database,identity.runId,[state.run.fence])
           const stateKey = JSON.stringify(state)
           if (stateKey !== lastState) {
             lastState = stateKey
@@ -166,6 +170,10 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
           const { rows } = await database.query(`SELECT event.* FROM lingxios.agent_run_events event
             WHERE run_id=$1 AND tenant_id=$2 AND agent_id=$3 AND visibility='user' AND seq>$4
               AND (expires_at IS NULL OR expires_at>NOW()) ORDER BY seq LIMIT 100`, [identity.runId, identity.tenantId, identity.agentId, after])
+          if (rows.some(row => String(row['kind']).startsWith('public.text.'))) {
+            const attempts = await readPublicTextAttempts(database,identity.runId,rows.map(row=>Math.floor((Number(row['seq'])-1)/100_000)+1))
+            if (attempts.length) yield { type:'state',state:{...state,publicTextAttempts:attempts} }
+          }
           for (const row of rows) {
             const event: RunEvent = { runId: identity.runId, seq: Number(row['seq']), kind: String(row['kind']),
               stage: row['stage'] as RunEvent['stage'], visibility: 'user', data: row['data'] as RunEvent['data'] }

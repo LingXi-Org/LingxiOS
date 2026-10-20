@@ -115,3 +115,59 @@ it('keeps the first model deadline when durable settlement outlives the root dea
     })), error => error instanceof ModelDriverError && error.diagnostics.category === 'timeout')
   } finally { clearTimeout(alive) }
 })
+
+it('awaits an async attempt gate without starting the provider after caller cancellation',async()=>{
+  const { executionModel }=await import('../src/model/execution.js')
+  let release!:()=>void,entered!:()=>void,wire=0,settled=0
+  const gate=new Promise<void>(resolve=>{release=resolve}),started=new Promise<void>(resolve=>{entered=resolve})
+  const stop=new AbortController()
+  const model=executionModel({reserveModelCall:async()=>({allowed:true,deadlineAt:new Date(Date.now()+5000).toISOString(),remainingCalls:10,remainingTokens:100000,remainingCostMicros:1000000}),
+    recordModelUsage:async()=>{settled++}}, {
+    run:async()=>{wire++;return {text:'safe',output:[],usage:{available:true,inputTokens:9,outputTokens:2}}},
+    structured:async()=>{throw new Error('unused')},compact:async()=>{throw new Error('unused')},
+  },{id:'attempt-gate',fence:1,tenantId:'tenant',agentId:'agent',sessionId:'room'} as WorkItem,DEFAULT_MODEL_BUDGET)
+  const pending=model.run({instructions:'',items:[],signal:stop.signal,onAttempt:()=>{entered();return gate}})
+  await started;assert.equal(wire,0)
+  stop.abort(new Error('synthetic caller cancellation'))
+  await assert.rejects(pending,/synthetic caller cancellation/)
+  assert.equal(settled,1)
+  release();await new Promise<void>(resolve=>setImmediate(resolve))
+  assert.equal(wire,0,'a cancelled async gate must not start a late provider request')
+  await model.run({instructions:'',items:[]})
+  assert.equal(wire,1);assert.equal(settled,2)
+})
+
+it('does not retry or start a provider when an async attempt publication gate rejects',async()=>{
+  const { executionModel }=await import('../src/model/execution.js')
+  const { PublicTextPublicationError }=await import('../src/runtime/public-text.js')
+  let wire=0,reserved=0,settled=0,attempts=0
+  const failure=new PublicTextPublicationError(),observations:ModelCallObservation[]=[]
+  const model=executionModel({reserveModelCall:async()=>{reserved++;return {allowed:true,deadlineAt:new Date(Date.now()+5000).toISOString(),remainingCalls:10,remainingTokens:100000,remainingCostMicros:1000000}},
+    recordModelUsage:async(_work,_id,_usage,observation)=>{settled++;observations.push(observation!)}}, {
+    run:async()=>{wire++;return {text:'safe',output:[],usage:{available:true,inputTokens:9,outputTokens:2}}},
+    structured:async()=>{throw new Error('unused')},compact:async()=>{throw new Error('unused')},
+  },{id:'rejected-gate',fence:1,tenantId:'tenant',agentId:'agent',sessionId:'room'} as WorkItem,DEFAULT_MODEL_BUDGET)
+  await assert.rejects(model.run({instructions:'',items:[],onAttempt:async()=>{attempts++;await Promise.resolve();throw failure}}),error=>error===failure)
+  assert.deepEqual({wire,reserved,settled,attempts},{wire:0,reserved:1,settled:1,attempts:1})
+  assert.equal(observations[0]?.failure?.retryable,false)
+  await model.run({instructions:'',items:[]})
+  assert.deepEqual({wire,reserved,settled},{wire:1,reserved:2,settled:2})
+})
+
+it('preserves measured usage when a synchronous attempt hook precedes provider cancellation',async()=>{
+  const { executionModel }=await import('../src/model/execution.js')
+  const { limitModel }=await import('../src/model/quota.js')
+  const { ResourceQuota }=await import('../src/resource-quota.js')
+  let wire=0,attempts=0
+  const stop=new AbortController(),observations:ModelCallObservation[]=[]
+  const model=executionModel({reserveModelCall:async()=>({allowed:true,deadlineAt:new Date(Date.now()+5000).toISOString(),remainingCalls:10,remainingTokens:100000,remainingCostMicros:1000000}),
+    recordModelUsage:async(_work,_id,_usage,observation)=>{observations.push(observation!)}},limitModel({
+    run:async()=>{wire++;stop.abort();return {text:'safe',output:[],usage:{available:true,inputTokens:9,outputTokens:2}}},
+    structured:async()=>{throw new Error('unused')},compact:async()=>{throw new Error('unused')},
+  },new ResourceQuota(1)),{id:'synchronous-gate',fence:1,tenantId:'tenant',agentId:'agent',sessionId:'room'} as WorkItem,DEFAULT_MODEL_BUDGET)
+  const result=await model.run({instructions:'',items:[],signal:stop.signal,onAttempt:()=>{attempts++}})
+  assert.equal(result.text,'safe');assert.equal(stop.signal.aborted,true)
+  assert.deepEqual({wire,attempts,settled:observations.length},{wire:1,attempts:1,settled:1})
+  assert.deepEqual(observations[0]?.usage,{available:true,inputTokens:9,outputTokens:2})
+  assert.equal(observations[0]?.cost?.usage,'measured')
+})

@@ -79,6 +79,8 @@ export interface WorkItem {
   createdAt?: string
   availableAt?: string
   attempts?: number
+  /** Current durable request version when the lease was read. */
+  requestVersion?: number
   preemptions?: number
   /** Bearer proof of the current lease. Never persisted in clear text. */
   leaseToken: string
@@ -296,6 +298,7 @@ export interface TurnContext {
   session?: SessionRecord | null
   snapshotVersion?: { fence: number; requestVersion: number; sessionRevision: number }
   /** Trusted host opt-in; worker still requires a separable user-body format. */
+  publicTextAllowed?: boolean
   previewAllowed?: boolean
   discoveredTools?: string[]
   harness?: import('../harness/profile.js').HarnessContext
@@ -351,6 +354,8 @@ export interface HeartbeatResult {
  * same attempt before delivering it.
  */
 export interface AssistantMessage {
+  /** Exact public source part of this verified candidate; absent when no part was published. */
+  publicTextPartId?: string
   envelope: import('../outcome/envelope.js').ResponseEnvelope
   version: 2
   runId: string

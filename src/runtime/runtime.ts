@@ -1,3 +1,4 @@
+import { PublicTextWriter, isPublicTextPublicationFailure, isPublicTextSafetyFailure } from './public-text.js'
 import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from './wait.js'
 import { inputWaitQuestion } from '../protocol/input-wait.js'
@@ -155,6 +156,8 @@ export class AgentRuntime {
     return candidate
   }
 
+  private readonly publications = new Map<string, PublicTextWriter>()
+  private readonly modelAttempts = new Map<string, string>()
   private readonly previews = new Map<string, { buffer: PreviewBuffer; stop: AbortController; task: Promise<void> }>()
 
   private hostFor(work: WorkItem): HostPort { return this.hostsByRun.get(work.id) ?? this.host }
@@ -306,7 +309,7 @@ export class AgentRuntime {
         kind: 'run.started', stage: 'started', visibility: 'user',
         data: {
           kind: work.kind, lane: work.lane, attempts: work.attempts ?? 1, preemptions: work.preemptions ?? 0,
-          sourceRef: work.triggerRef,
+          sourceRef: work.triggerRef, fence: work.fence, ...(work.requestVersion ? {requestVersion:work.requestVersion} : {}),
           ...(work.availableAt ? { queueWaitMs: Math.max(0, Date.now() - Date.parse(work.availableAt)) } : {}),
         },
       })
@@ -342,6 +345,7 @@ export class AgentRuntime {
       await this.finishWithError(work, runId, signals, activeSession, error)
       return
     } finally {
+      this.publications.get(runId)?.dispose(); this.publications.delete(runId); this.modelAttempts.delete(runId)
       const preview = this.previews.get(runId)
       preview?.buffer.close()
       if (preview) {
@@ -399,7 +403,8 @@ export class AgentRuntime {
     let streamedText = ''
     let finalText = ''
     let finalEnvelope: ResponseEnvelope | undefined
-    let lastGood: { text: string; envelope: ResponseEnvelope } | undefined
+    let finalPublicTextPartId: string | undefined
+    let lastGood: { text: string; envelope: ResponseEnvelope; publicTextPartId?: string } | undefined
     let terminalError: Error | undefined
     let acceptanceGaps: string[] = []
     const artifacts: KernelArtifact[] = [...context.priorArtifacts ?? []]
@@ -408,7 +413,7 @@ export class AgentRuntime {
     let protocolCorrection: ModelItem | null = null
     let pendingCompaction: ReturnType<typeof prepareCompaction> | undefined
 
-    const rememberCandidate = async (body: string, liveContext: TurnContext, gaps: string[] = []) => {
+    const rememberCandidate = async (body: string, liveContext: TurnContext, gaps: string[] = [], publicTextPartId = this.publications.get(runId)?.partId) => {
       const text = body.trim()
       const assessment: GoalAssessment = { status: 'partial', checks: [], gaps }
       if (!text || text.length > 100_000 || this.policy.validateAssistantText(text, liveContext)
@@ -420,14 +425,15 @@ export class AgentRuntime {
         evidence(), artifacts, session.request?.contract, session.request?.resourceChecks)
       } catch { return /* Invalid citations or artifacts must never become a partial delivery. */ }
       await this.hostFor(work).saveStep(work, { id: `candidate:${randomUUID()}`, kind: 'runtime.candidate',
-        requestVersion: envelope.requestVersion, input: {}, output: JSON.stringify(envelope), artifacts: [] })
-      lastGood = { text, envelope }
+        requestVersion: envelope.requestVersion, input: publicTextPartId ? { publicTextPartId, publicTextBodyHash: createHash('sha256').update(text).digest('hex') } : {}, output: JSON.stringify(envelope), artifacts: [] })
+      lastGood = { text, envelope, ...publicTextPartId ? { publicTextPartId } : {} }
     }
     const savedCandidate = context.executionSteps?.findLast(step => step.kind === 'runtime.candidate'
       && step.requestVersion === (session.request?.revisions.length ?? 0) + 1)
     if (savedCandidate?.output) {
       const candidate = JSON.parse(savedCandidate.output) as ResponseEnvelope
-      await rememberCandidate(candidate.body, context, candidate.goalOutcome.gaps)
+      await rememberCandidate(candidate.body, context, candidate.goalOutcome.gaps,
+        typeof savedCandidate.input['publicTextPartId'] === 'string' ? savedCandidate.input['publicTextPartId'] : undefined)
     }
 
     const applySteering = async () => {
@@ -597,32 +603,53 @@ export class AgentRuntime {
       } })
       let turn
       let parser = new CandidateBodyParser()
-      const preview = liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
+      const publishes = liveContext.publicTextAllowed && model.previewFormat === 'user-text'
+      const preview = !publishes && liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
       let providerBegan = performance.now()
       let firstBody = false
       try {
         protocolCorrection = null
+        const generationSignal = signals.generationSignal()
         turn = await model.run({
           instructions,
           ...(session.promptContext.manifest ? { prompt: session.promptContext.manifest } : {}),
           items: modelItems,
           tools: modelTools,
           codeExecution,
-          signal: signals.generationSignal(),
+          signal: generationSignal,
           onAttempt: callId => {
-            // Reserve the reply first; optional compaction must not consume its budget.
-            if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
-              && estimateTokens(session.history, model) + overheadTokens >= backgroundLimit) {
-              sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
-                { ...this.compaction, softRatio: backgroundLimit / this.compaction.contextWindowTokens }, signals.generationSignal(), overheadTokens))
+            const start = () => {
+              generationSignal.throwIfAborted()
+              this.publications.delete(runId)
+              this.modelAttempts.set(runId,callId)
+              if (publishes) {
+                const requestVersion=(session.request?.revisions.length ?? 0)+1
+                const partId='public:'+createHash('sha256').update(JSON.stringify([runId,requestVersion,work.fence,callId,0])).digest('hex')
+                this.publications.set(runId,new PublicTextWriter({version:1,requestVersion,fence:work.fence,attemptId:callId,partId,partIndex:0},
+                  event=>this.event(work,runId,event),generationSignal,
+                  this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined))
+              }
+              // Reserve the reply first; optional compaction must not consume its budget.
+              if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
+                && estimateTokens(session.history, model) + overheadTokens >= backgroundLimit) {
+                sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
+                  { ...this.compaction, softRatio: backgroundLimit / this.compaction.contextWindowTokens }, generationSignal, overheadTokens))
+              }
+              providerBegan = performance.now()
+              parser = new CandidateBodyParser()
+              firstBody = false
+              if (preview) preview.reset(callId, (session.request?.revisions.length ?? 0) + 1)
+              else this.previews.get(runId)?.buffer.discard()
             }
-            providerBegan = performance.now()
-            parser = new CandidateBodyParser()
-            firstBody = false
-            if (preview) preview.reset(callId, (session.request?.revisions.length ?? 0) + 1)
-            else this.previews.get(runId)?.buffer.discard()
+            const previous = this.publications.get(runId)
+            return previous ? previous.end('superseded').then(start) : start()
           },
-          onTextDelta: delta => {
+          onTextDelta: async delta => {
+            if (publishes) {
+              if (signals.hasSteer() || signals.lifecycle.signal.aborted) return
+              await this.publications.get(runId)?.push(delta)
+              return
+            }
             if (!preview || signals.hasSteer() || signals.lifecycle.signal.aborted) return
             const body = model.previewFormat === 'user-text' ? delta : parser.push(delta)
             if (parser.invalid) { preview.discard(); return }
@@ -635,6 +662,7 @@ export class AgentRuntime {
           },
         })
       } catch (error) {
+        await this.publications.get(runId)?.end(signals.hasSteer() ? 'superseded' : signals.lifecycle.signal.aborted ? 'cancelled' : 'failed').catch(()=>{})
         preview?.discard()
         if (signals.hasSteer() && !signals.lifecycle.signal.aborted) continue
         if (error instanceof ModelBudgetExceededError && pendingCompaction) {
@@ -645,7 +673,11 @@ export class AgentRuntime {
           kind: 'model.failed', stage: 'failed', visibility: 'internal',
           data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: errorMessage(error) },
         })
-        if (error instanceof ModelDriverError && error.diagnostics.kind === 'protocol' && budget.consume('tool_protocol', errorMessage(error))) {
+        if (isPublicTextSafetyFailure(error) && budget.consume('response_protocol','public text safety rejected')) {
+          protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return only safe user-facing content. Do not include private reasoning or internal protocol.'}
+          continue
+        }
+        if (!isPublicTextSafetyFailure(error) && error instanceof ModelDriverError && error.diagnostics.kind === 'protocol' && budget.consume('tool_protocol', errorMessage(error))) {
           protocolCorrection = {
             role: 'user',
             content: codeExecution === 'enabled'
@@ -682,6 +714,17 @@ export class AgentRuntime {
       const calls = turn.output.filter(
         (item): item is Extract<ModelItem, { type: 'function_call' }> => 'type' in item && item.type === 'function_call',
       )
+      try {
+        await this.publications.get(runId)?.finish(turn.text)
+        if(calls.length)await this.publications.get(runId)?.end('tool')
+      } catch(error) {
+        await this.publications.get(runId)?.end('failed').catch(()=>{})
+        if(isPublicTextSafetyFailure(error)&&budget.consume('response_protocol','public text safety rejected')){
+          protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return safe user-facing content without private reasoning or internal protocol.'}
+          continue
+        }
+        throw error
+      }
       if (calls.length) preview?.discard()
       if (calls.length && liveContext.responseProfile === 'fast') {
         const requestVersion = (session.request?.revisions.length ?? 0) + 1
@@ -848,6 +891,11 @@ export class AgentRuntime {
             `Your previous candidate was withheld because ${violation}. Re-evaluate the current request and respond within protocol.` }
           continue
         }
+        await this.publications.get(runId)?.end('completed')
+        finalPublicTextPartId = this.publications.get(runId)?.partId
+        if (finalPublicTextPartId) await this.hostFor(work).saveStep(work, { id: `public-text:${finalPublicTextPartId}`, kind: 'runtime.public_text_source',
+          requestVersion: (session.request?.revisions.length ?? 0) + 1,
+          input: { publicTextPartId: finalPublicTextPartId, publicTextBodyHash: createHash('sha256').update(turn.text.trim()).digest('hex') }, output: '{}', artifacts: [] })
         session.history.push(...turn.output)
         finalText = turn.text.trim()
         if (finalText) {
@@ -927,6 +975,7 @@ export class AgentRuntime {
         throw new AgentOSError('response_protocol_exhausted', 'Retained answer no longer satisfies the response policy')
       }
       finalText = lastGood.text
+      finalPublicTextPartId = lastGood.publicTextPartId
       finalEnvelope = createResponseEnvelope(finalText, {
         status: 'partial', verification: 'inconclusive', requestVersion: (session.request?.revisions.length ?? 0) + 1, gaps,
       }, evidence(), artifacts, session.request?.contract, session.request?.resourceChecks)
@@ -946,6 +995,7 @@ export class AgentRuntime {
       version: 2, runId, agentId: work.agentId, sessionId: work.sessionId,
       ...(work.threadId !== undefined ? { threadId: work.threadId } : {}),
       body: durableText,
+      ...finalPublicTextPartId ? { publicTextPartId: finalPublicTextPartId } : {},
       envelope: finalEnvelope,
     }
     this.previews.get(runId)?.buffer.close()
@@ -1059,7 +1109,7 @@ export class AgentRuntime {
             hostToolPartIndices.set(action.idempotencyKey, partIndex)
             await this.event(work, runId, {
               kind: 'tool.started', stage: 'started', visibility: 'user',
-              data: { toolCallId, partIndex, name: action.action },
+              data: { toolCallId, partIndex, name: action.action, requestVersion: (session.request?.revisions.length ?? 0)+1, fence:work.fence, attemptId:this.modelAttempts.get(runId) },
             })
             return
           }
@@ -1079,7 +1129,7 @@ export class AgentRuntime {
                 : { status: 'failed', error: result.error ?? 'host action failed' }
           await this.event(work, runId, {
             kind: 'tool.completed', stage: result.ok || result.approval ? 'completed' : 'failed', visibility: 'user',
-            data: { toolCallId, partIndex, result: toolResult, isError: !result.ok && !result.approval },
+            data: { toolCallId, partIndex, result: toolResult, isError: !result.ok && !result.approval, requestVersion: (session.request?.revisions.length ?? 0)+1, fence:work.fence, attemptId:this.modelAttempts.get(runId) },
           })
         },
       }
@@ -1437,7 +1487,7 @@ export class AgentRuntime {
       log.error('terminal event emission failed', { error: eventError })
     })
     const terminalReason = cancelled ? 'cancelled' : error instanceof HardLimitExceededError || error instanceof ModelContextBudgetError ? 'context_limit'
-      : error instanceof ModelBudgetExceededError ? 'budget_limit' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
+      : error instanceof ModelBudgetExceededError ? 'budget_limit' : isPublicTextPublicationFailure(error) ? 'execution_failed' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
     await this.hostFor(work).completeWork(work, { status, terminalReason, error: publicFailure(error), goalOutcome: {
       status: 'blocked', verification: 'inconclusive', requestVersion: (session?.request?.revisions.length ?? 0) + 1,
       gaps: [cancelled ? 'Execution was cancelled' : publicFailure(error)],
@@ -1448,6 +1498,7 @@ export class AgentRuntime {
 }
 
 function publicFailure(error: unknown): string {
+  if (isPublicTextPublicationFailure(error)) return 'The response could not be safely published'
   if (error instanceof HardLimitExceededError) return error.diagnostics?.reason === 'irreducible_context'
     ? 'Required input exceeds the model context limit. Reduce the request or attached material before retrying.'
     : 'The request and conversation exceed the model context limit after bounded recovery.'

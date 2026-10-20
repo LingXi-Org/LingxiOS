@@ -1,3 +1,4 @@
+import { readPublicTextAttempts, type PublicTextAttempt } from './public-text.js'
 import type { EnqueueWorkInput, EnqueueResult } from '../control-plane/stores.js'
 import { randomUUID } from 'node:crypto'
 import type { SqlQueryable } from '../control-plane/pg-store.js'
@@ -69,18 +70,19 @@ export function runSnapshot(row: Record<string, unknown>): RunSnapshot {
 }
 
 export type DeliveryState = 'pending' | 'delivered' | 'failed' | 'not_observed'
-export interface RunState { run: RunSnapshot; message: import('../protocol/types.js').AssistantMessage | null; delivery: DeliveryState | null }
+export interface RunState { publicTextAttempts?: readonly PublicTextAttempt[]; run: RunSnapshot; message: import('../protocol/types.js').AssistantMessage | null; delivery: DeliveryState | null }
 
 /** A single MVCC snapshot keeps the response, result identity and delivery status consistent. */
 export async function readRunState(database: SqlQueryable, identity: RunIdentity): Promise<RunState | null> {
   const row = await readRunRecord(database, identity)
-  return row ? runStateFromRow(row) : null
+  return row ? { ...runStateFromRow(row), ...(row['has_public_text'] ? { publicTextAttempts: await readPublicTextAttempts(database,identity.runId,[Number(row['fence'])]) } : {}) } : null
 }
 
 /** Internal shared read for state and streaming policy; both use the very same work/result version. */
 export async function readRunRecord(database: SqlQueryable, identity: RunIdentity): Promise<Record<string, unknown> | null> {
   await authorizeRunRead(database, identity)
   const { rows } = await database.query(`SELECT work.*,jsonb_array_length(steer_inputs)+1 AS request_version,
+    EXISTS(SELECT 1 FROM lingxios.agent_run_events e WHERE e.run_id=work.id AND e.kind='public.text.delta') AS has_public_text,
     result.fence AS result_fence,result.message,CASE WHEN work.result_id IS NULL THEN NULL WHEN outbox.result_id IS NULL THEN 'not_observed'
       WHEN outbox.delivered_at IS NOT NULL THEN 'delivered' WHEN outbox.failed_at IS NOT NULL THEN 'failed' ELSE 'pending' END AS delivery
     FROM (SELECT * FROM lingxios.agent_work_items WHERE ${scopeSql}) work
