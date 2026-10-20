@@ -29,14 +29,23 @@ it('retains authorized memory and ordinary items, but invalidates old tool pairs
   assert.deepEqual(memoryDependencies(projected.slice(0, 3)).sources, [])
 })
 
-it('rejects revoked sources and unproven legacy summaries only with server contamination evidence', () => {
+it('withholds unproven legacy summaries with memory enabled, independently of expiring evidence', () => {
   const legacy = summaryItem('LEGACY_MEMORY')
-  assert.deepEqual(projectMemoryHistory([legacy], snapshot()), [legacy])
+  const ordinary = [{ role: 'user' as const, content: 'Original authorized message.' },
+    { role: 'assistant' as const, content: 'Already public answer.' }]
+  assert.deepEqual(projectMemoryHistory([legacy, ...ordinary], undefined), [legacy, ...ordinary],
+    'the no-memory default does not reinterpret legacy summaries')
+  for (const current of [snapshot(), { ...snapshot(), sourceEpochs: [] },
+    { ...snapshot(), status: 'unavailable' as const }]) {
+    const projected = projectMemoryHistory([legacy, ...ordinary], current)
+    assert.ok(!JSON.stringify(projected[0]).includes('LEGACY_MEMORY'))
+    assert.deepEqual(projected.slice(1), ordinary)
+  }
   const denied = { ...snapshot(), sourceEpochs: [], legacyMemoryInvalidated: true }
-  assert.ok(!JSON.stringify(projectMemoryHistory([legacy], denied)).includes('LEGACY_MEMORY'))
   const clean = { ...summaryItem('ORDINARY_SUMMARY'), memorySources: { version: 1 as const, sources: [] } }
-  assert.deepEqual(projectMemoryHistory([clean], denied), [clean])
+  for (const current of [snapshot(), denied, undefined]) assert.deepEqual(projectMemoryHistory([clean], current), [clean])
   assert.ok(!JSON.stringify(projectMemoryHistory([{ ...legacy, memorySources: proof }], denied)).includes('LEGACY_MEMORY'))
+  assert.ok('content' in legacy && legacy.content.includes('LEGACY_MEMORY'), 'durable legacy text is unchanged')
 })
 
 it('control proof neither enters provider input nor consumes memory body allocation', () => {

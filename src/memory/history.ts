@@ -50,7 +50,9 @@ export function stripMemorySources(items: readonly ModelItem[]): ModelItem[] {
 
 export function invalidMemorySources(item: ModelItem, snapshot: MemorySnapshot | undefined): boolean {
   const proof = item.memorySources
-  if (!proof) return isMemorySummary(item) && (!!snapshot?.legacyMemoryInvalidated || snapshot?.status === 'unavailable')
+  // Legacy summaries can outlive both memory scopes and expiring trace events.
+  // Only durable provenance can prove them clean when memory is enabled.
+  if (!proof) return snapshot !== undefined && isMemorySummary(item)
   return !validSources(proof) || proof.unknown === true || proof.sources.some(source => !snapshot?.sourceEpochs?.some(current =>
     key(current) === key(source) && current.epoch === source.epoch && current.forgottenAt === source.forgottenAt))
 }
