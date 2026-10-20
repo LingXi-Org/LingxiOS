@@ -1,0 +1,18 @@
+{
+  "command": [
+    "npm",
+    "run",
+    "test:e2e:web",
+    "--",
+    "e2e/web/memory-privacy.e2e.ts",
+    "--output",
+    "artifacts/issue216/browser-final-review-cached"
+  ],
+  "buildMode": "existing production preview via E2E_BASE_URL",
+  "browser": "managed official @e2e-dev/web browser",
+  "build": {
+    "file": "artifacts/memory/site/e2e/memory-privacy.html",
+    "modifiedAt": "2026-10-20T05:37:23.868Z",
+    "sha256": "f214c64f91259ae3c1fe7dbbce28f6c1c6c93dd9191c92fec7b45c94192e9901"
+  }
+}

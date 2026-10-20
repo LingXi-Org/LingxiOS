@@ -1,0 +1,66 @@
+{
+  "nativeSource": "b8bbef2762c782c75079c3f81113296e95d17bb1",
+  "product": "cef2349c71f576ca53e76a1b12eacfdec5f75eba",
+  "pages": [
+    {
+      "segment": {
+        "next": 1,
+        "start": 0,
+        "total": 7,
+        "sourceComplete": true
+      },
+      "middle_in_model_evidence": false,
+      "current_tail_in_model_evidence": false,
+      "verifier_approved": true,
+      "verifier_confidence": 1,
+      "proposed_changes": 0,
+      "proposed_middle": false,
+      "outcome": "committed"
+    },
+    {
+      "segment": {
+        "next": 3,
+        "start": 1,
+        "total": 7,
+        "sourceComplete": true
+      },
+      "middle_in_model_evidence": true,
+      "current_tail_in_model_evidence": false,
+      "verifier_approved": false,
+      "verifier_confidence": 0.85,
+      "proposed_changes": 1,
+      "proposed_middle": true,
+      "outcome": "rejected"
+    },
+    {
+      "segment": {
+        "next": 5,
+        "start": 3,
+        "total": 7,
+        "sourceComplete": true
+      },
+      "middle_in_model_evidence": false,
+      "current_tail_in_model_evidence": false,
+      "verifier_approved": true,
+      "verifier_confidence": 1,
+      "proposed_changes": 0,
+      "proposed_middle": false,
+      "outcome": "committed"
+    },
+    {
+      "segment": {
+        "next": 7,
+        "start": 5,
+        "total": 7,
+        "sourceComplete": true
+      },
+      "middle_in_model_evidence": false,
+      "current_tail_in_model_evidence": true,
+      "verifier_approved": true,
+      "verifier_confidence": 0.85,
+      "proposed_changes": 1,
+      "proposed_middle": false,
+      "outcome": "committed"
+    }
+  ]
+}

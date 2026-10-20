@@ -1,0 +1,53 @@
+# Subtest: reserves child startup and root closing capacity, consumes only the matching hold, and releases cancelled holds
+ok 1 - reserves child startup and root closing capacity, consumes only the matching hold, and releases cancelled holds
+# Subtest: reports missing profiles, cost, calls and deadline admission without creating work or resetting the root
+ok 2 - reports missing profiles, cost, calls and deadline admission without creating work or resetting the root
+# Subtest: rolls back graph creation on admission failure and separately persists one authorized root notice
+ok 3 - rolls back graph creation on admission failure and separately persists one authorized root notice
+# Subtest: admits a five-specialist team with sufficient budget while bounding pending fanout at eight
+ok 4 - admits a five-specialist team with sufficient budget while bounding pending fanout at eight
+# Subtest: uses settled near-limit cost exactly once before child startup plus closing admission
+ok 5 - uses settled near-limit cost exactly once before child startup plus closing admission
+# Subtest: bounds core concurrency, defers optional recall and rejects revoked scopes or required recall failures
+ok 6 - bounds core concurrency, defers optional recall and rejects revoked scopes or required recall failures
+# Subtest: settles a successful model call with nonnegative latency after the system clock moves backward
+ok 7 - settles a successful model call with nonnegative latency after the system clock moves backward
+# Subtest: retries HTTP 408 inside the runtime boundary and keeps sanitized provider diagnostics
+ok 8 - retries HTTP 408 inside the runtime boundary and keeps sanitized provider diagnostics
+# Subtest: preserves rejection metadata without retrying or logging provider bodies
+ok 9 - preserves rejection metadata without retrying or logging provider bodies
+# Subtest: retains typed total-model and root-budget deadlines after settling the one issued attempt
+ok 10 - retains typed total-model and root-budget deadlines after settling the one issued attempt
+# Subtest: keeps the first model deadline when durable settlement outlives the root deadline
+ok 11 - keeps the first model deadline when durable settlement outlives the root deadline
+# Subtest: awaits an async attempt gate without starting the provider after caller cancellation
+ok 12 - awaits an async attempt gate without starting the provider after caller cancellation
+# Subtest: does not retry or start a provider when an async attempt publication gate rejects
+ok 13 - does not retry or start a provider when an async attempt publication gate rejects
+# Subtest: preserves measured usage when a synchronous attempt hook precedes provider cancellation
+ok 14 - preserves measured usage when a synchronous attempt hook precedes provider cancellation
+# Subtest: switches only after current authorization and accounts both providers inside one logical attempt budget
+ok 15 - switches only after current authorization and accounts both providers inside one logical attempt budget
+# Subtest: does not reset attempts, bypass authorization, mix prices, or switch after cancellation/protocol failures
+ok 16 - does not reset attempts, bypass authorization, mix prices, or switch after cancellation/protocol failures
+# Subtest: degrades only optional memory dependency/authorization failures while keeping mandatory authorization and explicit operations strict
+ok 17 - degrades only optional memory dependency/authorization failures while keeping mandatory authorization and explicit operations strict
+# Subtest: keeps memory out of diagnostic events (default)
+ok 18 - keeps memory out of diagnostic events (default)
+# Subtest: keeps memory out of diagnostic events (off-sample)
+ok 19 - keeps memory out of diagnostic events (off-sample)
+# Subtest: keeps memory out of diagnostic events (legacy-trace)
+ok 20 - keeps memory out of diagnostic events (legacy-trace)
+# Subtest: keeps memory out of diagnostic events (identity-redactor)
+ok 21 - keeps memory out of diagnostic events (identity-redactor)
+# Subtest: keeps memory out of diagnostic events (throwing-redactor)
+ok 22 - keeps memory out of diagnostic events (throwing-redactor)
+1..22
+# tests 22
+# suites 0
+# pass 22
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 35088.737699

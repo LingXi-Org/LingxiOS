@@ -1,0 +1,40 @@
+{
+  "head": "e8f4942181802433b52d9d9e6ba946dd2d2f31a2",
+  "productionRequests": 0,
+  "liveProviderRequests": 0,
+  "results": [
+    {
+      "format": "counts",
+      "expiredEvents": 0,
+      "legacyEvidence": true,
+      "memoryActionCount": 0,
+      "memoryRows": 0,
+      "providerStubCalls": 1,
+      "modelInputSentinelCount": 0,
+      "status": "succeeded",
+      "durableSummarySentinelCount": 1
+    },
+    {
+      "format": "legacy-arrays",
+      "expiredEvents": 0,
+      "legacyEvidence": false,
+      "memoryActionCount": 0,
+      "memoryRows": 0,
+      "providerStubCalls": 1,
+      "modelInputSentinelCount": 1,
+      "status": "succeeded",
+      "durableSummarySentinelCount": 1
+    },
+    {
+      "format": "counts-expired",
+      "expiredEvents": 1,
+      "legacyEvidence": false,
+      "memoryActionCount": 0,
+      "memoryRows": 0,
+      "providerStubCalls": 1,
+      "modelInputSentinelCount": 1,
+      "status": "succeeded",
+      "durableSummarySentinelCount": 1
+    }
+  ]
+}

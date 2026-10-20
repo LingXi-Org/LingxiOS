@@ -1,0 +1,129 @@
+# Subtest: product stable memory crosses authorized rooms and Agents while current recipients fence private facts
+ok 1 - product stable memory crosses authorized rooms and Agents while current recipients fence private facts
+  duration_ms: 5946.970867
+# Subtest: durable core survives repeated native compaction and a restarted control in a new room
+ok 2 - durable core survives repeated native compaction and a restarted control in a new room
+  duration_ms: 6471.339351
+# Subtest: HTTP historical cards reauthorize stable memory across rooms after forgetting and revocation
+ok 3 - HTTP historical cards reauthorize stable memory across rooms after forgetting and revocation
+  duration_ms: 4974.034874
+# Subtest: memory chips and explicit forgetting preserve native authorization and versions
+ok 4 - memory chips and explicit forgetting preserve native authorization and versions
+  duration_ms: 4558.339001
+# Subtest: 0045 preserves existing sources and adds explicit organization-only case scope exactly once
+ok 5 - 0045 preserves existing sources and adds explicit organization-only case scope exactly once
+  duration_ms: 3965.131357
+# Subtest: 0044 preserves product and runtime rows, starts empty and retains accepted answers on replay
+ok 6 - 0044 preserves product and runtime rows, starts empty and retains accepted answers on replay
+  duration_ms: 2939.48666
+# Subtest: 0044 failure from 42 rolls back only its transaction and retains committed 0043
+ok 7 - 0044 failure from 42 rolls back only its transaction and retains committed 0043
+  duration_ms: 2726.193392
+# Subtest: 0044 failure from 43 rolls back only its transaction and retains committed 0043
+ok 8 - 0044 failure from 43 rolls back only its transaction and retains committed 0043
+  duration_ms: 3042.224657
+# Subtest: 0044 failure during fresh cutover rolls back all product and runtime installation
+ok 9 - 0044 failure during fresh cutover rolls back all product and runtime installation
+  duration_ms: 5845.98732
+# Subtest: 0043 preserves schema-11 work without backfilling notices and applies the published upgrade exactly once
+ok 10 - 0043 preserves schema-11 work without backfilling notices and applies the published upgrade exactly once
+  duration_ms: 3715.853828
+# Subtest: 0043 refuses an active worker and rolls back all upgrade metadata
+ok 11 - 0043 refuses an active worker and rolls back all upgrade metadata
+  duration_ms: 4301.201442
+# Subtest: a failed fresh cutover rolls back packaged schema installation and product history together
+ok 12 - a failed fresh cutover rolls back packaged schema installation and product history together
+  duration_ms: 7070.025682
+# Subtest: an empty database reaches the latest schema once and repeated migration is a no-op
+ok 13 - an empty database reaches the latest schema once and repeated migration is a no-op
+  duration_ms: 2947.372282
+# Subtest: group mention upgrade preserves customized preset profiles and retires only handoff grants
+ok 14 - group mention upgrade preserves customized preset profiles and retires only handoff grants
+  duration_ms: 4368.700021
+# Subtest: interactive UI upgrade preserves product rows and adds empty scoped state once
+ok 15 - interactive UI upgrade preserves product rows and adds empty scoped state once
+  duration_ms: 4861.956194
+# Subtest: collaboration upgrade preserves managed IDs, custom rooms and leaders while expanding default teams
+ok 16 - collaboration upgrade preserves managed IDs, custom rooms and leaders while expanding default teams
+  duration_ms: 4656.660291
+# Subtest: earlier 3.2 versions upgrade only runtime registration and preserve existing data
+ok 17 - earlier 3.2 versions upgrade only runtime registration and preserve existing data
+  duration_ms: 28460.750335
+# Subtest: read receipt upgrade preserves human receipts and accepts only same-tenant participants
+ok 18 - read receipt upgrade preserves human receipts and accepts only same-tenant participants
+  duration_ms: 3085.68711
+# Subtest: 3.2.13 upgrades the workspace schema transactionally and repeats without changing product data
+ok 19 - 3.2.13 upgrades the workspace schema transactionally and repeats without changing product data
+  duration_ms: 2427.940286
+# Subtest: 3.3.0 registers the runtime fixes without altering sessions or accepting an unverified schema
+ok 20 - 3.3.0 registers the runtime fixes without altering sessions or accepting an unverified schema
+  duration_ms: 2715.479707
+# Subtest: 3.3.1 registers the runtime fixes without altering sessions or accepting an unverified schema
+ok 21 - 3.3.1 registers the runtime fixes without altering sessions or accepting an unverified schema
+  duration_ms: 3712.761189
+# Subtest: 3.3.2 registers the runtime fixes without altering sessions or accepting an unverified schema
+ok 22 - 3.3.2 registers the runtime fixes without altering sessions or accepting an unverified schema
+  duration_ms: 2854.400562
+# Subtest: 3.3.4 registers the runtime fixes without altering sessions or accepting an unverified schema
+ok 23 - 3.3.4 registers the runtime fixes without altering sessions or accepting an unverified schema
+  duration_ms: 3236.791053
+# Subtest: 3.3.5 registers the runtime fixes without altering sessions or accepting an unverified schema
+ok 24 - 3.3.5 registers the runtime fixes without altering sessions or accepting an unverified schema
+  duration_ms: 2800.97687
+# Subtest: a recorded runtime patch repairs a stale LingxiOS schema before serving
+ok 25 - a recorded runtime patch repairs a stale LingxiOS schema before serving
+  duration_ms: 3058.749941
+# Subtest: the affinity migration backfills the most recent worker without changing the Home epoch
+ok 26 - the affinity migration backfills the most recent worker without changing the Home epoch
+  duration_ms: 2364.018347
+# Subtest: native installation rejects old run data before historical reset migrations can change it
+ok 27 - native installation rejects old run data before historical reset migrations can change it
+  duration_ms: 1566.622774
+# Subtest: a non-empty database without migration history is rejected without mutation
+ok 28 - a non-empty database without migration history is rejected without mutation
+  duration_ms: 91.904488
+# Subtest: editing an applied migration is rejected by checksum
+ok 29 - editing an applied migration is rejected by checksum
+  duration_ms: 1302.060306
+# Subtest: a failed migration rolls back its DDL and history row
+ok 30 - a failed migration rolls back its DDL and history row
+  duration_ms: 2033.216015
+# Subtest: concurrent migrators serialize and apply each migration once
+ok 31 - concurrent migrators serialize and apply each migration once
+  duration_ms: 3530.27995
+# Subtest: runtime readiness rejects pending migrations
+ok 32 - runtime readiness rejects pending migrations
+  duration_ms: 2480.309228
+# Subtest: runtime readiness rejects a missing native collaboration table
+ok 33 - runtime readiness rejects a missing native collaboration table
+  duration_ms: 3628.998706
+# Subtest: capability backfill preserves teacher grants, custom prompts and later revocations
+ok 34 - capability backfill preserves teacher grants, custom prompts and later revocations
+  duration_ms: 3335.631081
+# Subtest: forum convergence preserves complete submission history and rolls back ambiguous assignments
+ok 35 - forum convergence preserves complete submission history and rolls back ambiguous assignments
+  duration_ms: 3318.681473
+# Subtest: 0046 retains legacy OpenUI data and migration history while adding empty Visualize tables exactly once
+ok 36 - 0046 retains legacy OpenUI data and migration history while adding empty Visualize tables exactly once
+  duration_ms: 3853.084551
+# Subtest: 0047 preserves legacy memory and epochs, drains Web capture, and supports safe pre-activation rollback
+ok 37 - 0047 preserves legacy memory and epochs, drains Web capture, and supports safe pre-activation rollback
+  duration_ms: 3490.924849
+# Subtest: native memory steps reach Run Activity and preserve reviewed versioned writes
+not ok 38 - native memory steps reach Run Activity and preserve reviewed versioned writes
+  duration_ms: 46079.505336
+  failureType: 'testCodeFailure'
+  error: 'all completed runs must reach durable IM delivery'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+1..38
+# tests 38
+# suites 0
+# pass 37
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 215133.075675

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="e2e" tests="3" failures="0" errors="0" skipped="0" time="31.336">
+  <testsuite name="e2e/web/memory-privacy.e2e.ts" tests="3" failures="0" errors="0" skipped="0" time="31.336">
+    <testcase name="Official memory activity &gt; forget invalidates cards from two runs without receipt fallback [web]" classname="e2e/web/memory-privacy.e2e.ts" time="4.107"/>
+    <testcase name="Official memory activity &gt; memory activity, attention and forgetting (1440) [web]" classname="e2e/web/memory-privacy.e2e.ts" time="14.870"/>
+    <testcase name="Official memory activity &gt; memory activity, attention and forgetting (390) [web]" classname="e2e/web/memory-privacy.e2e.ts" time="12.359"/>
+  </testsuite>
+</testsuites>
