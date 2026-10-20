@@ -5,6 +5,9 @@ import { memoryFixture, content, identity, scope } from './memory-fixture.js'
 import { withTransaction } from '../src/control-plane/pg-store.js'
 import { executeMemorySynthesis, type MemoryBatch } from '../src/memory/synthesis.js'
 import { scheduleMemoryReflection } from '../src/memory/evidence.js'
+import { memorySynthesisProcessor } from '../src/memory/processor.js'
+import type { WorkProcessorContext } from '../src/runtime/runtime.js'
+import type { WorkItem } from '../src/protocol/types.js'
 
 for (const mode of ['mixed', 'approved', 'incomplete'] as const) it(`reports ${mode} long-source completeness across separate jobs`, async () => {
   const f = await memoryFixture()
@@ -58,5 +61,29 @@ it('does not hide an unfinished or rejected scope behind a successful scope',asy
       await f.store.complete(job.id,job.fence,createHash('sha256').update(job.leaseToken).digest('hex'),{status:'completed'})
       assert.equal((await f.pool.query('SELECT status FROM lingxios.agent_memory_evidence')).rows[0]!['status'],index?'rejected':'pending')
     }
+  } finally {await f.close()}
+})
+
+for(const repaired of [false,true]) it(`audits empty extraction coverage and bounds repair (${repaired})`,async()=>{
+  const f=await memoryFixture()
+  try {
+    const source=await f.source({text:'我正在筹备名为星河的数学科普展。'})
+    const {job}=await f.reflection();assert.ok(job)
+    let calls=0
+    const changes=[{sourceRunIds:[source.work.id],change:{action:'create',content:content('星河数学科普展','exhibition.md')}}]
+    const context={signal:new AbortController().signal,emit:async()=>{},
+      host:{executeAction:async(_work:WorkItem,action:{action:string;args:Record<string,unknown>})=>({
+        ok:true,executionState:'succeeded',value:await withTransaction(f.pool,db=>executeMemorySynthesis(db,job,action.action.split('.')[1]!,action.args,f.options)),
+      })},model:{structured:async(request:{instructions:string})=>{
+        calls++;assert.ok(calls<=4,'only one repair and independent recheck')
+        if(calls===1)return {value:{changes:[],conflicts:[]}}
+        if(calls===3){assert.match(request.instructions,/Repair/);return {value:{changes:repaired?changes:[],conflicts:[]}}}
+        assert.match(request.instructions,/coverage/i)
+        return {value:{approved:true,complete:repaired&&calls===4,confidence:1,feedback:'A supported exhibition goal is missing.'}}
+      }}} as unknown as WorkProcessorContext
+    await memorySynthesisProcessor.process(job,context)
+    assert.equal(calls,4)
+    assert.equal((await f.pool.query('SELECT status FROM lingxios.agent_memory_evidence')).rows[0]!['status'],repaired?'processed':'rejected')
+    assert.equal((await f.api.list(identity,scope)).items.length,repaired?1:0)
   } finally {await f.close()}
 })

@@ -25,3 +25,16 @@ Tests precede source edits: official createWorker deletion probe; mixed
 reject/approve pages, all approved pages, incomplete capture and multiple
 scope outcomes. Preserve existing all-rejected tail traversal and no-loop test.
 Keep schema13 / product0047; no package publication, merge or deployment.
+
+The first real-provider probe after the initial fix found a second completeness
+failure: an empty proposal bypassed independent verification, lost the tail
+fact and marked the source processed. Preserve that red result. Every human
+page, including empty proposals, needs a separate coverage decision. A single
+shared repair allowance may correct syntax or coverage; the replacement still
+requires independent approval and complete coverage. Exhausted review rejects
+the window; failed/aborted calls leave it pending for the existing bounded retry.
+
+The retained assistant-only test previously fabricated a cursor without a
+preceding accepted page. Its setup will process an actual first page before
+testing the no-model assistant continuation; an unproven legacy cursor must not
+be used as proof of source completeness.
