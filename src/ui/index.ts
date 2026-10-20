@@ -46,10 +46,12 @@ function settlePublicText(view: RunView): RunView {
   const parts = view.publicTextParts ?? []
   return { ...view, publicTextParts: parts.map(part => {
     if (part.endedSeq != null) return part
-    const reason: PublicTextEndReason | null = view.publicTextAttempts?.find(attempt=>attempt.fence===part.fence)?.reason ?? (part.fence < view.fence || part.requestVersion < view.requestVersion ? 'superseded'
-      : part.fence === view.fence && part.requestVersion === view.requestVersion
-        ? view.lifecycle === 'cancelled' ? 'cancelled' : view.lifecycle === 'failed' ? 'failed'
-          : view.lifecycle && !['leased','queued'].includes(view.lifecycle) ? 'interrupted' : null : null)
+    const attempt = view.publicTextAttempts?.find(attempt => attempt.fence === part.fence)
+    const reason: PublicTextEndReason | null = part.fence === view.fence && part.requestVersion < view.requestVersion
+      ? 'superseded' : attempt?.reason ?? (part.fence < view.fence || part.requestVersion < view.requestVersion ? 'superseded'
+        : part.fence === view.fence && part.requestVersion === view.requestVersion
+          ? view.lifecycle === 'cancelled' ? 'cancelled' : view.lifecycle === 'failed' ? 'failed'
+            : view.lifecycle && !['leased','queued'].includes(view.lifecycle) ? 'interrupted' : null : null)
     return reason ? { ...part, reason, status: publicTextStatus(reason) } : part
   }) }
 }

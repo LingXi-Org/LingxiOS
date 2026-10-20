@@ -70,3 +70,8 @@ it('late durable attempt metadata corrects inferred state but never overrides an
   assert.equal(parts(replay)[0]?.['reason'],'tool')
   assert.equal(parts(replay)[0]?.['endedSeq'],2)
 })
+it('a revised request in the same fence marks its unfinished prior version superseded',()=>{
+  let view=consumeRunEvent(createRunView('run'),event(1,{chunkIndex:0,text:'prior version'}))
+  view=consumeRunState(view,{...state(1,2),publicTextAttempts:[{fence:1,reason:'failed'}]})
+  assert.equal(view.publicTextParts?.[0]?.reason,'superseded')
+})

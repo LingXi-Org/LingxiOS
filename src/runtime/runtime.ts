@@ -1,4 +1,4 @@
-import { PublicTextWriter, PublicTextPublicationError } from './public-text.js'
+import { PublicTextWriter, isPublicTextPublicationFailure } from './public-text.js'
 import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from './wait.js'
 import { inputWaitQuestion } from '../protocol/input-wait.js'
@@ -1458,7 +1458,7 @@ export class AgentRuntime {
       log.error('terminal event emission failed', { error: eventError })
     })
     const terminalReason = cancelled ? 'cancelled' : error instanceof HardLimitExceededError || error instanceof ModelContextBudgetError ? 'context_limit'
-      : error instanceof ModelBudgetExceededError ? 'budget_limit' : error instanceof PublicTextPublicationError ? 'execution_failed' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
+      : error instanceof ModelBudgetExceededError ? 'budget_limit' : isPublicTextPublicationFailure(error) ? 'execution_failed' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
     await this.hostFor(work).completeWork(work, { status, terminalReason, error: publicFailure(error), goalOutcome: {
       status: 'blocked', verification: 'inconclusive', requestVersion: (session?.request?.revisions.length ?? 0) + 1,
       gaps: [cancelled ? 'Execution was cancelled' : publicFailure(error)],

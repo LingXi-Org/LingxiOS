@@ -6,6 +6,13 @@ import { ModelDriverError } from '../errors.js'
 export class PublicTextPublicationError extends ModelDriverError {
   constructor(){super('public text could not be persisted',{kind:'provider',category:'unknown',finishReasons:[]})}
 }
+/** Drivers may wrap callback errors to preserve already-received token usage. */
+export function isPublicTextPublicationFailure(error:unknown):boolean {
+  for(let current=error,depth=0;current instanceof Error&&depth<8;depth++,current=current.cause){
+    if(current instanceof PublicTextPublicationError)return true
+  }
+  return false
+}
 /** One provider attempt owns this bounded, append-only publication buffer. */
 export class PublicTextWriter {
   private text=''
