@@ -62,7 +62,7 @@ This fix does not retroactively relabel old terminal rows from an earlier binary
   in the final 17-test run. The unchanged 66 checks were not repeated.
 - `product-owning.tap`: all four owning product tests pass, including native
   memory activity/durable delivery (previously failing), room/Agent isolation,
-  compaction/restart and memory latency. `product-typecheck.log` passes.
+  compaction/restart and memory latency. `product-typecheck.txt` passes.
   These ran against the first deletion/state fix; the later change affects
   the auxiliary synthesis processor.
 - `live-coverage-red.json`: real GLM-5.2 deletion succeeds; automatic extraction
@@ -76,8 +76,7 @@ This fix does not retroactively relabel old terminal rows from an earlier binary
   auxiliary path; it does not erase or count that foreground run as passed.
   Two earlier harness configuration failures made zero provider requests
   (`live-results.json`, `invalid-probe-configuration.json`).
-- Full product live-continuity results are recorded separately when the bounded
-  run finishes. No new browser screenshots: this changes native backend
+- Full product live-continuity **fails** (`product-live.tap`, `product-live-counts.json`): the learner source remains pending at 5/7 segments, one synthesis job has two failed attempts, and the run ends with Abort timeout after about 207 seconds. All 41 model calls have measured usage (7 embedding calls; 463,940 costMicros total). The public terminal category is execution_failed; the sanitized record does not establish the underlying cause. Final background inheritance, revision and forget-index assertions were not reached. No extra retry or budget increase was used to obtain a green result. No new browser screenshots: this changes native backend
   behavior; PR35 retains the existing unchanged UI checks.
 
 The initial boundary probe's `deletion-boundaries.json` is also retained: its
