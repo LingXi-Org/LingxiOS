@@ -81,12 +81,14 @@ it('EOF protocol rejection retains observed usage and encoding instructions coun
   assert.ok(inputTokens(typed,{instructions:'same input'},true)>inputTokens(legacy,{instructions:'same input'}))
 })
 
-it('native tool calls may have commentary but cannot execute a simultaneous answer',async()=>{
-  for(const answer of ['', 'premature answer']){
+it('native tool calls preserve a simultaneous substantive answer',async()=>{
+  for(const answer of ['', 'The known base value is 40.']){
     const model=new OpenAIChatDriver('purpose-tool-fixture',{apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v1',fetchImpl:async()=>new Response('data: '+JSON.stringify({choices:[{delta:{content:JSON.stringify({commentary:'Checking',answer}),tool_calls:[{index:0,id:'call',function:{name:'probe',arguments:'{}'}}]},finish_reason:'tool_calls'}]})+'\n\ndata: [DONE]\n\n')} as OpenAIDriverOptions)
     const task=model.run({instructions:'fixture',items:[],codeExecution:'disabled',tools:[{name:'probe',action:'probe',effect:'read',approval:false,description:'fixture',parameters:{type:'object',properties:{},additionalProperties:false}}]})
-    if(answer)await assert.rejects(task,/public text protocol/)
-    else assert.equal(Reflect.get((await task).output[0]!,'type'),'function_call')
+    const result=await task
+    assert.equal(result.text,answer)
+    assert.equal(Reflect.get(result.output.at(-1)!,'type'),'function_call')
+    if(answer)assert.deepEqual(result.output[0],{role:'assistant',content:answer})
   }
 })
 

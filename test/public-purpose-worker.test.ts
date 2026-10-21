@@ -11,7 +11,7 @@ import type { SqlPool } from '../src/control-plane/pg-store.js'
 import { nullLogger } from '../src/logging.js'
 import { consumeRunEvent, consumeRunState, consumeRunStreamEvent, createRunView } from '../src/ui/index.js'
 
-it('purpose-aware public worker persists typed first chunks and accepts only answer across SSE/replay', async t => {
+it('purpose-aware public worker streams a substantive answer before EOF, executes its tool and accepts only the final answer across SSE/replay', {timeout:15_000}, async t => {
   const db=new PGlite(), directory=await mkdtemp(join(tmpdir(),'public-text-worker-'))
   await db.exec(await readFile(new URL('../../db/schema.sql',import.meta.url),'utf8'))
   let tail=Promise.resolve()
@@ -20,7 +20,9 @@ it('purpose-aware public worker persists typed first chunks and accepts only ans
   const pool:SqlPool={async query(sql,params){const release=await acquire();try{return await query(sql,params)}finally{release()}},
     async connect(){return {query,release:await acquire()}}}
   const identity={runId:'public-run',tenantId:'tenant',principalId:'human',agentId:'agent',sessionId:'room'}
-  let beforeTool=false,toolCalls=0,modelCalls=0,authorizations=0,providerStarted=0,durableAtTool=0
+  let beforeTool=false,toolCalls=0,modelCalls=0,authorizations=0,providerStarted=0,durableAtTool=0,firstEof=false,answerBeforeEof=false
+  let releaseFirst!:()=>void
+  const firstPublished=new Promise<void>(resolve=>{releaseFirst=resolve})
   const realtime={allowDraft:()=>false,allowPublicText:()=>{authorizations++;return true}}
   const app=await createLingxiOS({database:pool,logger:nullLogger,realtime,homesRoot:directory,tools:[{
     action:'probe.read',name:'probe__read',description:'Read a synthetic record',parameters:{type:'object',properties:{},additionalProperties:false},
@@ -28,7 +30,7 @@ it('purpose-aware public worker persists typed first chunks and accepts only ans
       toolCalls++
       const rows=await context.database.query("SELECT data FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='public.text.delta'",[identity.runId])
       durableAtTool=performance.now()
-      beforeTool=rows.rows.some(row=>String((row['data'] as Record<string,unknown>)['text']).includes('先检查记录'))
+      beforeTool=rows.rows.some(row=>String((row['data'] as Record<string,unknown>)['text']).includes('已知基础值是40。'))
       return {ok:true,value:{answer:42}}
     }}]})
   const driver=new OpenAIChatDriver('public-worker-fixture',{apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v1',fetchImpl:async(_url,init)=>{
@@ -36,9 +38,28 @@ it('purpose-aware public worker persists typed first chunks and accepts only ans
     if(!request.stream)return Response.json({model:'fixture',choices:[{finish_reason:'stop',message:{content:'{"missing":[]}'}}],usage:{prompt_tokens:10,completion_tokens:5}})
     const first=++modelCalls===1
     if(first)providerStarted=performance.now()
-    const delta=first?{content:JSON.stringify({commentary:'先检查记录',answer:''}),reasoning_content:'PRIVATE_REASONING_SENTINEL',tool_calls:[{index:0,id:'probe',function:{name:'probe__read',arguments:'{}'}}]}:{content:JSON.stringify({commentary:'记录已读取',answer:'检查结果是42。'})}
-    return new Response(`data: ${JSON.stringify({choices:[{delta,finish_reason:first?'tool_calls':'stop'}],usage:{prompt_tokens:10,completion_tokens:5}})}\n\ndata: [DONE]\n\n`)
+    const frame=(delta:unknown,finish:string|null)=>`data: ${JSON.stringify({choices:[{delta,finish_reason:finish}],usage:{prompt_tokens:10,completion_tokens:5}})}\n\n`
+    if(first)return new Response(new ReadableStream({start(controller){
+      controller.enqueue(new TextEncoder().encode(frame({content:'{"commentary":"先检查记录","answer":"已知基础值是40。',reasoning_content:'PRIVATE_REASONING_SENTINEL'},null)))
+    },async pull(controller){
+      await firstPublished
+      firstEof=true
+      controller.enqueue(new TextEncoder().encode(frame({content:'"}',tool_calls:[{index:0,id:'probe',function:{name:'probe__read',arguments:'{}'}}]},'tool_calls')+'data: [DONE]\n\n'))
+      controller.close()
+    }}))
+    return new Response(frame({content:JSON.stringify({commentary:'记录已读取',answer:'检查结果是42。'})},'stop')+'data: [DONE]\n\n')
   }} as OpenAIDriverOptions)
+  // Keep this maxAttempts:1 fixture instance so the callback observes the real durable append.
+  driver.singleAttempt=()=>driver
+  const originalRun=driver.run.bind(driver)
+  driver.run=request=>originalRun({...request,onTextDelta:async(text,metadata)=>{
+    await request.onTextDelta?.(text,metadata)
+    if(text==='已知基础值是40。'){
+      const rows=await pool.query("SELECT data FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='public.text.delta'",[identity.runId])
+      answerBeforeEof=!firstEof&&rows.rows.some(row=>{const data=row['data'] as Record<string,unknown>;return data['purpose']==='answer'&&data['text']===text})
+      releaseFirst()
+    }
+  }})
   const worker=createWorker({controlPlane:app,model:driver,logger:nullLogger,kernel:{homesRoot:directory},worker:{id:'public-fixture',healthPort:0}})
   try{
     await app.enqueue({id:identity.runId,...identity,text:'读取记录并告诉我结果',mode:'execute',codeExecution:'disabled'})
@@ -46,21 +67,23 @@ it('purpose-aware public worker persists typed first chunks and accepts only ans
     const state=await app.readRunState(identity)
     assert.ok(state)
     assert.equal(toolCalls,1)
-    assert.equal(beforeTool,true,'public text must already be durable before native tool execution')
+    assert.equal(beforeTool,true,'substantive answer must already be durable before native tool execution')
+    assert.equal(answerBeforeEof,true,'answer must be durable before provider EOF, not buffered until the tool or final turn')
+    assert.equal(modelCalls,2)
     assert.ok(authorizations>0)
     const events=await app.readEvents(identity)
     let replay=consumeRunState(createRunView(identity.runId),state)
     for(const event of events.events)replay=consumeRunEvent(replay,event)
     const parts=(Reflect.get(replay,'publicTextParts')??[]) as unknown as Array<{text:string;reason:string}>
-    assert.ok(parts.some(part=>part.text==='先检查记录'&&part.reason==='tool'))
+    assert.ok(parts.some(part=>part.text==='已知基础值是40。'&&part.reason==='tool'))
     assert.equal(state.message?.body,'检查结果是42。')
-    assert.equal(replay.publicTextParts?.length,3)
-    assert.deepEqual(replay.publicTextParts?.map(part=>Reflect.get(part,'purpose')),['commentary','commentary','answer'])
-    assert.deepEqual(replay.publicTextParts?.map(part=>Reflect.get(part,'acceptedResultId')),[null,null,state.run.resultId])
-    assert.equal(Reflect.get(state.message!,'publicTextPartId'),replay.publicTextParts?.[2]?.partId)
+    assert.equal(replay.publicTextParts?.length,4)
+    assert.deepEqual(replay.publicTextParts?.map(part=>Reflect.get(part,'purpose')),['commentary','answer','commentary','answer'])
+    assert.deepEqual(replay.publicTextParts?.map(part=>Reflect.get(part,'acceptedResultId')),[null,null,null,state.run.resultId])
+    assert.equal(Reflect.get(state.message!,'publicTextPartId'),replay.publicTextParts?.[3]?.partId)
     const commit=events.events.find(event=>event.kind==='response.committed')
-    assert.equal(commit?.data['publicTextPartId'],replay.publicTextParts?.[2]?.partId)
-    assert.equal(replay.publicTextParts?.filter(part=>!Reflect.get(part,'acceptedResultId')).length,2,'main display keeps the tool preface only; all parts remain in history')
+    assert.equal(commit?.data['publicTextPartId'],replay.publicTextParts?.[3]?.partId)
+    assert.equal(replay.publicTextParts?.filter(part=>!Reflect.get(part,'acceptedResultId')).length,3,'only the final answer is accepted; tool-turn answer stays in the public archive')
     const started=events.events.find(event=>event.kind==='tool.started'&&event.data['name']==='probe.read')
     assert.ok(started)
     const completed=events.events.find(event=>event.kind==='tool.completed'&&event.data['toolCallId']===started.data['toolCallId'])

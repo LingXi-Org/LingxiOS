@@ -465,7 +465,7 @@ export class OpenAIChatDriver implements ModelDriver {
         purposeParser.finish()
         text=(JSON.parse(text) as {answer:string}).answer
       }
-      if(accumulator.toolCalls.size?text.trim().length>0:!text.trim())throw publicPurposeError()
+      if(!accumulator.toolCalls.size&&!text.trim())throw publicPurposeError()
       }catch{throw new ModelDriverError('invalid public text protocol',{...diagnostics,kind:'protocol',category:'protocol'})}
     }
     if (text.trim()) output.push({ role: 'assistant', content: text })

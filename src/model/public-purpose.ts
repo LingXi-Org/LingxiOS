@@ -7,7 +7,8 @@ Encode assistant content as exactly one JSON object with two string fields IN TH
 commentary is optional concise PUBLIC progress/status for the user, never private reasoning, analysis, deliberation, or chain-of-thought.
 answer is the substantive user-facing answer, explanation, requested code, or deliverable, with no process preamble or status prose mixed in.
 Do not move substantive answers into commentary. Do not put private reasoning in either field. No other keys, markdown fences, or trailing text.
-When calling a tool, commentary may describe the public action; answer must be empty. With no tool calls, answer must be nonempty.
+When calling a tool, commentary may describe the public action and answer may contain substantive content already available to the user.
+Keep such content in answer even when tools are called; do not relabel it as commentary. With no tool calls, answer must be nonempty.
 Use the ordinary native tool_calls channel for tools; never encode tools into these text fields.
 Previously unwrapped assistant history is already decoded; only the new response uses this JSON encoding.`
 
