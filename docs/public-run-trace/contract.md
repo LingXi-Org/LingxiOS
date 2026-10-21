@@ -1,4 +1,4 @@
-# Public execution trace v1 (candidate for a release after 3.7)
+# Public execution trace v1 (3.8.0 release candidate)
 
 `readRunTrace(identity, operation?) -> Promise<RunTraceSnapshot | null>` and
 `streamRun(identity, { trace: true })` opt-in event `{ type: 'trace', trace: RunTraceSnapshot }` share
@@ -53,8 +53,8 @@ No prompts, model.request payloads, hidden reasoning, raw tool I/O, credentials,
 provider errors or untrusted labels are copied. New timing metadata uses existing
 fenced event and model-observation storage; there is no new native/product DDL.
 Old history without recorded execution fields keeps nulls; no backfill guesses.
-Existing events remain compatible. Trace opt-in/compatibility and package version
-are assigned by the release owner, not this feature branch.
+Existing events remain compatible. The release owner assigned runtime3.8.0/runTrace1; no package is published by
+this feature branch. The stream opt-in does not enable public-text production.
 
 ## Failure model written before implementation
 

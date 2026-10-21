@@ -2,8 +2,8 @@
 
 Scope: LingXi-Org/LingxiOS#40 / LingXi-Org/LingxiLoop#283. Base
 `6e715df85de9e6fa4d852d9102772e5c3ca4e8a7` (3.7 purpose). This branch does not
-publish a package or change deployment/schema provenance. Release owner must
-assign a subsequent runtime version before publication; never replace 3.7.0.
+publish a package or change deployment/schema provenance. Release owner assigned
+3.8.0/runTrace1 after the implementation checkpoint; never replace 3.7.0.
 
 ## Implementation
 
