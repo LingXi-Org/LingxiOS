@@ -25,8 +25,10 @@ Framing guarantees **which purpose the producer declared before a character was 
 3. Enable `purpose-json-v1` only after all readers support publicText2. The companion product draft enables it, so do not merge/deploy that draft before the prior steps and exact-lock update.
 4. To stop producing v2, disable the option and drain/replace active producers according to the normal release path. Keep v2-capable readers: already-written v2 JSONB persists and old strict 3.6.0 readers reject it. Disabling a producer does not undo history. **No direct rollback to 3.6.0 after v2 writes.** Retain the upgraded reader and fix forward; do not delete or rewrite durable events.
 
-No SQL DDL or checksum changes are needed: events use existing JSONB. Native schema14, product schema50, control-plane protocol8 and assistant-message2 remain unchanged. Public text changes from event v1 to opt-in v2. Same database schema does not imply reader downgrade compatibility; release compatibility must include this new public capability and stored history.
+No SQL DDL or checksum changes are needed: events use existing JSONB. Native schema14, product schema50, control-plane protocol11, kernel protocol2 and assistant-message2 remain unchanged. Public text changes from event v1 to opt-in v2. Same database schema does not imply reader downgrade compatibility; release compatibility must include this new public capability and stored history.
 
 ## Evidence and remaining release gates
 
 Failure model: `docs/public-purpose-failure-model.md`. Tests use deterministic synthetic provider streams and isolated PGlite native app/Worker with actual persistence, SSE and replay. No production API, credentials, private conversations, HTML or restricted diagnostics were read. No external model request or browser qualification was run. Existing authorization, cancellation, safety, fencing and atomic final-commit tests remain mandatory owning checks.
+
+The existing product same-schema release driver is intentionally restricted to formal runtime3.6.0/native14/product50 and equal formal keys. A future3.7.0 reader upgrade does not qualify for that driver merely because schema14 is unchanged. The sole release owner must separately review a runtime/public-reader upgrade plan; do not relax or reuse the current guard. This draft changes no release driver.
