@@ -1,0 +1,32 @@
+TAP version 13
+# Subtest: charges public-purpose wire instructions once for main turns, never history or auxiliary calls
+not ok 1 - charges public-purpose wire instructions once for main turns, never history or auxiliary calls
+  ---
+  duration_ms: 7.521005
+  type: 'test'
+  location: '/workspace/LingxiOS-public-purpose/dist/test/model-execution.test.js:184:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    history does not include new turn framing
+    
+    1026 !== 42
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 42
+  actual: 1026
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///workspace/LingxiOS-public-purpose/dist/test/model-execution.test.js:191:12)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 70.523997

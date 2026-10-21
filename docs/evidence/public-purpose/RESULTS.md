@@ -23,3 +23,5 @@ node --test --test-concurrency=1 \
 ```
 
 No database migrations, native checksum changes, package version change or runtime publication. Proposed3.7.0/publicText2 allocation and exact product dependency pin are release-owner work. See docs/public-purpose.md for the reader-first sequence and irreversible reader-compatibility boundary after v2 history is written.
+
+Independent review follow-up: generic inputTokens initially double-counted protocol overhead in history/auxiliary estimates. `budget-red.log` reproduces history1026 vs42. Accounting now explicitly includes it once only for agent-turn context admission, primary/fallback admission and root reservation; structured/compaction and history remain unchanged. The added near-context-limit and root-reservation counterexample plus affected model/public-purpose suites passed **20/20** in4.22s (`budget-green.log`); final build/typecheck exit0. The preceding55-test run covers unchanged storage/safety/atomic-acceptance code. Total distinct owning cases:56. No larger test matrix was added.

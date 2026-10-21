@@ -99,7 +99,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       if (routed) await abortable(fallback!.authorize(logicalSignal),logicalSignal).catch(error => {
         throw logicalSignal.aborted ? deadlineFailure() : error
       })
-      const input = estimateInputTokens(callModel, providerRequest) + (callModel.toolDefinitionTokens ?? 0)
+      const input = estimateInputTokens(callModel, providerRequest, purpose==='agent-turn') + (callModel.toolDefinitionTokens ?? 0)
       const output = (callModel.maxOutputTokens ?? 8192) + (callModel.maxThinkingTokens ?? 0)
       const reservedCost = Math.ceil((input * limits.inputCostMicrosPerMillion + output * limits.outputCostMicrosPerMillion) / 1_000_000)
       const dimension = Date.now() - started >= limits.wallClockMs ? 'deadline' : calls >= limits.maxModelCalls ? 'calls'
@@ -219,13 +219,13 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
     const send=()=>{ ready(); return start() }
     return admit ? admit().then(send) : send()
   }
-  const check = ({ prompt: _prompt, signal: _signal, ...input }: { prompt?: PromptManifest; signal?: AbortSignal | undefined }) => {
-    if (!fitsModel(model, input)) throw new ModelContextBudgetError()
+  const check = ({ prompt: _prompt, signal: _signal, ...input }: { prompt?: PromptManifest; signal?: AbortSignal | undefined }, includeProtocol=false) => {
+    if (!fitsModel(model, input, includeProtocol)) throw new ModelContextBudgetError()
   }
   const route = (purpose: ModelCallObservation['purpose'], { prompt: _prompt,signal: _signal,...input }: { prompt?: PromptManifest; signal?: AbortSignal | undefined }) => secondary ? {
     model: secondary,
     authorize: async (signal: AbortSignal) => {
-      if (!fitsModel(secondary,input)) throw new ModelContextBudgetError()
+      if (!fitsModel(secondary,input,purpose==='agent-turn')) throw new ModelContextBudgetError()
       const { leaseToken: _token,...identity } = work
       await approvedFallback!.authorize({ work: identity,purpose,signal })
     },
@@ -247,7 +247,7 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
       if (request.purpose === 'approval-explanation' && (request.tools?.length || request.codeExecution !== 'disabled')) {
         throw new Error('approval explanations cannot execute tools')
       }
-      check(request)
+      check(request,true)
       return invoke('agent-turn', request, (signal, callId, diagnostics,selected,admit) => {
         diagnostics['providerNotStarted']=true
         const gate=request.onAttempt?.(callId)

@@ -171,3 +171,25 @@ it('preserves measured usage when a synchronous attempt hook precedes provider c
   assert.deepEqual(observations[0]?.usage,{available:true,inputTokens:9,outputTokens:2})
   assert.equal(observations[0]?.cost?.usage,'measured')
 })
+
+it('charges public-purpose wire instructions once for main turns, never history or auxiliary calls',async()=>{
+  const {inputTokens,fitsModel}=await import('../src/model/profile.js')
+  const {estimateTokens}=await import('../src/runtime/compaction.js')
+  const {OpenAIChatDriver}=await import('../src/model/openai.js')
+  const plain=new OpenAIChatDriver('purpose-budget',{apiKey:'fixture',maxOutputTokens:10,contextWindowTokens:2500})
+  const typed=new OpenAIChatDriver('purpose-budget',{apiKey:'fixture',maxOutputTokens:10,contextWindowTokens:2500,publicTextProtocol:'purpose-json-v1'})
+  const history=[{role:'assistant' as const,content:'history'}]
+  assert.equal(estimateTokens(history,typed),estimateTokens(history,plain),'history does not include new turn framing')
+  const nearLimit={instructions:'fixture',input:'x'.repeat(1000)}
+  assert.equal(fitsModel(typed,nearLimit),true,'auxiliary wire has no purpose instructions')
+  assert.equal(Reflect.apply(fitsModel,undefined,[typed,nearLimit,true]),false,'main wire includes purpose instructions exactly once')
+  const reserved:number[]=[]
+  const execution=modelExecution({
+    reserveModelCall:async(_work,_call,limits)=>{reserved.push(limits.reservedInputTokens!);return {allowed:true,deadlineAt:new Date(Date.now()+5000).toISOString(),remainingCalls:10,remainingTokens:100000,remainingCostMicros:1000000}},
+    recordModelUsage:async()=>{},
+  },{modelId:'purpose-budget',protocolTokens:1000,maxOutputTokens:10},
+    {id:'purpose-budget',fence:1,tenantId:'tenant',agentId:'agent',sessionId:'session'} as WorkItem,DEFAULT_MODEL_BUDGET)
+  const input={instructions:'fixture',input:'hello'},base=inputTokens({},input)
+  for(const purpose of ['agent-turn','structured','compaction'] as const)await execution.invoke(purpose,input,async()=>({usage:{available:true,inputTokens:1,outputTokens:1}}))
+  assert.deepEqual(reserved,[base+1000,base,base])
+})

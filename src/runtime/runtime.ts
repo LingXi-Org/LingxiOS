@@ -543,7 +543,7 @@ export class AgentRuntime {
       const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
         items: observationItems(stripMemorySources([...projectHistory(history), ...supplementalItems]), 'turn-context'), tools: modelTools, codeExecution })
       const profile = modelProfile(model), reservedTokens = profile.maxOutputTokens + profile.maxThinkingTokens + 512
-      const estimateOverhead = () => inputTokens(model, modelInputFor([])) + reservedTokens
+      const estimateOverhead = () => inputTokens(model, modelInputFor([]),true) + reservedTokens
       let overheadTokens = estimateOverhead()
       let memoryForModel = liveContext.memory
       const hadMemory=!!memoryForModel
@@ -568,7 +568,7 @@ export class AgentRuntime {
         const { memory: _memory, ...withoutMemory } = liveContext
         const withoutMemoryItems = [...preferenceItems, ...this.policy.dynamicContextItems(withoutMemory)]
         const dynamicTokens = inputTokens(model, withoutMemoryItems)
-        return { instructionsTokens: inputTokens(model, instructions), toolSchemaTokens: inputTokens(model, modelTools),
+        return { instructionsTokens: inputTokens(model, instructions,true), toolSchemaTokens: inputTokens(model, modelTools),
           requestTokens: inputTokens(model, currentRequestItems), evidenceTokens: inputTokens(model, currentEvidenceItems),
           dynamicContextTokens: dynamicTokens,
           memoryTokens: memoryForModel ? Math.max(0, inputTokens(model, supplementalItems.slice(0, dynamicCount)) - dynamicTokens) : 0,
@@ -607,15 +607,15 @@ export class AgentRuntime {
           data: { epoch: session.compactionEpoch, ...(compacted.usage ? { usage: compacted.usage } : {}) },
         })
       }
-      if (memoryForModel && inputTokens(model, modelInputFor(session.history))+reservedTokens>hardLimit) {
+      if (memoryForModel && inputTokens(model, modelInputFor(session.history),true)+reservedTokens>hardLimit) {
         const original=memoryForModel
         renderMemory(undefined)
         const available=Math.floor(hardLimit)-estimateTokens(session.history, model)-overheadTokens-512
         if (available>512) renderMemory(fitMemorySnapshot(original,this.compaction.contextWindowTokens,available))
-        if (inputTokens(model, modelInputFor(session.history))+reservedTokens>hardLimit) renderMemory(undefined)
+        if (inputTokens(model, modelInputFor(session.history),true)+reservedTokens>hardLimit) renderMemory(undefined)
       }
-      if (inputTokens(model, modelInputFor(session.history)) + reservedTokens > hardLimit) {
-        const requestInputTokens = inputTokens(model, modelInputFor(session.history))
+      if (inputTokens(model, modelInputFor(session.history),true) + reservedTokens > hardLimit) {
+        const requestInputTokens = inputTokens(model, modelInputFor(session.history),true)
         throw new HardLimitExceededError('input and reserved output exceed the context budget; original request was preserved', {
           reason: 'context_budget', estimatedTokens: requestInputTokens + reservedTokens, hardLimitTokens: Math.floor(hardLimit),
           contextWindowTokens: profile.contextWindowTokens, requestInputTokens, reservedTokens,

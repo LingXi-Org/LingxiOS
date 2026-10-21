@@ -78,7 +78,7 @@ it('EOF protocol rejection retains observed usage and encoding instructions coun
     assert.deepEqual(Reflect.get(error as object,'diagnostics').usage,{available:true,inputTokens:17,outputTokens:9});return true
   })
   const legacy=new OpenAIChatDriver('purpose-usage-fixture',{apiKey:'fixture'})
-  assert.ok(inputTokens(typed,{instructions:'same input'})>inputTokens(legacy,{instructions:'same input'}))
+  assert.ok(inputTokens(typed,{instructions:'same input'},true)>inputTokens(legacy,{instructions:'same input'}))
 })
 
 it('native tool calls may have commentary but cannot execute a simultaneous answer',async()=>{
