@@ -2,8 +2,11 @@ import type { RunEvent } from './types.js'
 import { RUN_SEQUENCE_SPAN } from './constants.js'
 
 export type PublicTextEndReason = 'completed' | 'tool' | 'failed' | 'cancelled' | 'superseded' | 'interrupted'
+export type PublicTextPurpose = 'commentary' | 'answer'
 export interface PublicTextIdentity {
-  version: 1
+  /** v1 has unknown purpose; v2 requires an explicit producer declaration. */
+  version: 1 | 2
+  purpose?: PublicTextPurpose
   requestVersion: number
   fence: number
   attemptId: string
@@ -32,8 +35,8 @@ const identifier = (value: unknown) => typeof value === 'string' && value.length
 export function publicTextPayload(event: RunEvent): PublicTextDelta | PublicTextEnded | null {
   if (!['public.text.delta','public.text.ended'].includes(event.kind)) return null
   const d=event.data, delta=event.kind==='public.text.delta'
-  const keys=['version','requestVersion','fence','attemptId','partId','partIndex',...(delta?['chunkIndex','text']:['chunkCount','reason'])]
-  if(event.visibility!=='user'||d['version']!==1||!integer(d['requestVersion'],1)||!integer(d['fence'],1)
+  const keys=[...(d['version']===2?['purpose']:[]),'version','requestVersion','fence','attemptId','partId','partIndex',...(delta?['chunkIndex','text']:['chunkCount','reason'])]
+  if(event.visibility!=='user'||![1,2].includes(d['version'] as number)||(d['version']===2&&!['commentary','answer'].includes(d['purpose'] as string))||!integer(d['requestVersion'],1)||!integer(d['fence'],1)
     || d['fence']!==Math.floor((event.seq-1)/RUN_SEQUENCE_SPAN)+1||!identifier(d['attemptId'])||!identifier(d['partId'])
     ||!integer(d['partIndex'],0)||Object.keys(d).some(key=>!keys.includes(key))
     ||(delta? !integer(d['chunkIndex'],0)||typeof d['text']!=='string'||!d['text'].length||new TextEncoder().encode(d['text']).length>16384

@@ -1,0 +1,90 @@
+TAP version 13
+# Subtest: declares purpose before the first character and streams split escaped answer before EOF
+ok 1 - declares purpose before the first character and streams split escaped answer before EOF
+  ---
+  duration_ms: 23.043957
+  type: 'test'
+  ...
+# Subtest: fails closed on unframed, duplicate, reordered, incomplete and oversized framing without raw fallback
+ok 2 - fails closed on unframed, duplicate, reordered, incomplete and oversized framing without raw fallback
+  ---
+  duration_ms: 9.056347
+  type: 'test'
+  ...
+# Subtest: keeps a plain legacy driver unchanged and separates configuration identity
+ok 3 - keeps a plain legacy driver unchanged and separates configuration identity
+  ---
+  duration_ms: 1.590121
+  type: 'test'
+  ...
+# Subtest: replay retains immutable v2 purpose and never accepts commentary as final source
+ok 4 - replay retains immutable v2 purpose and never accepts commentary as final source
+  ---
+  duration_ms: 0.711146
+  type: 'test'
+  ...
+# Subtest: cancellation during commentary suppresses the answer in the same provider frame
+not ok 5 - cancellation during commentary suppresses the answer in the same provider frame
+  ---
+  duration_ms: 1.505666
+  type: 'test'
+  location: '/workspace/LingxiOS-public-purpose/dist/test/public-purpose.test.js:70:1'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (file:///workspace/LingxiOS-public-purpose/dist/test/public-purpose.test.js:72:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: EOF protocol rejection retains observed usage and encoding instructions count toward admission
+not ok 6 - EOF protocol rejection retains observed usage and encoding instructions count toward admission
+  ---
+  duration_ms: 2.038347
+  type: 'test'
+  location: '/workspace/LingxiOS-public-purpose/dist/test/public-purpose.test.js:76:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    
+    + undefined
+    - {
+    -   available: true,
+    -   inputTokens: 17,
+    -   outputTokens: 9
+    - }
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    available: true
+    inputTokens: 17
+    outputTokens: 9
+  operator: 'deepStrictEqual'
+  stack: |-
+    Object.<anonymous> (file:///workspace/LingxiOS-public-purpose/dist/test/public-purpose.test.js:80:16)
+    expectedException (node:assert:576:17)
+    expectsError (node:assert:701:21)
+    Function.rejects (node:assert:767:3)
+    async TestContext.<anonymous> (file:///workspace/LingxiOS-public-purpose/dist/test/public-purpose.test.js:79:5)
+    async Test.run (node:internal/test_runner/test:1054:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
+# Subtest: native tool calls may have commentary but cannot execute a simultaneous answer
+ok 7 - native tool calls may have commentary but cannot execute a simultaneous answer
+  ---
+  duration_ms: 2.261068
+  type: 'test'
+  ...
+1..7
+# tests 7
+# suites 0
+# pass 5
+# fail 2
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 116.001496

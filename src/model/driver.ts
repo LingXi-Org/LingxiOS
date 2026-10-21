@@ -1,3 +1,4 @@
+import type { PublicTextPurpose } from '../protocol/public-text.js'
 /**
  * Model driver port. The runtime speaks only this interface; concrete
  * providers (OpenAI-compatible, Anthropic, test fakes) live behind it.
@@ -39,8 +40,8 @@ export interface ModelTurnRequest {
   prompt?: import('../context/compiler.js').PromptManifest
   items: readonly ModelItem[]
   signal?: AbortSignal | undefined
-  /** Raw assistant content; never deliver without a declared format and trusted preview policy. */
-  onTextDelta?: (((delta: string) => void) | ((delta: string) => Promise<void>)) | undefined
+  /** Decoded public text; purpose metadata is required when publicTextProtocol is declared. */
+  onTextDelta?: (((delta: string, metadata?: { purpose: PublicTextPurpose }) => void) | ((delta: string, metadata?: { purpose: PublicTextPurpose }) => Promise<void>)) | undefined
   /** Runtime-owned retry boundary; clears any draft from the preceding provider attempt. */
   onAttempt?: (((callId: string) => void) | ((callId: string) => Promise<void>)) | undefined
 }
@@ -86,6 +87,8 @@ export interface ModelDriver {
   readonly recovery?: import('./recovery.js').ModelRecoveryPolicy
   /** Only declare an independent user channel, or a JSON candidate with a top-level body string. */
   readonly previewFormat?: 'candidate-json' | 'user-text'
+  /** Explicit public text generation protocol; absent means unknown purpose. */
+  readonly publicTextProtocol?: 'purpose-json-v1' | undefined
   readonly profile?: ModelProfile
   /** A provider tokenizer or calibrated upper bound; never a fixed bytes/constant guess. */
   countTokens?(text: string): number
@@ -99,6 +102,8 @@ export interface ModelDriver {
   readonly contextWindowTokens?: number
   readonly maxOutputTokens?: number
   readonly toolDefinitionTokens?: number
+  /** Provider-owned wire instructions reserved in addition to runtime input. */
+  readonly protocolTokens?: number
   /** One agent-loop turn: one Python call or a structured final candidate. */
   run(request: ModelTurnRequest): Promise<ModelTurnResult>
   /** One-shot JSON-mode call for auxiliary pipelines. */

@@ -1,0 +1,131 @@
+TAP version 13
+# Subtest: settles a successful model call with nonnegative latency after the system clock moves backward
+ok 1 - settles a successful model call with nonnegative latency after the system clock moves backward
+  ---
+  duration_ms: 3.824833
+  type: 'test'
+  ...
+# Subtest: retries HTTP 408 inside the runtime boundary and keeps sanitized provider diagnostics
+ok 2 - retries HTTP 408 inside the runtime boundary and keeps sanitized provider diagnostics
+  ---
+  duration_ms: 614.747172
+  type: 'test'
+  ...
+# Subtest: preserves rejection metadata without retrying or logging provider bodies
+ok 3 - preserves rejection metadata without retrying or logging provider bodies
+  ---
+  duration_ms: 2.162743
+  type: 'test'
+  ...
+# Subtest: retains typed total-model and root-budget deadlines after settling the one issued attempt
+ok 4 - retains typed total-model and root-budget deadlines after settling the one issued attempt
+  ---
+  duration_ms: 95.82714
+  type: 'test'
+  ...
+# Subtest: keeps the first model deadline when durable settlement outlives the root deadline
+ok 5 - keeps the first model deadline when durable settlement outlives the root deadline
+  ---
+  duration_ms: 122.069625
+  type: 'test'
+  ...
+# Subtest: awaits an async attempt gate without starting the provider after caller cancellation
+ok 6 - awaits an async attempt gate without starting the provider after caller cancellation
+  ---
+  duration_ms: 1.947734
+  type: 'test'
+  ...
+# Subtest: does not retry or start a provider when an async attempt publication gate rejects
+ok 7 - does not retry or start a provider when an async attempt publication gate rejects
+  ---
+  duration_ms: 2.40304
+  type: 'test'
+  ...
+# Subtest: preserves measured usage when a synchronous attempt hook precedes provider cancellation
+ok 8 - preserves measured usage when a synchronous attempt hook precedes provider cancellation
+  ---
+  duration_ms: 2.533785
+  type: 'test'
+  ...
+# Subtest: charges public-purpose wire instructions once for main turns, never history or auxiliary calls
+ok 9 - charges public-purpose wire instructions once for main turns, never history or auxiliary calls
+  ---
+  duration_ms: 3.058725
+  type: 'test'
+  ...
+# Subtest: switches only after current authorization and accounts both providers inside one logical attempt budget
+ok 10 - switches only after current authorization and accounts both providers inside one logical attempt budget
+  ---
+  duration_ms: 18.081166
+  type: 'test'
+  ...
+# Subtest: does not reset attempts, bypass authorization, mix prices, or switch after cancellation/protocol failures
+ok 11 - does not reset attempts, bypass authorization, mix prices, or switch after cancellation/protocol failures
+  ---
+  duration_ms: 2.635075
+  type: 'test'
+  ...
+# Subtest: purpose-aware public worker persists typed first chunks and accepts only answer across SSE/replay
+ok 12 - purpose-aware public worker persists typed first chunks and accepts only answer across SSE/replay
+  ---
+  duration_ms: 2919.010495
+  type: 'test'
+  ...
+# synthetic provider first content to native tool reading durable prefix: 72.62ms; tool executions=1
+# Subtest: declares purpose before the first character and streams split escaped answer before EOF
+ok 13 - declares purpose before the first character and streams split escaped answer before EOF
+  ---
+  duration_ms: 28.025549
+  type: 'test'
+  ...
+# Subtest: fails closed on unframed, duplicate, reordered, incomplete and oversized framing without raw fallback
+ok 14 - fails closed on unframed, duplicate, reordered, incomplete and oversized framing without raw fallback
+  ---
+  duration_ms: 9.477161
+  type: 'test'
+  ...
+# Subtest: keeps a plain legacy driver unchanged and separates configuration identity
+ok 15 - keeps a plain legacy driver unchanged and separates configuration identity
+  ---
+  duration_ms: 1.465939
+  type: 'test'
+  ...
+# Subtest: replay retains immutable v2 purpose and never accepts commentary as final source
+ok 16 - replay retains immutable v2 purpose and never accepts commentary as final source
+  ---
+  duration_ms: 0.743194
+  type: 'test'
+  ...
+# Subtest: cancellation during commentary suppresses the answer in the same provider frame
+ok 17 - cancellation during commentary suppresses the answer in the same provider frame
+  ---
+  duration_ms: 1.131291
+  type: 'test'
+  ...
+# Subtest: EOF protocol rejection retains observed usage and encoding instructions count toward admission
+ok 18 - EOF protocol rejection retains observed usage and encoding instructions count toward admission
+  ---
+  duration_ms: 0.919115
+  type: 'test'
+  ...
+# Subtest: native tool calls may have commentary but cannot execute a simultaneous answer
+ok 19 - native tool calls may have commentary but cannot execute a simultaneous answer
+  ---
+  duration_ms: 1.670172
+  type: 'test'
+  ...
+# Subtest: advertises reader capability independently of unchanged database schema
+ok 20 - advertises reader capability independently of unchanged database schema
+  ---
+  duration_ms: 0.453894
+  type: 'test'
+  ...
+1..20
+# tests 20
+# suites 0
+# pass 20
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4221.265445
