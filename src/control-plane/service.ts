@@ -1,3 +1,4 @@
+import { executionTraceMetadata } from '../protocol/run-trace.js'
 import { userInputWait } from '../protocol/input-wait.js'
 import { abortable } from '../deadline.js'
 import { responseProfile, type ResponsePolicy } from '../runtime/response-policy.js'
@@ -236,6 +237,9 @@ export class ControlPlaneService {
       || observation.threadId !== work.threadId || !['agent-turn','structured','compaction','embedding'].includes(observation.purpose)
       || !['succeeded','failed'].includes(observation.status) || !Number.isFinite(observation.latencyMs)
       || observation.latencyMs < 0 || typeof observation.model !== 'string')) throw new ControlPlaneError(400, 'invalid model observation identity')
+    // The control-plane clock owns both the durable start and settlement. A
+    // worker/observer clock is not a timeline and cannot supply these timestamps.
+    if (observation) observation = { ...observation, executionTiming: { completedAt: Date.now(), cancelled: observation.failure?.category === 'cancelled' } }
     const policy = this.deps.modelBudget
     const costMicros = policy ? Math.ceil((usage.inputTokens * policy.inputCostMicrosPerMillion
       + usage.outputTokens * policy.outputCostMicrosPerMillion) / 1_000_000) : usage.costMicros
@@ -801,6 +805,8 @@ export class ControlPlaneService {
       try { snapshotArtifacts(event.data['artifacts'] as KernelArtifact[]) }
       catch { throw new ControlPlaneError(400, 'invalid kernel artifact event') }
     }
+    const trace = executionTraceMetadata(event.kind, event.data, work.requestVersion ?? 1, work.fence)
+    if (trace) event = { ...event, data: { ...event.data, _executionTrace: trace } }
     const inserted = await this.deps.events.append({
       ...event,
       tenantId: work.tenantId,

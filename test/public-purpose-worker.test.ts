@@ -94,7 +94,18 @@ it('purpose-aware public worker streams a substantive answer before EOF, execute
     }
     t.diagnostic(`synthetic provider first content to native tool reading durable prefix: ${(durableAtTool-providerStarted).toFixed(2)}ms; tool executions=${toolCalls}`)
     assert.doesNotMatch(JSON.stringify(events),/PRIVATE_REASONING_SENTINEL/)
-    const response=await app.streamRun(identity)
+    const trace=await app.readRunTrace(identity)
+    assert.ok(trace?.origin)
+    const agentSpan=trace.spans.find(span=>span.spanId===trace.rootSpanId)!
+    assert.equal(agentSpan.state,state.run.status==='succeeded'?'complete':'unknown');assert.ok(agentSpan.completedAt!>=trace.origin)
+    const modelSpans=trace.spans.filter(span=>span.kind==='llm')
+    assert.ok(modelSpans.length>=2)
+    for(const span of modelSpans){assert.ok(span.startedAt);assert.ok(span.completedAt!>=span.startedAt!);assert.equal(span.requestVersion,1)}
+    const toolSpan=trace.spans.find(span=>span.toolCallId===started.data['toolCallId'])!
+    assert.equal(toolSpan.state,'complete');assert.equal(toolSpan.attemptId,replay.publicTextParts?.[0]?.attemptId)
+    assert.ok(toolSpan.completedAt!>=toolSpan.startedAt!)
+    assert.doesNotMatch(JSON.stringify(trace),/PRIVATE_REASONING_SENTINEL|instructionsSha256|prompt|inputSha256|lease_token/)
+    const response=await app.streamRun(identity,{trace:true})
     assert.match(response.headers.get('content-type')??'',/text\/event-stream/)
     const wire=await response.text()
     let streamed=createRunView(identity.runId)

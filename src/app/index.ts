@@ -1,3 +1,4 @@
+import { readRunTrace } from './run-trace.js'
 import { publicTextPublication, readPublicTextAttempts, type PublicTextAttempt } from './public-text.js'
 import { DEFAULT_MODEL_BUDGET } from '../model/execution.js'
 import { readTerminalFeedback, terminalFeedback } from './terminal.js'
@@ -725,6 +726,8 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     readOperations: () => readOperations(options.database),
     readDiagnostics: (identity: RunIdentity) => readDiagnostics(options.database, identity),
     readRun: (identity: RunIdentity, transaction: SqlQueryable = options.database) => readRun(transaction, identity),
+    readRunTrace: (identity: RunIdentity, operation?: RuntimeOperationContext) =>
+      withRuntimeOperation(options.database, operation, database => readRunTrace(database, identity)),
     readRunState: (identity: RunIdentity, operation?: RuntimeOperationContext) =>
       withRuntimeOperation(options.database, operation, database => readRunState(database,identity)),
     /** Mount behind product authentication; derive identity from the session, never from model/request JSON. */

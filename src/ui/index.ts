@@ -179,6 +179,7 @@ export function consumePreview(view: RunView, update: PreviewUpdate): RunView {
 
 export function consumeRunStreamEvent(view: RunView, item: RunStreamEvent): RunView {
   switch (item.type) {
+    case 'trace': return view // Trace is optional presentation metadata, never message content.
     case 'event': return consumeRunEvent(view, item.event)
     case 'state': return consumeRunState(view, item.state)
     case 'preview': return consumePreview(view, item.preview)
