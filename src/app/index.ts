@@ -525,7 +525,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
             const source = await client.query(`SELECT data FROM lingxios.agent_run_events WHERE run_id=$1
               AND kind='public.text.delta' AND data->>'partId'=$2 ORDER BY seq LIMIT 1`, [work.id,message.publicTextPartId])
             const identity = source.rows[0]?.['data'] as Record<string,unknown> | undefined
-            if (!identity || identity['requestVersion'] !== message.envelope.requestVersion
+            if (!identity || identity['purpose']==='commentary' || identity['requestVersion'] !== message.envelope.requestVersion
               || !Number.isSafeInteger(identity['fence']) || Number(identity['fence']) > work.fence) throw new Error('public text source is not part of the accepted request')
             const candidate = await client.query(`SELECT 1 FROM lingxios.agent_steps WHERE work_id=$1 AND request_version=$2
               AND kind IN ('runtime.candidate','runtime.public_text_source') AND completed_at IS NOT NULL AND input->>'publicTextPartId'=$3

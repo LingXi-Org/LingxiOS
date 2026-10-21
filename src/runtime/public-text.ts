@@ -184,3 +184,36 @@ export class PublicTextWriter {
   }
   dispose(){this.closed=true;this.text='';this.received='';this.clearHeldTimer();if(this.timer)clearTimeout(this.timer);this.timer=undefined}
 }
+
+/** One attempt, two ordered public purposes. Legacy drivers keep one unknown-purpose part. */
+export class PublicTextAttemptWriter {
+  private readonly writers=new Map<'legacy'|'commentary'|'answer',PublicTextWriter>()
+  private answerStarted=false
+  constructor(private readonly identity:PublicTextIdentity,
+    private readonly emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>,private readonly signal:AbortSignal,
+    private readonly assess:((input:Readonly<PublicTextSafetyInput>)=>PublicTextSafetyDecision)|undefined,
+    private readonly protocol:'purpose-json-v1'|undefined){}
+  get partId(){return this.writers.get(this.protocol?'answer':'legacy')?.partId}
+  async push(text:string,metadata?:{purpose:import('../protocol/public-text.js').PublicTextPurpose}){
+    const key=this.protocol?metadata?.purpose:'legacy'
+    if(!key||!['legacy','commentary','answer'].includes(key)||!this.protocol&&metadata
+      ||key==='commentary'&&this.answerStarted)throw new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',finishReasons:[]})
+    if(key==='answer'&&!this.answerStarted){
+      this.answerStarted=true
+      await this.writers.get('commentary')?.end('completed')
+    }
+    let writer=this.writers.get(key)
+    if(!writer){
+      writer=new PublicTextWriter(key==='legacy'?this.identity:{...this.identity,version:2,purpose:key,
+        partIndex:key==='answer'?1:0,partId:this.identity.partId+':'+key},this.emit,this.signal,this.assess)
+      this.writers.set(key,writer)
+    }
+    await writer.push(text)
+  }
+  async finish(text:string){
+    await this.writers.get('commentary')?.finish()
+    await this.writers.get(this.protocol?'answer':'legacy')?.finish(text)
+  }
+  async end(reason:PublicTextEndReason){for(const writer of this.writers.values())await writer.end(reason)}
+  dispose(){for(const writer of this.writers.values())writer.dispose()}
+}

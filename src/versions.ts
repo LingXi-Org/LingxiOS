@@ -7,4 +7,6 @@ export const releaseVersions = Object.freeze({
   kernel: KERNEL_PROTOCOL_VERSION,
   schema: 14,
   assistantMessage: 2,
+  /** Maximum readable public text event version; producer opt-in is separate. */
+  publicText: 2,
 } as const)

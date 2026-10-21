@@ -66,7 +66,7 @@ export function consumePublicTextAttempts(view: RunView, attempts: readonly Publ
 }
 function associatePublicText(view:RunView,partId:unknown,resultId:unknown,requestVersion:unknown,fence:number):RunView {
   if(typeof partId!=='string'||!partId||typeof resultId!=='string'||!resultId||!Number.isSafeInteger(requestVersion))return view
-  return {...view,publicTextParts:(view.publicTextParts??[]).map(part=>part.partId===partId&&part.requestVersion===requestVersion&&part.fence<=fence
+  return {...view,publicTextParts:(view.publicTextParts??[]).map(part=>part.purpose!=='commentary'&&part.partId===partId&&part.requestVersion===requestVersion&&part.fence<=fence
     ? {...part,acceptedResultId:resultId}:part)}
 }
 function archivePublicText(view: RunView, event: RunEvent): RunView {
@@ -74,11 +74,11 @@ function archivePublicText(view: RunView, event: RunEvent): RunView {
   if (!data) return view
   const parts = [...view.publicTextParts ?? []], index = parts.findIndex(part => part.partId === data.partId)
   const prior = parts[index]
-  if (prior && ['requestVersion','fence','attemptId','partIndex'].some(key => Reflect.get(prior,key)!==Reflect.get(data,key))) throw new Error('public text identity changed')
+  if (prior && ['version','purpose','requestVersion','fence','attemptId','partIndex'].some(key => Reflect.get(prior,key)!==Reflect.get(data,key))) throw new Error('public text identity changed')
   if ('text' in data) {
     if (data.chunkIndex !== (prior?.chunkCount ?? 0)) throw new Error('public text chunk sequence is incomplete')
     const part: PublicTextPart = prior ? { ...prior,text:prior.text+data.text,lastSeq:event.seq,chunkCount:prior.chunkCount+1 }
-      : { version:1,runId:event.runId,requestVersion:data.requestVersion,fence:data.fence,attemptId:data.attemptId,
+      : { version:data.version,...(data.purpose?{purpose:data.purpose}:{}),runId:event.runId,requestVersion:data.requestVersion,fence:data.fence,attemptId:data.attemptId,
         partId:data.partId,partIndex:data.partIndex,text:data.text,firstSeq:event.seq,lastSeq:event.seq,chunkCount:1,endedSeq:null,acceptedResultId:null,status:'running',reason:null }
     if (prior) parts[index]=part; else parts.push(part)
   } else {

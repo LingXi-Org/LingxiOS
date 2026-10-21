@@ -20,11 +20,13 @@ export function modelProfile(model: ModelDriver): ModelProfile {
 }
 
 /** The default remains a conservative UTF-8 bound. Hosts can supply a tested tokenizer. */
-export function inputTokens(model: Pick<ModelDriver, 'countTokens'>, input: unknown): number {
+export function inputTokens(model: Pick<ModelDriver, 'countTokens' | 'protocolTokens'>, input: unknown): number {
   const text = JSON.stringify(input)
   const count = model.countTokens ? model.countTokens(text) : Buffer.byteLength(text)
   if (!Number.isSafeInteger(count) || count < 0) throw new Error('invalid model token estimate')
-  return count
+  const protocol=model.protocolTokens??0
+  if(!Number.isSafeInteger(protocol)||protocol<0)throw new Error('invalid protocol token estimate')
+  return count+protocol
 }
 
 export function fitsModel(model: ModelDriver, input: unknown): boolean {

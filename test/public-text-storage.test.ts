@@ -161,3 +161,18 @@ it('worker event submission cannot forge the result transaction reserved commit 
     assert.equal(view.publicTextParts?.[0]?.acceptedResultId,null)
   }finally{await f.close()}
 })
+
+
+it('purpose is immutable in durable v2 parts and survives fresh authorized event reads',async()=>{
+  const f=await fixture()
+  try{
+    await f.host.emitEvent(f.work,f.delta(1,'public progress',{version:2,purpose:'commentary'}))
+    await assert.rejects(f.host.emitEvent(f.work,f.delta(2,'relabel',{version:2,purpose:'answer'})),/identity/)
+    await assert.rejects(f.host.emitEvent(f.work,f.delta(2,'drop purpose')),/identity/)
+    const reader=await f.open(),page=await reader.readEvents(f.identity)
+    assert.equal(page.events.length,1)
+    assert.equal(page.events[0]?.data['purpose'],'commentary')
+    f.setAllowed(false)
+    await assert.rejects(f.host.emitEvent(f.work,f.delta(2,'revoked',{version:2,purpose:'commentary'})),/authorized/)
+  }finally{await f.close()}
+})

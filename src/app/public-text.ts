@@ -54,7 +54,7 @@ export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undef
         const prior=(await database.query(`SELECT kind,data FROM lingxios.agent_run_events WHERE run_id=$1
           AND kind IN ('public.text.delta','public.text.ended') AND data->>'partId'=$2 ORDER BY seq DESC LIMIT 1`,[event.runId,data.partId])).rows[0]
         const previous=prior?.['data'] as Record<string,unknown>|undefined
-        if(previous&&['requestVersion','fence','attemptId','partIndex'].some(key=>previous[key]!==Reflect.get(data,key)))throw new Error('public text identity changed')
+        if(previous&&['version','purpose','requestVersion','fence','attemptId','partIndex'].some(key=>previous[key]!==Reflect.get(data,key)))throw new Error('public text identity changed')
         if(prior?.['kind']==='public.text.ended')throw new Error('public text part is already closed')
         const chunks=previous?Number(previous['chunkIndex'])+1:0
         if('text' in data?data.chunkIndex!==chunks:!chunks||data.chunkCount!==chunks)throw new Error('public text chunk sequence is incomplete')

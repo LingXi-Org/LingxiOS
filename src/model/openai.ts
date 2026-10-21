@@ -1,3 +1,4 @@
+import { PUBLIC_PURPOSE_INSTRUCTIONS, PublicPurposeParser, publicPurposeError } from './public-purpose.js'
 /**
  * OpenAI-compatible chat-completions driver.
  *
@@ -30,6 +31,7 @@ export const DEFAULT_MODEL = { id: 'deepseek-ai/DeepSeek-V4-Flash', baseUrl: 'ht
 export type ReasoningEffort = 'low' | 'high' | 'max'
 
 export interface OpenAIDriverOptions {
+  publicTextProtocol?: 'purpose-json-v1'
   recovery?: Partial<ModelRecoveryPolicy>
   capabilities?: Partial<Pick<ModelProfile, 'toolCalls' | 'jsonObject' | 'parallelTools'>>
   /** Calibrated tokenizer for this exact model configuration. */
@@ -182,9 +184,11 @@ export async function* sseDataEvents(body: ReadableStream<Uint8Array>): AsyncGen
 export class OpenAIChatDriver implements ModelDriver {
   readonly recovery: ModelRecoveryPolicy
   readonly previewFormat = 'user-text' as const
+  readonly publicTextProtocol: 'purpose-json-v1' | undefined
   readonly profile: ModelProfile
   countTokens(text: string): number { return this.options.countTokens?.(text) ?? Buffer.byteLength(text) }
   readonly maxThinkingTokens: number
+  readonly protocolTokens: number
   singleAttempt(): ModelDriver { return new OpenAIChatDriver(this.modelId, { ...this.options, maxAttempts: 1 }) }
   readonly configurationFingerprint: string
   readonly contextWindowTokens: number
@@ -200,6 +204,9 @@ export class OpenAIChatDriver implements ModelDriver {
 
   constructor(readonly modelId: string, private readonly options: OpenAIDriverOptions) {
     this.recovery = recoveryPolicy(options.recovery)
+    if(options.publicTextProtocol!==undefined&&options.publicTextProtocol!=='purpose-json-v1')throw new Error('invalid public text protocol')
+    this.publicTextProtocol=options.publicTextProtocol
+    this.protocolTokens=this.publicTextProtocol?this.countTokens(PUBLIC_PURPOSE_INSTRUCTIONS):0
     this.baseUrl = (options.baseUrl ?? DEFAULT_MODEL.baseUrl).replace(/\/+$/, '')
     this.circuitKey = createHash('sha256').update(JSON.stringify([this.baseUrl, modelId, options.apiKey])).digest('hex')
     for (const key of ['reasoningEffort', 'compactionReasoningEffort'] as const) {
@@ -231,6 +238,7 @@ export class OpenAIChatDriver implements ModelDriver {
       contextWindowTokens: this.contextWindowTokens, maxThinkingTokens: this.maxThinkingTokens, compactionThinking: false, tool: 'ipython-v1',
       capabilities: this.profile,
       previewFormat: this.previewFormat,
+      ...(this.publicTextProtocol?{publicTextProtocol:this.publicTextProtocol}:{}),
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
     })).digest('hex')
@@ -427,20 +435,39 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(request.tools ?? []).map(tool => ({ type: 'function' as const, function: { name: tool.name, description: describeTool(tool), parameters: tool.parameters } })),
     ]
     if (tools.length && !this.profile.toolCalls) throw new Error('selected model does not support tool calls')
+    if(this.publicTextProtocol&&!this.profile.jsonObject)throw new Error('public text protocol requires JSON object support')
+    const purposeParser=this.publicTextProtocol?new PublicPurposeParser():undefined
     const response = await this.request({
       model: this.modelId,
-      messages: toWireMessages(request.instructions, request.items),
+      messages: toWireMessages(request.instructions+(purposeParser?'\n\n'+PUBLIC_PURPOSE_INSTRUCTIONS:''), request.items),
+      ...(purposeParser?{response_format:{type:'json_object'}}:{}),
       ...(tools.length ? { tools, tool_choice: 'auto', parallel_tool_calls: this.profile.parallelTools } : {}),
       stream: true,
       stream_options: { include_usage: true },
     }, request.signal)
-    const accumulator = await this.consumeStream(response, request.onTextDelta)
+    const accumulator = await this.consumeStream(response, purposeParser?async chunk=>{
+      request.signal?.throwIfAborted()
+      for(const part of purposeParser.push(chunk)){
+        request.signal?.throwIfAborted()
+        await request.onTextDelta?.(part.text,{purpose:part.purpose})
+        request.signal?.throwIfAborted()
+      }
+    }:request.onTextDelta)
     const diagnostics = { finishReasons: accumulator.finishReasons, usage: this.usageOf(accumulator) }
     if (!accumulator.finishReasons.length || accumulator.finishReasons.some(reason => reason !== 'stop' && reason !== 'tool_calls')) {
       throw new ModelDriverError('model stream did not finish normally', { ...diagnostics, kind: 'provider' })
     }
     const output: ModelItem[] = []
-    const text = accumulator.text
+    let text = accumulator.text
+    if(purposeParser){
+      try {
+      if(text.length){
+        purposeParser.finish()
+        text=(JSON.parse(text) as {answer:string}).answer
+      }
+      if(accumulator.toolCalls.size?text.trim().length>0:!text.trim())throw publicPurposeError()
+      }catch{throw new ModelDriverError('invalid public text protocol',{...diagnostics,kind:'protocol',category:'protocol'})}
+    }
     if (text.trim()) output.push({ role: 'assistant', content: text })
     const toolCalls = [...accumulator.toolCalls.entries()].sort(([a], [b]) => a - b)
     for (const [, call] of this.profile.parallelTools ? toolCalls : toolCalls.slice(0, 1)) {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { readFile, mkdtemp, rm } from 'node:fs/promises'
@@ -12,7 +13,7 @@ import type { ConversationPolicy } from '../src/collaboration/types.js'
 import { nullLogger } from '../src/logging.js'
 import { consumeRunEvent, consumeRunState, createRunView } from '../src/ui/index.js'
 
-for(const scenario of ['commit-failure','commit-ack-loss','cancel','revoke','revision','invalid-source','unrelated-source','existing-candidate-limit'] as const)it(`public source association is atomic: ${scenario}`,async()=>{
+for(const scenario of ['commit-failure','commit-ack-loss','cancel','revoke','revision','invalid-source','unrelated-source','existing-candidate-limit','commentary-source'] as const)it(`public source association is atomic: ${scenario}`,async()=>{
   const db=new PGlite(),directory=await mkdtemp(join(tmpdir(),'public-text-acceptance-'))
   await db.exec(await readFile(new URL('../../db/schema.sql',import.meta.url),'utf8'))
   let tail=Promise.resolve(),resultInTransaction=false,armed=false,injected=false,replayed=false
@@ -50,6 +51,12 @@ for(const scenario of ['commit-failure','commit-ack-loss','cancel','revoke','rev
       if(scenario==='revoke')await app.conversations.sync({...policy,version:2,participants:policy.participants.map(p=>p.id==='agent'?{...p,capabilities:['read','execute']}:p)})
       if(scenario==='invalid-source')message={...message,publicTextPartId:'unrelated-part'}
       if(scenario==='unrelated-source'){assert.ok(firstPartId);assert.notEqual(firstPartId,message.publicTextPartId);message={...message,publicTextPartId:firstPartId}}
+      if(scenario==='commentary-source'){
+        assert.ok(firstPartId);assert.notEqual(firstPartId,message.publicTextPartId)
+        await host.saveStep(work,{id:'forged-commentary-source',kind:'runtime.public_text_source',requestVersion:message.envelope.requestVersion,
+          input:{publicTextPartId:firstPartId,publicTextBodyHash:createHash('sha256').update(message.body).digest('hex')},output:'{}',artifacts:[]})
+        message={...message,publicTextPartId:firstPartId}
+      }
       armed=true
       try{await host.commitResult(work,message)}catch(error){
         if(scenario!=='commit-ack-loss')throw error
@@ -58,12 +65,12 @@ for(const scenario of ['commit-failure','commit-ack-loss','cancel','revoke','rev
       }
     }}
   }}
-  const model=new OpenAIChatDriver('acceptance-fixture',{apiKey:'fixture',maxAttempts:1,fetchImpl:async(_url,init)=>{
+  const model=new OpenAIChatDriver('acceptance-fixture',{apiKey:'fixture',maxAttempts:1,...(scenario==='commentary-source'?{publicTextProtocol:'purpose-json-v1' as const}:{}),fetchImpl:async(_url,init)=>{
     const request=JSON.parse(String(init?.body))
     if(!request.stream)return Response.json({choices:[{finish_reason:'stop',message:{content:'{"missing":[]}'}}],usage:{prompt_tokens:11,completion_tokens:7}})
     modelCalls++
     if(scenario==='unrelated-source'&&modelCalls===1)return new Response('data: {"choices":[{"delta":{"content":"Tool preface.","tool_calls":[{"index":0,"id":"probe","function":{"name":"probe__read","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}\n\ndata: [DONE]\n\n')
-    return new Response(`data: ${JSON.stringify({choices:[{delta:{content:finalBody},finish_reason:'stop'}],usage:{prompt_tokens:11,completion_tokens:7}})}\n\ndata: [DONE]\n\n`)
+    return new Response(`data: ${JSON.stringify({choices:[{delta:{content:scenario==='commentary-source'?JSON.stringify({commentary:finalBody,answer:finalBody}):finalBody},finish_reason:'stop'}],usage:{prompt_tokens:11,completion_tokens:7}})}\n\ndata: [DONE]\n\n`)
   }})
   const worker=createWorker({controlPlane:connection,model,logger:nullLogger,kernel:{homesRoot:directory},worker:{id:'acceptance-fixture',healthPort:0}})
   try{
@@ -72,7 +79,7 @@ for(const scenario of ['commit-failure','commit-ack-loss','cancel','revoke','rev
     const state=await app.readRunState(identity),page=await app.readEvents(identity);assert.ok(state)
     let view=consumeRunState(createRunView(identity.runId),state)
     for(const event of page.events)view=consumeRunEvent(view,event)
-    assert.equal(view.publicTextParts?.length,scenario==='unrelated-source'?2:1)
+    assert.equal(view.publicTextParts?.length,['unrelated-source','commentary-source'].includes(scenario)?2:1)
     assert.equal(view.publicTextParts.at(-1)?.text,finalBody)
     const results=await pool.query('SELECT id FROM lingxios.agent_results WHERE work_id=$1',[identity.runId])
     const commits=page.events.filter(event=>event.kind==='response.committed')

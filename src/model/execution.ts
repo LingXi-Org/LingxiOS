@@ -72,7 +72,7 @@ export interface ApprovedModelFallback {
 
 /** One provider attempt boundary shared by generation, reviews, compaction and embeddings. */
 export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>,
-  model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'countTokens' | 'configurationFingerprint' | 'recovery' | 'profile' | 'contextWindowTokens'>, work: WorkItem,
+  model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'protocolTokens' | 'countTokens' | 'configurationFingerprint' | 'recovery' | 'profile' | 'contextWindowTokens'>, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
   emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', memoryAdmission?: () => number | boolean | undefined) {
   let sequence = 0, calls = 0, tokens = 0, cost = 0
@@ -203,7 +203,7 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
       || approvedFallback.inputCostMicrosPerMillion !== limits.inputCostMicrosPerMillion
       || approvedFallback.outputCostMicrosPerMillion !== limits.outputCostMicrosPerMillion) throw new Error('fallback route requires matching approved pricing and current authorization')
     const primary = modelProfile(model), profile = secondary?.profile
-    if (!profile || secondary!.previewFormat !== model.previewFormat
+    if (!profile || secondary!.previewFormat !== model.previewFormat || secondary!.publicTextProtocol !== model.publicTextProtocol
       || ['toolCalls','jsonObject','parallelTools'].some(key => primary[key as 'toolCalls'] && !profile[key as 'toolCalls'])) {
       throw new Error('fallback route lacks compatible verified model capabilities')
     }
@@ -232,6 +232,7 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
   } : undefined
   return {
     ...(model.previewFormat ? { previewFormat: model.previewFormat } : {}),
+    ...(model.publicTextProtocol ? { publicTextProtocol: model.publicTextProtocol } : {}),
     nextCallId,
     ...(model.modelId === undefined ? {} : { modelId: model.modelId }),
     ...(model.configurationFingerprint === undefined ? {} : { configurationFingerprint: model.configurationFingerprint }),
@@ -241,6 +242,7 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
     ...(model.maxOutputTokens === undefined ? {} : { maxOutputTokens: model.maxOutputTokens }),
     ...(model.maxThinkingTokens === undefined ? {} : { maxThinkingTokens: model.maxThinkingTokens }),
     ...(model.toolDefinitionTokens === undefined ? {} : { toolDefinitionTokens: model.toolDefinitionTokens }),
+    ...(model.protocolTokens === undefined ? {} : { protocolTokens: model.protocolTokens }),
     run: request => {
       if (request.purpose === 'approval-explanation' && (request.tools?.length || request.codeExecution !== 'disabled')) {
         throw new Error('approval explanations cannot execute tools')
@@ -253,10 +255,10 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
         const began = performance.now()
         let firstTextMs: number | undefined
         let active = true
-        const result = (selected as ModelDriver).run({ ...request, admission, signal, beforeProvider, onTextDelta: delta => {
+        const result = (selected as ModelDriver).run({ ...request, admission, signal, beforeProvider, onTextDelta: (delta,metadata) => {
             if (!active || signal.aborted) return
             if (delta) firstTextMs ??= performance.now() - began
-            return request.onTextDelta?.(delta)
+            return request.onTextDelta?.(delta,metadata)
           } })
         const finished = () => {
           active = false
