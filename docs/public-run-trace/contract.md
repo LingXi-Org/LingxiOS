@@ -1,10 +1,10 @@
 # Public execution trace v1 (candidate for a release after 3.7)
 
 `readRunTrace(identity, operation?) -> Promise<RunTraceSnapshot | null>` and
-`streamRun(identity)` event `{ type: 'trace', trace: RunTraceSnapshot }` share
+`streamRun(identity, { trace: true })` opt-in event `{ type: 'trace', trace: RunTraceSnapshot }` share
 current authorization. Product consumers use these public contracts only.
 
-Snapshot: `version: 1`, `runId`, `rootSpanId`, `queuedAt: number|null`,
+Snapshot: `version: 1`, durable root event `seq`, opaque `revision`, `runId`, current `requestVersion/fence`, `rootSpanId`, `queuedAt: number|null`,
 `origin: number|null`, `spans: RunTraceSpan[]`, `truncated: boolean`.
 All times are UTC epoch milliseconds; origin is the root's durable execution
 start, **not** creation/subscriber/observer time. `queuedAt` is separate.
@@ -13,11 +13,14 @@ that a prior partial set is a complete current total. Each span has a stable
 `spanId`, explicit nullable `parentSpanId`, `runId`, `requestVersion: number|null`,
 `fence: number|null`, `attemptId: string|null`, `kind: agent|llm|tool`,
 `state: running|waiting|complete|cancelled|failed|unknown`,
-`startedAt/completedAt: number|null`, `timingBasis`, and `revision: string`.
-`revision` is an opaque equality token, not a global ordering or clock.
+`startedAt/completedAt: number|null`, `timingBasis`, durable native event `seq: number|null`, and `revision: string`.
+`revision` is an opaque equality token, not a global ordering or clock. Native
+seq is monotonic per run, but late model settlements and child updates can change
+revision without changing the root seq; do not discard equal-seq snapshots.
 
-Agent spans represent the run lifecycle, spanning waits/retries; their current
-requestVersion/fence are snapshot metadata, while attemptId is null. LLM/tool
+Agent spans represent the run lifecycle, spanning waits/retries; their
+requestVersion/fence/attemptId are null rather than a mutable execution identity.
+The current root requestVersion/fence are separate snapshot fields. LLM/tool
 spans have immutable execution identity from the recorded start. Their parent
 is the owning agent span; tool execution is not falsely nested inside a completed
 LLM invocation. LLM `attemptId` equals its explicit callId (the identity used by
@@ -26,9 +29,11 @@ No consumer parses opaque IDs to establish lineage.
 
 LLM fields: `callId`, `model: string|null`, `usageAvailable: boolean`,
 `inputTokens/outputTokens: number|null`, `costMicros: number|null`.
-The model interval is `model-invocation`: admission/publication/provider/local
+The model interval is `model-invocation`: admission/publication/provider/control-plane
 settlement, not provider network-only latency. Start is committed before invoking
-the provider; completion is the locally observed settlement. Timeout/cancellation
+the provider; completion is the control-plane observed settlement. Both timestamps use the
+control-plane clock, never worker or observer arrival clocks; a backwards-clock
+interval has an unknown end rather than a negative/fabricated duration. Timeout/cancellation
 does not claim remote execution or billing was stopped. Usage is populated only
 when the provider supplies measured usage; missing pricing is never displayed as
 free. Cost is optional and remains null for an absent/zero default price schedule.
@@ -41,8 +46,8 @@ uses the native parent relation, same tenant/principal/thread/conversation,
 then reauthorizes every child against its current policy and frozen audience.
 Revoked/inaccessible subtrees disappear from a replacement snapshot. A child's
 opaque session is discovered by the runtime; callers cannot nominate it. Traversal
-is bounded (32 runs, depth 8, 512 spans), reports truncation, and does not leak the
-IDs of excluded children. Root access is rechecked on every snapshot/live replay.
+is bounded (32 runs, depth 8, 512 spans), reports truncation/visibility gaps, and does not leak the
+IDs of excluded children. Native memory maintenance runs are excluded. Root access is rechecked on every snapshot/live replay.
 
 No prompts, model.request payloads, hidden reasoning, raw tool I/O, credentials,
 provider errors or untrusted labels are copied. New timing metadata uses existing

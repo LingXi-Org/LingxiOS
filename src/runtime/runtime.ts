@@ -165,6 +165,7 @@ export class AgentRuntime {
 
   private readonly publications = new Map<string, PublicTextAttemptWriter>()
   private readonly modelAttempts = new Map<string, string>()
+  private readonly traceRequestVersions = new Map<string, number>()
   private readonly previews = new Map<string, { buffer: PreviewBuffer; stop: AbortController; task: Promise<void> }>()
 
   private hostFor(work: WorkItem): HostPort { return this.hostsByRun.get(work.id) ?? this.host }
@@ -316,7 +317,7 @@ export class AgentRuntime {
     let activeSession: SessionRecord | null = null
     const log = this.logger.child({ runId, workId: work.id, agentId: work.agentId, fence: work.fence })
     const model = executionModel(this.hostFor(work), this.model, work, this.rootModelBudget, event => this.event(work, runId, event),'model',this.fallbackModel,
-      ()=>this.memoryAdmissionRuns.get(runId))
+      ()=>this.memoryAdmissionRuns.get(runId),()=>this.traceRequestVersions.get(runId))
 
     try {
       const recoveryStarted = performance.now()
@@ -363,7 +364,7 @@ export class AgentRuntime {
       await this.finishWithError(work, runId, signals, activeSession, error)
       return
     } finally {
-      this.publications.get(runId)?.dispose(); this.publications.delete(runId); this.modelAttempts.delete(runId)
+      this.publications.get(runId)?.dispose(); this.publications.delete(runId); this.modelAttempts.delete(runId); this.traceRequestVersions.delete(runId)
       const preview = this.previews.get(runId)
       preview?.buffer.close()
       if (preview) {
@@ -396,7 +397,7 @@ export class AgentRuntime {
   ): Promise<void> {
     const host = this.hostFor(work)
     const fastModel = this.fastModel ? executionModel(host, this.fastModel, work, this.rootModelBudget,
-      event => this.event(work, runId, event), 'fast-model',undefined,()=>this.memoryAdmissionRuns.get(runId)) : undefined
+      event => this.event(work, runId, event), 'fast-model',undefined,()=>this.memoryAdmissionRuns.get(runId),()=>this.traceRequestVersions.get(runId)) : undefined
     const contextBegan = performance.now()
     const context = await (host.loadInitialContext?.(work) ?? host.loadContext(work))
     if (context.memory?.admission) this.memoryAdmissionRuns.set(runId,context.memory.admissionRequestVersion ?? 0)
@@ -410,6 +411,7 @@ export class AgentRuntime {
     const session = await this.restoreSession(work, { ...context, tools: initialExecution.tools }, initialExecution)
     if (!session) return
     sessionRef.session = session
+    this.traceRequestVersions.set(runId,(session.request?.revisions.length ?? 0)+1)
     // A queued request can already have human revisions when it is first
     // claimed. Admit those revisions before the first version-fenced step.
     await signals.refresh()
@@ -502,6 +504,7 @@ export class AgentRuntime {
       if (signals.lifecycle.signal.aborted) throw new RunCancelledError('lifecycle')
 
       await applySteering()
+      this.traceRequestVersions.set(runId,(session.request?.revisions.length ?? 0)+1)
       await this.hostFor(work).saveStep(work, { id: `progress:${randomUUID()}`, kind: 'runtime.checkpoint',
         requestVersion: (session.request?.revisions.length ?? 0) + 1, input: { ...budget.snapshot() }, output: '{}', artifacts: [] })
 

@@ -1,3 +1,5 @@
+import { readRunTrace } from './run-trace.js'
+import type { RunTraceSnapshot } from '../protocol/run-trace.js'
 import { readPublicTextAttempts, type PublicTextPolicy } from './public-text.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { readRunState, readRunRecord, runStateFromRow, type RunIdentity, type RunState } from './jobs.js'
@@ -13,6 +15,7 @@ import { candidateHash } from '../outcome/verification.js'
 export type PreviewUpdate = PreviewSnapshot & { kind: 'snapshot' }
   | Omit<PreviewSnapshot, 'draft'> & { kind: 'delta'; delta: string; fromSeq: number }
 export type RunStreamEvent = { type: 'event'; event: RunEvent }
+  | { type: 'trace'; trace: RunTraceSnapshot }
   | { type: 'state'; state: RunState; candidateHash?: string }
   | { type: 'preview'; preview: PreviewUpdate }
   | { type: 'reset'; runId: string; reason: 'unavailable' | 'superseded' }
@@ -125,7 +128,7 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
     }
   }
 
-  const response = async (identity: RunIdentity, input: { lastEventId?: string | null; signal?: AbortSignal } = {}): Promise<Response> => {
+  const response = async (identity: RunIdentity, input: { lastEventId?: string | null; signal?: AbortSignal; trace?: boolean } = {}): Promise<Response> => {
     if (!identity.principalId?.trim()) throw new Error('authenticated principalId is required for SSE')
     let after = Number(input.lastEventId ?? 0)
     if (!Number.isSafeInteger(after) || after < 0 || input.lastEventId && !/^\d+$/.test(input.lastEventId)) throw new Error('invalid Last-Event-ID')
@@ -146,6 +149,7 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
     signal.addEventListener('abort', cleanup, { once: true })
     if (signal.aborted) cleanup()
     async function* events(): AsyncGenerator<RunStreamEvent | null> {
+      let lastTrace = ''
       let lastState = '', lastPreview: PreviewSnapshot | null | undefined
       let unsubscribe: (() => void) | undefined
       try {
@@ -195,6 +199,12 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
               yield { type: 'preview', preview: { ...version, kind: 'delta', fromSeq: lastPreview.seq, delta: draft.slice(lastPreview.draft.length) } }
             } else yield { type: 'preview', preview: { ...preview, kind: 'snapshot' } }
             lastPreview = preview
+          }
+          if (input.trace) {
+            const trace = await abortable(readRunTrace(database, identity), signal)
+            if (!trace) throw new Error('run trace is no longer available to this identity')
+            const traceKey = JSON.stringify(trace)
+            if (traceKey !== lastTrace) { lastTrace = traceKey; yield { type: 'trace', trace } }
           }
           if (rows.length === 100) continue
           if (!['queued','leased','waiting'].includes(state.run.status)) return

@@ -22,6 +22,8 @@ export function modelPricing(limits: Pick<Required<RootModelBudgetOptions>, 'inp
 }
 
 export interface ModelCallObservation {
+  /** Local invocation settlement, never provider billing/remote cancellation proof. */
+  executionTiming?: { completedAt: number; cancelled: boolean }
   cost?: { amountMicros: number; usage: 'measured' | 'estimated'; pricing: ModelPricing }
   prompt?: PromptManifest
   instructionsSha256?: string
@@ -74,7 +76,7 @@ export interface ApprovedModelFallback {
 export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>,
   model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'protocolTokens' | 'countTokens' | 'configurationFingerprint' | 'recovery' | 'profile' | 'contextWindowTokens'>, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
-  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', memoryAdmission?: () => number | boolean | undefined) {
+  emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', memoryAdmission?: () => number | boolean | undefined, requestVersion?: () => number | undefined) {
   let sequence = 0, calls = 0, tokens = 0, cost = 0
   const started = Date.now()
   const invoke = async <T extends { model?: string; usage: ModelUsage }>(purpose: ModelCallObservation['purpose'],
@@ -82,6 +84,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
     operation: (signal: AbortSignal, callId: string, diagnostics: Record<string, unknown>, selected: typeof model,
       admit?: () => Promise<void>) => Promise<T>,
     callModel = model, fallback?: { model: typeof model; authorize(signal: AbortSignal): Promise<void> }): Promise<T> => {
+    const traceRequestVersion = requestVersion?.() ?? work.requestVersion
     const instructionsSha256 = request.instructions === undefined ? undefined : textSha256(request.instructions)
     if (request.prompt && request.prompt.instructionsSha256 !== instructionsSha256) throw new Error('prompt manifest does not match model instructions')
     const logicalCallId = `${work.id}:${work.fence}:${namespace}:${++sequence}`
@@ -138,7 +141,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       try {
         await emit?.({
           kind: 'model.request.started', stage: 'started', visibility: 'internal',
-          data: { callId, logicalCallId, purpose, model: callModel.modelId ?? 'unknown',
+          data: { callId, logicalCallId, purpose, ...(traceRequestVersion ? { requestVersion: traceRequestVersion } : {}), model: callModel.modelId ?? 'unknown',
             ...(request.prompt ? { prompt: request.prompt } : {}), ...(instructionsSha256 ? { instructionsSha256 } : {}) } })
         delete diagnostics['providerNotStarted']
         result = await abortable(operation(signal, callId, diagnostics,callModel,admit), signal)
@@ -195,7 +198,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
 export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>, source: ModelDriver, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
   emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', approvedFallback?: ApprovedModelFallback,
-  memoryAdmission?: () => number | boolean | undefined): ModelDriver {
+  memoryAdmission?: () => number | boolean | undefined, requestVersion?: () => number | undefined): ModelDriver {
   const model = source.singleAttempt?.() ?? source
   const secondary = approvedFallback?.model.singleAttempt?.() ?? approvedFallback?.model
   if (approvedFallback) {
@@ -209,7 +212,7 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
     }
   }
   const admission = namespace !== 'fast-model' && executionClassOf(work) === 'operation' ? 'background' as const : 'foreground' as const
-  const { invoke, nextCallId } = modelExecution(host, model, work, limits, emit, namespace,memoryAdmission)
+  const { invoke, nextCallId } = modelExecution(host, model, work, limits, emit, namespace,memoryAdmission,requestVersion)
   const admittedStart = <T>(selected: ModelDriver,signal: AbortSignal,diagnostics: Record<string,unknown>,
     admit: (()=>Promise<void>)|undefined,start: (beforeProvider?:()=>void|Promise<void>)=>Promise<T>) => {
     diagnostics['providerNotStarted']=true
