@@ -214,8 +214,8 @@ it('streams committed answers during a hung trace and replaces failed diagnostic
   const query = f.pool.query.bind(f.pool)
   let release!: () => void, entered!: () => void, failed!: () => void
   const failure = new Promise<void>(resolve => { failed = resolve })
-  const gate = new Promise<void>(resolve => { release = resolve })
-  const ready = new Promise<void>(resolve => { entered = resolve })
+  let gate = new Promise<void>(resolve => { release = resolve })
+  let ready = new Promise<void>(resolve => { entered = resolve })
   let mode: 'ok'|'hung'|'failed' = 'ok', inflight = 0, maximum = 0, releasedOnDeadline = 0
   f.pool.query = async (sql, params) => {
     if (sql.includes('WITH RECURSIVE tree AS') && mode !== 'ok') {
@@ -251,5 +251,26 @@ it('streams committed answers during a hung trace and replaces failed diagnostic
     await afterFailure
     mode = 'ok'
     await readUntil(text => text.includes('event: trace') && !text.includes('"trace":null'))
+    // Cancellation overlaps an older in-flight read. Its null result must not
+    // consume the one final refresh for the newly terminal root.
+    gate = new Promise<void>(resolve => { release = resolve })
+    ready = new Promise<void>(resolve => { entered = resolve })
+    mode = 'hung'
+    let sawTerminal!: () => void
+    const terminalState = new Promise<void>(resolve => { sawTerminal = resolve })
+    const terminal = readUntil(text => {
+      if (text.includes('event: state') && text.includes('"status":"cancelled"')) sawTerminal()
+      return text.includes('event: trace') && text.includes('"state":"cancelled"')
+    })
+    await ready
+    await f.app.cancel(f.identity)
+    await f.host.completeWork(work,{ status: 'cancelled' })
+    // The passive fixture has no PostgreSQL LISTEN transport; enqueue supplies
+    // the same public in-process wakeup after the committed terminal change.
+    await f.app.enqueue({ ...f.identity,id: 'synthetic-terminal-wakeup',text: 'Synthetic wakeup' })
+    await terminalState
+    await new Promise<void>(resolve => setImmediate(resolve))
+    mode = 'ok'; release()
+    await terminal
   } finally { release(); await reader?.cancel(); await f.close() }
 })

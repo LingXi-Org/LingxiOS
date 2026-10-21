@@ -223,7 +223,7 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
               if (traceKey !== lastTrace) { lastTrace = traceKey; yield { type: 'trace', runId: identity.runId, trace } }
             }
             const terminal = !['queued','leased','waiting'].includes(state.run.status)
-            if (terminal && !terminalTraceStarted) { terminalTraceStarted = true; refreshTrace() }
+            if (terminal && !terminalTraceStarted && !tracePending) { terminalTraceStarted = true; refreshTrace() }
             else if (!terminal && Date.now() >= traceNextAt) refreshTrace()
           }
           if (rows.length === 100) continue
