@@ -1,4 +1,5 @@
 import { readRunTrace } from './run-trace.js'
+import { deadlinePool } from '../control-plane/deadline-pool.js'
 import type { RunTraceSnapshot } from '../protocol/run-trace.js'
 import { readPublicTextAttempts, type PublicTextPolicy } from './public-text.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -15,7 +16,7 @@ import { candidateHash } from '../outcome/verification.js'
 export type PreviewUpdate = PreviewSnapshot & { kind: 'snapshot' }
   | Omit<PreviewSnapshot, 'draft'> & { kind: 'delta'; delta: string; fromSeq: number }
 export type RunStreamEvent = { type: 'event'; event: RunEvent }
-  | { type: 'trace'; trace: RunTraceSnapshot }
+  | { type: 'trace'; runId: string; trace: RunTraceSnapshot | null }
   | { type: 'state'; state: RunState; candidateHash?: string }
   | { type: 'preview'; preview: PreviewUpdate }
   | { type: 'reset'; runId: string; reason: 'unavailable' | 'superseded' }
@@ -150,6 +151,19 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
     if (signal.aborted) cleanup()
     async function* events(): AsyncGenerator<RunStreamEvent | null> {
       let lastTrace = ''
+      const traceWake = new Wakeup(), traceStopped = new AbortController()
+      let tracePending: Promise<void> | undefined, traceReady: { value: RunTraceSnapshot | null } | undefined
+      let traceNextAt = 0, terminalTraceStarted = false
+      const refreshTrace = () => {
+        if (tracePending) return
+        // Optional diagnostics own one bounded connection sequence. Their latency
+        // and failure must never sit on the next public-text event's critical path.
+        const bounded = scopedSignal([signal, traceStopped.signal], 500)
+        traceNextAt = Date.now() + 750
+        tracePending = readRunTrace(deadlinePool(database, bounded.signal), identity)
+          .then(value => { traceReady = { value } }, () => { traceReady = { value: null } })
+          .finally(() => { bounded.dispose(); tracePending = undefined; if (!signal.aborted && !traceStopped.signal.aborted) traceWake.notify() })
+      }
       let lastState = '', lastPreview: PreviewSnapshot | null | undefined
       let unsubscribe: (() => void) | undefined
       try {
@@ -159,7 +173,7 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
           return dispose
         }, undefined, signal)
         while (!signal.aborted) {
-          const durableVersion = changed.version, previewVersion = entry.wake.version
+          const durableVersion = changed.version, previewVersion = entry.wake.version, traceVersion = traceWake.version
           // Reauthorize every read, including resumes and ephemeral updates. No cached grants.
           const record = await abortable(readRunRecord(database, identity), signal)
           if (!record) throw new Error('run is no longer available to this identity')
@@ -201,22 +215,34 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
             lastPreview = preview
           }
           if (input.trace) {
-            const trace = await abortable(readRunTrace(database, identity), signal)
-            if (!trace) throw new Error('run trace is no longer available to this identity')
-            const traceKey = JSON.stringify(trace)
-            if (traceKey !== lastTrace) { lastTrace = traceKey; yield { type: 'trace', trace } }
+            if (traceReady) {
+              const candidate = traceReady.value
+              const trace = candidate?.fence === state.run.fence && candidate.requestVersion === state.run.requestVersion ? candidate : null
+              traceReady = undefined
+              const traceKey = trace?.revision ?? 'unavailable'
+              if (traceKey !== lastTrace) { lastTrace = traceKey; yield { type: 'trace', runId: identity.runId, trace } }
+            }
+            const terminal = !['queued','leased','waiting'].includes(state.run.status)
+            if (terminal && !terminalTraceStarted) { terminalTraceStarted = true; refreshTrace() }
+            else if (!terminal && Date.now() >= traceNextAt) refreshTrace()
           }
           if (rows.length === 100) continue
-          if (!['queued','leased','waiting'].includes(state.run.status)) return
+          if (!['queued','leased','waiting'].includes(state.run.status)) {
+            // All answer frames have already been yielded. Finish only this one
+            // bounded optional read, then reauthorize before publishing its result.
+            if (tracePending || traceReady) { await tracePending; continue }
+            return
+          }
           const waiting = new AbortController()
           const waitScope = scopedSignal([signal, waiting.signal])
           try {
             await Promise.race([changed.wait(durableVersion, 750, waitScope.signal),
-              entry.wake.wait(previewVersion, 750, waitScope.signal)])
+              entry.wake.wait(previewVersion, 750, waitScope.signal),
+              traceWake.wait(traceVersion, 750, waitScope.signal)])
           } finally { waiting.abort(); waitScope.dispose() }
           yield null // SSE keepalive; never counted as body TTFT.
         }
-      } finally { unsubscribe?.(); cleanup() }
+      } finally { traceStopped.abort(); unsubscribe?.(); cleanup() }
     }
     const iterator = events()
     const body = new ReadableStream<Uint8Array>({

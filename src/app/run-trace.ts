@@ -74,14 +74,19 @@ export async function readRunTrace(database: SqlQueryable, identity: RunIdentity
     const runId = String(row['id']), runEvents = events.rows.slice(0, 2048).filter(event => event['run_id'] === runId)
     const firstStart = object(runEvents.find(event => event['kind'] === 'run.started')?.['timing'])
     const startedAt = firstStart['fence'] === 1 ? number(firstStart['at']) : null
-    const end = active(row['status']) ? null : time(row['finished_at'])
+    const observedFinish = active(row['status']) ? null : time(row['finished_at'])
+    const end = observedFinish !== null && (startedAt === null || observedFinish >= startedAt) ? observedFinish : null
     spans.push(finish({ spanId: rootId(runId), parentSpanId: parent ? rootId(parent) : null, runId,
       requestVersion: null, fence: null, attemptId: null,
       kind: 'agent', state: state(row['status']), startedAt, completedAt: end,
       seq: sequence.get(runId) ?? null, timingBasis: 'run-execution', ...(parent ? { childRunId: runId } : {}) }))
     const callRows = calls.rows.slice(0, 512).filter(call => call['work_id'] === runId)
-    const modelStarts = new Map(runEvents.filter(event => event['kind'] === 'model.request.started' && string(event['call_id']))
-      .map(event => [String(event['call_id']), event]))
+    const modelStarts = new Map<string, Record<string, unknown>>()
+    for (const event of runEvents) {
+      if (event['kind'] === 'model.request.started' && string(event['call_id']) && !modelStarts.has(String(event['call_id']))) {
+        modelStarts.set(String(event['call_id']), event)
+      }
+    }
     const callIds = new Set([...modelStarts.keys(), ...callRows.map(call => String(call['call_id']))])
     for (const callId of callIds) {
       const begin = modelStarts.get(callId), call = callRows.find(item => item['call_id'] === callId)
@@ -106,25 +111,34 @@ export async function readRunTrace(database: SqlQueryable, identity: RunIdentity
       const key = id('tool', runId, toolCallId, timing['fence'] ?? null, timing['requestVersion'] ?? null)
       const item = tools.get(key) ?? {}
       if (event['kind'] === 'tool.started') item.begin ??= event
-      else item.end = event
+      else item.end ??= event // A cached receipt replay is not another execution interval.
       tools.set(key, item)
     }
     for (const [spanId, { begin, end: result }] of tools) {
-      const timing = object(begin?.['timing']), ended = number(object(result?.['timing'])['at'])
+      const timing = object(begin?.['timing']), start = number(timing['at']), observedEnd = number(object(result?.['timing'])['at'])
+      const ended = observedEnd !== null && (start === null || observedEnd >= start) ? observedEnd : null
       const toolStatus = result?.['tool_status']
       const toolState: TraceState = toolStatus === 'completed' ? 'complete' : toolStatus === 'awaiting-approval' ? 'waiting'
         : toolStatus === 'failed' ? 'failed' : result ? 'unknown'
         : row['status'] === 'leased' && integer(timing['fence']) === Number(row['fence']) ? 'running' : 'unknown'
       spans.push(finish({ spanId, parentSpanId: rootId(runId), runId, requestVersion: integer(timing['requestVersion']),
         fence: integer(timing['fence']), attemptId: string(timing['attemptId']), kind: 'tool', state: toolState,
-        seq: result ? Number(result['seq']) : begin ? Number(begin['seq']) : null, startedAt: number(timing['at']), completedAt: ended, timingBasis: 'host-action',
+        seq: result ? Number(result['seq']) : begin ? Number(begin['seq']) : null, startedAt: start, completedAt: ended, timingBasis: 'host-action',
         toolCallId: String(begin?.['tool_call_id'] ?? result?.['tool_call_id']), name: string(begin?.['name']) }))
     }
   }
   if (spans.length > 512) truncated = true
-  // Recheck the root after reading descendants; revocation never downgrades to a partial success.
-  if (!await readRunRecord(database, identity)) return null
+  // Reauthorize every admitted child after collecting data. A concurrent scope or
+  // attempt change makes this snapshot unavailable instead of leaking an old grant
+  // or mixing two executions. Read the root last so its revocation also wins.
+  for (const { row } of [...records.slice(1), records[0]!]) {
+    const current = await readRunRecord(database, { ...identity, runId: String(row['id']),
+      agentId: String(row['agent_id']), sessionId: String(row['session_id']) })
+    if (!current || ['request_version', 'fence', 'status'].some(key => current[key] !== row[key])) return null
+  }
   const selected = spans.slice(0, 512)
-  return { version: 1, seq: sequence.get(identity.runId) ?? 0, revision: id(selected, truncated), runId: identity.runId, requestVersion: Number(root['request_version']), fence: Number(root['fence']), rootSpanId: rootId(identity.runId), queuedAt: time(root['created_at']),
-    origin: spans[0]?.startedAt ?? null, spans: selected, truncated }
+  const snapshot = { version: 1 as const, seq: sequence.get(identity.runId) ?? 0, runId: identity.runId,
+    requestVersion: Number(root['request_version']), fence: Number(root['fence']), rootSpanId: rootId(identity.runId),
+    queuedAt: time(root['created_at']), origin: spans[0]?.startedAt ?? null, spans: selected, truncated }
+  return { ...snapshot, revision: id(snapshot) }
 }

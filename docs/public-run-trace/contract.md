@@ -1,7 +1,7 @@
 # Public execution trace v1 (3.8.0 release candidate)
 
 `readRunTrace(identity, operation?) -> Promise<RunTraceSnapshot | null>` and
-`streamRun(identity, { trace: true })` opt-in event `{ type: 'trace', trace: RunTraceSnapshot }` share
+`streamRun(identity, { trace: true })` opt-in event `{ type: 'trace', runId: string, trace: RunTraceSnapshot|null }` share
 current authorization. Product consumers use these public contracts only.
 
 Snapshot: `version: 1`, durable root event `seq`, opaque `revision`, `runId`, current `requestVersion/fence`, `rootSpanId`, `queuedAt: number|null`,
@@ -9,7 +9,7 @@ Snapshot: `version: 1`, durable root event `seq`, opaque `revision`, `runId`, cu
 All times are UTC epoch milliseconds; origin is the root's durable execution
 start, **not** creation/subscriber/observer time. `queuedAt` is separate.
 The snapshot is a full replacement; a failed read is unavailable, never proof
-that a prior partial set is a complete current total. Each span has a stable
+that a prior partial set is a complete current total. A null stream snapshot explicitly clears availability and aggregate totals. Optional SSE trace reads have one independent in-flight task and a 500 ms database deadline; they cannot block answer events or close the answer stream on diagnostic failure. Root authorization still gates each iteration. Revisions include the current root identity header, even when its event seq has not changed. Each span has a stable
 `spanId`, explicit nullable `parentSpanId`, `runId`, `requestVersion: number|null`,
 `fence: number|null`, `attemptId: string|null`, `kind: agent|llm|tool`,
 `state: running|waiting|complete|cancelled|failed|unknown`,
@@ -39,7 +39,7 @@ when the provider supplies measured usage; missing pricing is never displayed as
 free. Cost is optional and remains null for an absent/zero default price schedule.
 Tool fields: `toolCallId`, `name: string|null`; timing is `host-action` and excludes
 raw arguments/results. In-flight tools whose run terminates without a receipt
-remain `unknown` with null completedAt, not a fabricated cancelled/completed time.
+remain `unknown` with null completedAt, not a fabricated cancelled/completed time. Replayed tool receipts with the same explicit execution identity retain the first interval; they do not extend execution time. Backwards clock intervals have a null end.
 
 Authorized descendant agent spans additionally carry `childRunId`. Discovery
 uses the native parent relation, same tenant/principal/thread/conversation,

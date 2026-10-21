@@ -64,3 +64,9 @@ regressions also passed. Synthetic timing is not production latency evidence.
 last fixture correction. No paid/provider, real-user, browser or production
 acceptance is claimed. Product bridge, official package pin, release provenance,
 and production health remain the sole integrator's subsequent stages.
+
+## Independent review corrections
+
+Independent review of `62966b7` reproduced three P2 failures with real PGlite/control-plane probes: a gated optional trace blocked subsequent committed body events; cached same-key tool replay extended its end; claim/revise changed fence/requestVersion without changing the snapshot revision. The fixed reader freezes first receipts, hashes the full root header, rechecks root and each admitted child after data collection, and rejects backwards clock intervals. SSE now uses one independent 500 ms cancellable database read and emits an explicit null snapshot on unavailability.
+
+The affected real-persistence/SSE file passes **7/7** on Node22.23.3 (`node --test dist/test/public-run-trace.test.js`). The first combined run was **17/18**: the new timing fixture had notifications disabled and therefore exercised the existing750 ms polling interval; it was corrected to enable the actual event wakeup before asserting delivery before the500 ms diagnostic deadline. This is not a production polling change. Prior11 unchanged Worker/model/realtime cases passed in that combined run; no full-suite claim. The fixture confirms answer output while the trace query is still held, checked-out connection disposal at deadline, explicit unavailable replacement, actual SQL failure isolation and later recovery. Build and current diff whitespace check pass. The earlier candidate contained an extra trailing blank line in the new protocol file; that cosmetic check result is superseded by this corrected diff.

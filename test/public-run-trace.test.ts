@@ -8,14 +8,14 @@ import { DEFAULT_MODEL_BUDGET, modelExecution } from '../src/model/execution.js'
 import type { RunIdentity } from '../src/app/jobs.js'
 
 // Failure model: docs/public-run-trace/contract.md, written before implementation.
-async function fixture() {
+async function fixture(notifications = false) {
   const db = new PGlite()
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
   const pool: SqlPool = { query: async (sql, params) => {
     const result = await db.query<Record<string, unknown>>(sql, params)
     return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length }
   }, connect: async () => ({ query: pool.query, release() {} }) }
-  const app = await createLingxiOS({ database: pool, background: { role: 'passive' }, performance: { notifications: false } })
+  const app = await createLingxiOS({ database: pool, background: { role: 'passive' }, performance: { notifications } })
   const host = app.connectWorker({ workerId: 'trace-worker', workKinds: ['turn'] })
   const identity = { runId: 'trace-run', tenantId: 'tenant', agentId: 'agent', sessionId: 'session', principalId: 'human' }
   await app.enqueue({ ...identity, id: identity.runId, text: 'Synthetic trace request' })
@@ -181,4 +181,75 @@ it('bounds graph discovery and keeps legacy/waiting timing and unconfirmed total
     const waiting = (await f.app.readRunTrace(f.identity))!
     assert.equal(waiting.spans[0]!.state, 'waiting'); assert.equal(waiting.spans[0]!.startedAt, null); assert.equal(waiting.spans[0]!.completedAt, null)
   } finally { await f.close() }
+})
+it('keeps cached tool intervals stable and revisions sensitive to root attempt changes', async () => {
+  const f = await fixture()
+  try {
+    const queued = (await f.app.readRunTrace(f.identity))!
+    const work = (await f.host.claimWork())!
+    const claimed = (await f.app.readRunTrace(f.identity))!
+    assert.notEqual(claimed.fence, queued.fence); assert.notEqual(claimed.revision, queued.revision)
+    await f.app.revise(f.identity, 'Synthetic revised request')
+    const revised = (await f.app.readRunTrace(f.identity))!
+    assert.notEqual(revised.requestVersion, claimed.requestVersion); assert.equal(revised.seq, claimed.seq)
+    assert.notEqual(revised.revision, claimed.revision)
+    const data = { toolCallId: 'stable-execution', name: 'documents.read', attemptId: 'explicit-attempt', requestVersion: 1 }
+    let seq = 0
+    const emit = async () => {
+      await f.host.emitEvent(work, { runId: work.id, seq: ++seq, kind: 'tool.started', stage: 'started', visibility: 'user', data })
+      await f.host.emitEvent(work, { runId: work.id, seq: ++seq, kind: 'tool.completed', stage: 'completed', visibility: 'user', data: { ...data, result: { status: 'completed' } } })
+    }
+    await emit()
+    const original = (await f.app.readRunTrace(f.identity))!.spans.find(span => span.kind === 'tool')!
+    await emit()
+    const replay = (await f.app.readRunTrace(f.identity))!.spans.find(span => span.kind === 'tool')!
+    assert.deepEqual(replay, original)
+    // Synthetic backwards-clock receipt must never publish a negative interval.
+    await f.db.query(`UPDATE lingxios.agent_run_events SET data=jsonb_set(data,'{_executionTrace,at}',to_jsonb($2::bigint)) WHERE run_id=$1 AND kind='tool.completed'`, [work.id, original.startedAt! - 1])
+    assert.equal((await f.app.readRunTrace(f.identity))!.spans.find(span => span.kind === 'tool')!.completedAt, null)
+  } finally { await f.close() }
+})
+it('streams committed answers during a hung trace and replaces failed diagnostics with unavailable', async () => {
+  const f = await fixture(true)
+  const query = f.pool.query.bind(f.pool)
+  let release!: () => void, entered!: () => void, failed!: () => void
+  const failure = new Promise<void>(resolve => { failed = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const ready = new Promise<void>(resolve => { entered = resolve })
+  let mode: 'ok'|'hung'|'failed' = 'ok', inflight = 0, maximum = 0, releasedOnDeadline = 0
+  f.pool.query = async (sql, params) => {
+    if (sql.includes('WITH RECURSIVE tree AS') && mode !== 'ok') {
+      if (mode === 'failed') { failed(); throw new Error('Synthetic optional trace failure') }
+      inflight++; maximum = Math.max(maximum, inflight); entered()
+      try { await gate } finally { inflight-- }
+    }
+    return query(sql, params)
+  }
+  f.pool.connect = async () => ({ query: f.pool.query, release(error?: Error) { if (error) releasedOnDeadline++ } })
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  try {
+    const work = (await f.host.claimWork())!
+    const response = await f.app.streamRun(f.identity, { trace: true, signal: AbortSignal.timeout(7000) })
+    reader = response.body!.getReader()
+    const readUntil = async (check: (text: string) => boolean) => {
+      for (;;) { const part = await reader!.read(); assert.equal(part.done, false); const text = new TextDecoder().decode(part.value); if (check(text)) return text }
+    }
+    await readUntil(text => text.includes('event: trace') && !text.includes('"trace":null'))
+    mode = 'hung'
+    const answer = readUntil(text => text.includes('SYNTHETIC_LATER_BODY'))
+    await ready
+    await f.host.emitEvent(work, { runId: work.id, seq: 1, kind: 'model.delta', stage: 'delta', visibility: 'user', data: { text: 'SYNTHETIC_LATER_BODY' } })
+    // Deadline remains held. The body is not awaiting the optional SQL task.
+    await answer
+    assert.equal(inflight, 1); assert.equal(releasedOnDeadline, 0)
+    await readUntil(text => text.includes('event: trace') && text.includes('"trace":null'))
+    assert.equal(maximum, 1); assert.ok(releasedOnDeadline > 0, 'deadline destroys checked-out connection')
+    release(); mode = 'failed'
+    const afterFailure = readUntil(text => text.includes('SYNTHETIC_AFTER_FAILURE'))
+    await failure
+    await f.host.emitEvent(work, { runId: work.id, seq: 2, kind: 'model.delta', stage: 'delta', visibility: 'user', data: { text: 'SYNTHETIC_AFTER_FAILURE' } })
+    await afterFailure
+    mode = 'ok'
+    await readUntil(text => text.includes('event: trace') && !text.includes('"trace":null'))
+  } finally { release(); await reader?.cancel(); await f.close() }
 })

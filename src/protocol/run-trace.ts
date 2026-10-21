@@ -28,4 +28,3 @@ export function executionTraceMetadata(kind: string, data: Record<string, unknow
     : suppliedVersion !== null && suppliedVersion <= requestVersion ? suppliedVersion : null, fence,
     attemptId: kind === 'model.request.started' ? string(data['callId']) : string(data['attemptId']) }
 }
-
