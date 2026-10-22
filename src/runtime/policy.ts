@@ -55,6 +55,13 @@ export interface RuntimePolicy {
 
   /** Optional product completion gate, evaluated after the final self-check is parsed. */
   validateCompletion?(text: string, assessment: GoalAssessment, context: TurnContext): string | null
+  /**
+   * A trusted product may identify an actual public peer handoff that must
+   * commit before the recipient can work. Default false. Validate recipients
+   * against the current authorized audience; model prose alone is not proof.
+   * This defers only content repair, never resource checks or goal completion.
+   */
+  deferConversationRepair?(text: string, context: TurnContext): boolean
 }
 
 /**
