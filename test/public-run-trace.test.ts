@@ -290,5 +290,12 @@ for (const status of ['partial','blocked'] as const) it(`preserves terminal ${st
     const stored = (await f.db.query<{ finished_at: Date }>('SELECT finished_at FROM lingxios.agent_work_items WHERE id=$1', [work.id])).rows[0]!
     assert.equal(root.completedAt, new Date(stored.finished_at).getTime())
     assert.deepEqual(await f.app.readRunTrace(f.identity), snapshot, 'replay preserves the real terminal state and interval')
+    for (const lastEventId of ['0', '99999']) {
+      const response = await f.app.streamRun(f.identity, { trace: true, lastEventId, signal: AbortSignal.timeout(3000) })
+      const frames = (await response.text()).split('\n\n').filter(frame => frame.startsWith('event: trace\n'))
+        .map(frame => JSON.parse(frame.split('\n').find(line => line.startsWith('data: '))!.slice(6)))
+      assert.ok(frames.length, 'terminal stream must publish its bounded trace result')
+      assert.deepEqual(frames.at(-1).trace, snapshot, `${status} SSE at cursor ${lastEventId} retains the exact terminal trace`)
+    }
   } finally { await f.close() }
 })

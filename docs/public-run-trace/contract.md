@@ -75,3 +75,10 @@ Focused persistence/Worker-boundary and SSE tests exercise these failures withou
 external providers, production data, or browser/device acceptance expansion.
 
 3.8.1 corrects terminal state projection: `TraceState` additionally preserves `partial` and `blocked` from the durable work record. These known goal outcomes are neither `complete` nor `unknown`. The actual `finished_at` remains the execution end; waiting/active runs remain unended. This additive state correction leaves snapshot version 1 and native schema 14 unchanged.
+
+Terminal SSE follow-up (3.8.2): partial/blocked persisted trace states must survive
+the realtime phase/fence/request-version gate. Fresh SSE and a reconnect cursor
+past all user events must both finish with the exact authorized readRunTrace
+snapshot, including revision and actual start/end. They must not emit a null
+trace because a known terminal outcome was classified as unknown. Wrong-fence,
+stale-version and unavailable reads remain rejected; no budget or SQL changes.

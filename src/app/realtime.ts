@@ -218,7 +218,7 @@ export function createRealtime(database: SqlPool, changed: Wakeup, shutdown: Abo
             if (traceReady) {
               const candidate = traceReady.value
               const phase = state.run.status === 'queued' || state.run.status === 'leased' ? 'running'
-                : state.run.status === 'succeeded' ? 'complete' : ['waiting','cancelled','failed'].includes(state.run.status) ? state.run.status : 'unknown'
+                : state.run.status === 'succeeded' ? 'complete' : ['waiting','partial','blocked','cancelled','failed'].includes(state.run.status) ? state.run.status : 'unknown'
               const trace = candidate?.fence === state.run.fence && candidate.requestVersion === state.run.requestVersion
                 && candidate.spans.find(span => span.spanId === candidate.rootSpanId)?.state === phase ? candidate : null
               traceReady = undefined
