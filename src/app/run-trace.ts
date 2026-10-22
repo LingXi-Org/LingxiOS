@@ -13,7 +13,7 @@ const time = (value: unknown): number | null => value == null ? null : number(ne
 const id = (...values: unknown[]) => createHash('sha256').update(JSON.stringify(values)).digest('hex')
 const rootId = (runId: string) => id('agent', runId)
 const state = (value: unknown): TraceState => value === 'queued' || value === 'leased' ? 'running' : value === 'waiting' ? 'waiting'
-  : value === 'succeeded' ? 'complete' : value === 'cancelled' ? 'cancelled' : value === 'failed' ? 'failed' : 'unknown'
+  : value === 'partial' || value === 'blocked' ? value : value === 'succeeded' ? 'complete' : value === 'cancelled' ? 'cancelled' : value === 'failed' ? 'failed' : 'unknown'
 const active = (value: unknown) => ['queued', 'leased', 'waiting'].includes(String(value))
 const finish = (span: Omit<RunTraceSpan, 'revision'>): RunTraceSpan => ({ ...span, revision: id(span) })
 

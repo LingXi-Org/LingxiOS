@@ -73,3 +73,5 @@ this feature branch. The stream opt-in does not enable public-text production.
 
 Focused persistence/Worker-boundary and SSE tests exercise these failures without
 external providers, production data, or browser/device acceptance expansion.
+
+3.8.1 corrects terminal state projection: `TraceState` additionally preserves `partial` and `blocked` from the durable work record. These known goal outcomes are neither `complete` nor `unknown`. The actual `finished_at` remains the execution end; waiting/active runs remain unended. This additive state correction leaves snapshot version 1 and native schema 14 unchanged.

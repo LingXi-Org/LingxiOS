@@ -15,6 +15,13 @@ not grant permission, dispatch work, confirm delivery, or bypass native resource
 and skill checks. The final contribution retains partial goal status while work
 is pending. Ordinary prose, examples and arbitrary model intent are insufficient.
 
+Public run traces now preserve terminal `partial` and `blocked` states and their
+recorded execution boundaries instead of reporting a known outcome as unknown.
+These two values extend `TraceState` without changing the v1 snapshot shape.
+Consumers should render them as incomplete/blocked, independently of execution
+end time; they are never successful completion. Missing historical times remain
+missing, and active/waiting work never acquires a fabricated end.
+
 This is a bugfix with an optional product-policy extension. Existing root limits,
 correction counters, approval/input waits, cancellation and durable checks are
 unchanged. Control-plane 11, kernel 2, native schema 14, assistant-message 2,

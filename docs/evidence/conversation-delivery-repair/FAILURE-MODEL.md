@@ -9,3 +9,5 @@ Written before implementation. A controlled LingxiLoop reproduction against publ
 - Both parsed self-assessment gaps and semantic-review missing items must use the same scoped exception.
 - Repeated omissions exhaust the existing correction budget and preserve honest partial content. The change must not introduce new loops, counters or model calls outside established budgets.
 - Product policy is optional and defaults to no deferral; private metadata and provider output must not become trusted policy.
+
+- A terminal partial/blocked work item has a real finished_at and known goal outcome. Public trace must retain that precise state rather than unknown or successful completion; replay must preserve its actual start/end. Waiting work must remain unended.

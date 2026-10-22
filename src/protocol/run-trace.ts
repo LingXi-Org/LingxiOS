@@ -1,4 +1,4 @@
-export type TraceState = 'running' | 'waiting' | 'complete' | 'cancelled' | 'failed' | 'unknown'
+export type TraceState = 'running' | 'waiting' | 'complete' | 'partial' | 'blocked' | 'cancelled' | 'failed' | 'unknown'
 export interface RunTraceSpan {
   spanId: string; parentSpanId: string | null; runId: string
   requestVersion: number | null; fence: number | null; attemptId: string | null
