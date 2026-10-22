@@ -274,3 +274,21 @@ it('streams committed answers during a hung trace and replaces failed diagnostic
     await terminal
   } finally { release(); await reader?.cancel(); await f.close() }
 })
+
+for (const status of ['partial','blocked'] as const) it(`preserves terminal ${status} state and real boundaries independently of successful goals`, async () => {
+  const f = await fixture()
+  try {
+    const work = (await f.host.claimWork())!
+    await f.host.emitEvent(work, { runId: work.id, seq: 1, kind: 'run.started', stage: 'started', visibility: 'user', data: {} })
+    const running = (await f.app.readRunTrace(f.identity))!.spans[0]!
+    assert.equal(running.state, 'running'); assert.ok(running.startedAt); assert.equal(running.completedAt, null)
+    await f.host.completeWork(work, { status: 'completed', goalOutcome: { requestVersion: 1, status, verification: 'inconclusive', gaps: ['Synthetic unmet deliverable'] } })
+    assert.equal((await f.app.readRunState(f.identity))!.run.status, status)
+    const snapshot = (await f.app.readRunTrace(f.identity))!, root = snapshot.spans[0]!
+    assert.equal(root.state, status)
+    assert.equal(root.startedAt, running.startedAt); assert.ok(root.completedAt! >= root.startedAt!)
+    const stored = (await f.db.query<{ finished_at: Date }>('SELECT finished_at FROM lingxios.agent_work_items WHERE id=$1', [work.id])).rows[0]!
+    assert.equal(root.completedAt, new Date(stored.finished_at).getTime())
+    assert.deepEqual(await f.app.readRunTrace(f.identity), snapshot, 'replay preserves the real terminal state and interval')
+  } finally { await f.close() }
+})

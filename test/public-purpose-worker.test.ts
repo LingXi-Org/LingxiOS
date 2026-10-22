@@ -97,7 +97,9 @@ it('purpose-aware public worker streams a substantive answer before EOF, execute
     const trace=await app.readRunTrace(identity)
     assert.ok(trace?.origin)
     const agentSpan=trace.spans.find(span=>span.spanId===trace.rootSpanId)!
-    assert.equal(agentSpan.state,state.run.status==='succeeded'?'complete':'unknown');assert.ok(agentSpan.completedAt!>=trace.origin)
+    assert.ok(['succeeded','partial','blocked'].includes(state.run.status),'the execution must have a known terminal outcome')
+    assert.equal(agentSpan.state,state.run.status==='succeeded'?'complete':state.run.status)
+    assert.ok(agentSpan.completedAt!>=trace.origin)
     const modelSpans=trace.spans.filter(span=>span.kind==='llm')
     assert.ok(modelSpans.length>=2)
     for(const span of modelSpans){assert.ok(span.startedAt);assert.ok(span.completedAt!>=span.startedAt!);assert.equal(span.requestVersion,1)}

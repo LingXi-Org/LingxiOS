@@ -15,6 +15,7 @@ import { AgentRuntime } from '../src/runtime/runtime.js'
 import { ApprovalPendingError, ModelDriverError } from '../src/errors.js'
 import type { ModelCallObservation } from '../src/runtime/runtime.js'
 import { modelPricing, DEFAULT_MODEL_BUDGET } from '../src/model/execution.js'
+import { DefaultRuntimePolicy } from '../src/runtime/policy.js'
 
 // The reviewer must see the same prior conversation as generation, but never
 // receive the candidate itself as independent historical evidence.
@@ -320,7 +321,12 @@ for (const assessmentStatus of ['partial', 'satisfied'] as const) it(`commits on
       checks: [{ requirement: original, status: assessmentStatus === 'partial' ? 'unknown' : 'met', basis: 'Contribution only' }],
     }) } },
   }
-  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected kernel') } }).runWork(work)
+  const policy = new class extends DefaultRuntimePolicy {
+    deferConversationRepair(text: string, context: TurnContext) {
+      return text === '@b Please independently verify the calculation.' && context.work.conversation?.audience.participantIds.includes('b') === true
+    }
+  }()
+  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected kernel') } }, { policy }).runWork(work)
   assert.equal(turns, 1)
   assert.equal(reviews, 2)
   assert.equal(committed?.body, '@b Please independently verify the calculation.')

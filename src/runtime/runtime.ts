@@ -816,8 +816,11 @@ export class AgentRuntime {
         }
       }
 
-      const conversationTurn = work.conversation?.internal === false && work.meta?.['conversationTurn'] === true
-      if (assessment?.status === 'partial' && !conversationTurn && budget.consume('content_acceptance', JSON.stringify(assessment.gaps))) {
+      // Only the product can establish a real peer handoff. An ordinary
+      // conversation flag must not turn a repairable omission into a final reply.
+      const conversationHandoff = work.conversation?.internal === false && work.meta?.['conversationTurn'] === true
+        && this.policy.deferConversationRepair?.(turn.text, liveContext) === true
+      if (assessment?.status === 'partial' && !conversationHandoff && budget.consume('content_acceptance', JSON.stringify(assessment.gaps))) {
         await rememberCandidate(turn.text, liveContext, assessment.gaps)
         session.history.push(...derivedOutput())
         await this.hostFor(work).saveSession(work, session)
@@ -904,8 +907,8 @@ export class AgentRuntime {
             ...check.missing.map(item => `Content review finding for ${JSON.stringify(item.quote)}: ${item.reason}`)]
           await rememberCandidate(turn.text, liveContext, [...(assessment?.gaps ?? []), ...acceptanceGaps])
           const repairable = check.missing.filter(item => !item.blockedBy)
-          if (conversationTurn) resourceGaps.push(...repairable.map(item => `Unfulfilled result for ${JSON.stringify(item.quote)}: ${item.reason}`))
-          if (repairable.length && !conversationTurn) {
+          if (conversationHandoff) resourceGaps.push(...repairable.map(item => `Unfulfilled result for ${JSON.stringify(item.quote)}: ${item.reason}`))
+          if (repairable.length && !conversationHandoff) {
             if (!budget.consume('content_acceptance', 'candidate requirements remain unmet')) {
               terminalError = new AgentOSError('content_acceptance_exhausted', 'Content acceptance correction budget exhausted')
               break
