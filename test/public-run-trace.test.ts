@@ -38,7 +38,7 @@ it('persists actual model boundaries before execution, replaces replay stably an
     const ready = new Promise<void>(resolve => { entered = resolve })
     const execution = modelExecution(f.host, { modelId: 'synthetic-model' }, work, DEFAULT_MODEL_BUDGET,
       event => f.host.emitEvent(work, { ...event, runId: work.id, seq: ++seq }))
-    const result = execution.invoke('agent-turn', { instructions: 'PRIVATE-PROMPT', input: 'PRIVATE-INPUT' }, async () => {
+    const result = execution.invoke('agent-turn', { instructions: 'PRIVATE-PROMPT', input: 'PRIVATE-INPUT', operation: 'correction' } as Parameters<typeof execution.invoke>[1], async () => {
       entered(); await gate
       return { model: 'synthetic-model', usage: { available: true, inputTokens: 11, outputTokens: 7 } }
     })
@@ -47,12 +47,14 @@ it('persists actual model boundaries before execution, replaces replay stably an
     assert.ok(model.startedAt); assert.equal(model.completedAt, null); assert.equal(model.state, 'running')
     assert.equal(model.requestVersion, 1); assert.equal(model.fence, work.fence); assert.equal(model.attemptId, model.callId)
     assert.equal(model.inputTokens, null)
+    assert.equal(Reflect.get(model, 'operation'), 'correction')
     release(); await result
     const complete = (await trace(f.app, f.identity))!, settled = complete.spans.find(span => span.spanId === model.spanId)!
     assert.equal(settled.startedAt, model.startedAt); assert.ok(settled.completedAt! >= model.startedAt!)
     assert.equal(settled.usageAvailable, true); assert.equal(settled.inputTokens, 11); assert.equal(settled.outputTokens, 7)
     assert.equal(settled.costMicros, null, 'default zero pricing is not proof of a free call')
     assert.equal(settled.state, 'complete'); assert.equal(settled.parentSpanId, complete.spans.find(span => span.kind === 'agent')!.spanId)
+    assert.equal(Reflect.get(settled, 'operation'), 'correction')
     assert.equal(/PRIVATE-|instructions|prompt|leaseToken|reasoning|configurationFingerprint/.test(JSON.stringify(complete)), false)
     assert.deepEqual(await trace(f.app, f.identity), complete)
     for (const changed of [{ tenantId: 'other' }, { principalId: 'other' }, { sessionId: 'other' }, { threadId: 'other' }]) {

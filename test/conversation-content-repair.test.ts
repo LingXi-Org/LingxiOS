@@ -53,7 +53,7 @@ for (const assessment of [false,true]) it(`repairs an ordinary conversation omis
     } }
   await new AgentRuntime(f.host,model,kernel).runWork(f.work)
   assert.equal(turns,2)
-  assert.equal(reviews,assessment ? 1 : 3)
+  assert.equal(reviews,assessment ? 1 : 2, 'one joint review per candidate, without a serial scope call')
   assert.equal(f.result().committed?.body,'The complete comparison is supplied.')
   assert.equal(f.result().committed?.envelope.goalOutcome.status,'satisfied')
 })
@@ -136,7 +136,7 @@ for (const extra of [0,3]) for (const alwaysMissing of [false,true]) it(`bounds 
   await recoveryRuntime(f,synthetic.model,extra,{ maxModelCalls: 16,maxTokens: 1_000_000,wallClockMs: 30_000 }).runWork(f.work)
   const repaired = extra > 0 && !alwaysMissing
   assert.equal(synthetic.counts().turns,extra === 0 ? 3 : alwaysMissing ? 6 : 4)
-  assert.equal(synthetic.counts().reviews,extra === 0 ? 2 : alwaysMissing ? 8 : 3)
+  assert.equal(synthetic.counts().reviews,extra === 0 ? 1 : alwaysMissing ? 4 : 2)
   assert.equal(f.result().committed?.envelope.goalOutcome.status,repaired ? 'satisfied' : 'partial')
   assert.equal(f.result().committed?.body,repaired ? recoveryAnswer : promise)
   if (!repaired) assert.match(JSON.stringify(f.result().committed?.envelope.goalOutcome.gaps),/correction budget exhausted/i)
@@ -144,18 +144,18 @@ for (const extra of [0,3]) for (const alwaysMissing of [false,true]) it(`bounds 
 
 for (const limit of ['calls','tokens','cost','deadline'] as const) it(`does not let extra content corrections spend beyond the root ${limit} budget`,async t => {
   const f = fixture(recoveryRequest), synthetic = protocolThenOmission()
-  // Each issued attempt uses exactly 100 input + 20 output tokens. The fifth
-  // call finishes the first content check, before extra repair could start.
+  // Each issued attempt uses exactly 100 input + 20 output tokens. The fourth
+  // call finishes the joint content/scope check, before extra repair could start.
   const model: ModelDriver = { ...synthetic.model,countTokens: () => 100,maxOutputTokens: 20 }
   let settled = 0, now = Date.now()
   if (limit === 'deadline') t.mock.method(Date,'now',() => now)
   const record = f.host.recordModelUsage
-  f.host.recordModelUsage = async (...args) => { await record(...args); if (++settled === 5 && limit === 'deadline') now += 1000 }
-  await recoveryRuntime(f,model,3,{ maxModelCalls: limit === 'calls' ? 5 : 16,
-    maxTokens: limit === 'tokens' ? 600 : 1_000_000,maxCostMicros: limit === 'cost' ? 600 : 1_000_000,
+  f.host.recordModelUsage = async (...args) => { await record(...args); if (++settled === 4 && limit === 'deadline') now += 1000 }
+  await recoveryRuntime(f,model,3,{ maxModelCalls: limit === 'calls' ? 4 : 16,
+    maxTokens: limit === 'tokens' ? 480 : 1_000_000,maxCostMicros: limit === 'cost' ? 480 : 1_000_000,
     inputCostMicrosPerMillion: 1_000_000,outputCostMicrosPerMillion: 1_000_000,wallClockMs: limit === 'deadline' ? 1000 : 30_000 }).runWork(f.work)
-  assert.deepEqual(synthetic.counts(),{ turns: 3,reviews: 2 })
-  assert.equal(settled,5)
+  assert.deepEqual(synthetic.counts(),{ turns: 3,reviews: 1 })
+  assert.equal(settled,4)
   assert.equal(f.result().committed?.envelope.goalOutcome.status,'partial')
   assert.match(JSON.stringify(f.result().committed?.envelope.goalOutcome.gaps),/Model call, token, cost or execution-time budget exhausted/)
 })
@@ -165,7 +165,7 @@ it('stops on cancellation before issuing the additional content correction',asyn
   f.host.emitEvent = async (_work,event) => { if (event.kind === 'response.content_checked') cancelled = true }
   f.host.heartbeat = async () => ({ ok: true,cancelRequested: cancelled })
   await recoveryRuntime(f,synthetic.model,3).runWork(f.work)
-  assert.deepEqual(synthetic.counts(),{ turns: 3,reviews: 2 })
+  assert.deepEqual(synthetic.counts(),{ turns: 3,reviews: 1 })
   assert.equal(f.result().committed,undefined)
   assert.equal(f.result().completion?.status,'cancelled')
 })
@@ -183,7 +183,7 @@ it('restores spent content corrections after yielding the same work to a new own
   assert.equal(f.result().committed,undefined)
   f.host.saveStep = save; f.work.fence++
   await recoveryRuntime(f,synthetic.model,3).runWork(f.work)
-  assert.deepEqual(synthetic.counts(),{ turns: 6,reviews: 8 })
+  assert.deepEqual(synthetic.counts(),{ turns: 6,reviews: 4 })
   assert.equal(f.result().committed?.envelope.goalOutcome.status,'partial')
 })
 

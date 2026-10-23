@@ -2,6 +2,7 @@ import { NoEffectError } from '../tools/definition.js'
 import { createHash } from 'node:crypto'
 import type { SqlQueryable } from '../control-plane/pg-store.js'
 import { readRunRecord, type RunIdentity } from './jobs.js'
+import { modelOperation } from '../model/operation.js'
 
 import type { RunTraceSpan, RunTraceSnapshot, TraceState } from '../protocol/run-trace.js'
 export type { RunTraceSpan, RunTraceSnapshot, TraceState } from '../protocol/run-trace.js'
@@ -55,14 +56,14 @@ export async function readRunTrace(database: SqlQueryable, identity: RunIdentity
   const runIds = records.map(item => String(item.row['id']))
   // Only timing/identity fields are selected from internal diagnostic events.
   const events = await database.query(`SELECT run_id,seq,kind,stage,data->'_executionTrace' AS timing,
-    data->>'callId' AS call_id,data->>'model' AS model,data->>'toolCallId' AS tool_call_id,
+    data->>'callId' AS call_id,data->>'model' AS model,data->>'operation' AS operation,data->>'toolCallId' AS tool_call_id,
     data->>'name' AS name,data->'result'->>'status' AS tool_status
     FROM lingxios.agent_run_events WHERE run_id=ANY($1::text[]) AND tenant_id=$2
       AND kind=ANY($3::text[]) AND (expires_at IS NULL OR expires_at>NOW())
     ORDER BY run_id,seq LIMIT 2049`, [runIds, identity.tenantId, ['run.started', 'model.request.started', 'tool.started', 'tool.completed']])
   if (events.rows.length > 2048) truncated = true
   const calls = await database.query(`SELECT work_id,call_id,fence,observation->>'model' AS model,
-    observation->'executionTiming' AS timing,observation->>'status' AS status,
+    observation->'executionTiming' AS timing,observation->>'status' AS status,observation->>'operation' AS operation,
     observation->'usage' AS usage,observation->'cost' AS cost
     FROM lingxios.agent_model_budget_calls WHERE work_id=ANY($1::text[])
     ORDER BY work_id,call_id LIMIT 513`, [runIds])
@@ -94,12 +95,13 @@ export async function readRunTrace(database: SqlQueryable, identity: RunIdentity
       const pricing = object(cost['pricing']), measured = usage['available'] === true
       const observedEnd = number(settlement['completedAt']), start = number(timing['at'])
       const ended = observedEnd !== null && (start === null || observedEnd >= start) ? observedEnd : null
+      const operation = modelOperation(call?.['operation']) ?? modelOperation(begin?.['operation'])
       spans.push(finish({ spanId: id('llm', runId, callId), parentSpanId: rootId(runId), runId,
         requestVersion: integer(timing['requestVersion']), fence: integer(timing['fence']) ?? integer(Number(call?.['fence'])),
         attemptId: callId, kind: 'llm', state: ended !== null ? settlement['cancelled'] === true ? 'cancelled'
           : call?.['status'] === 'succeeded' ? 'complete' : 'failed' : active(row['status']) && integer(timing['fence']) === Number(row['fence']) ? 'running' : 'unknown',
         seq: begin ? Number(begin['seq']) : null, startedAt: start, completedAt: ended, timingBasis: 'model-invocation', callId,
-        model: string(call?.['model']) ?? string(begin?.['model']), usageAvailable: measured,
+        model: string(call?.['model']) ?? string(begin?.['model']), usageAvailable: measured,...(operation ? { operation } : {}),
         inputTokens: measured ? number(usage['inputTokens']) : null, outputTokens: measured ? number(usage['outputTokens']) : null,
         costMicros: measured && cost['usage'] === 'measured' && (Number(pricing['inputMicrosPerMillion']) > 0 || Number(pricing['outputMicrosPerMillion']) > 0)
           ? number(cost['amountMicros']) : null }))
