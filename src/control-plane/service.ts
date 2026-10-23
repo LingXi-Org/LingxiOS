@@ -508,6 +508,14 @@ export class ControlPlaneService {
     const [context, snapshot, dependencies] = await Promise.all([
       snapshotPromise.then(snapshot => this.deps.contextProvider.loadContext(work, signal, {
         requestVersion: snapshot.requestVersion,
+        // The worker reuses this exact snapshot across tool hops. Do not ask
+        // products to retrieve a replacement that the worker must discard.
+        // authorizeSession above already rechecks source access; no user or tool
+        // metadata can supply this hint. Revisions and empty snapshots still
+        // require fresh preparation (including fast-to-deep evidence loading).
+        ...(snapshot.session?.request?.workId === work.id && snapshot.requestVersion === 1
+          && snapshot.session.request.revisions.length === 0 && snapshot.session.request.evidence.items.length
+          ? { frozenEvidence: { workId: work.id, requestVersion: 1 as const, snapshotId: snapshot.session.request.evidence.id } } : {}),
         legacyMemoryProof: !!snapshot.session && (
           (!!snapshot.session.summary && !snapshot.session.history.some(item => isMemorySummary(item) && 'role' in item && item.content === SUMMARY_PREFIX + snapshot.session!.summary && item.memorySources))
           || snapshot.session.history.some(item => !item.memorySources && 'type' in item

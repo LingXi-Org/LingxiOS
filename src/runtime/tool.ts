@@ -68,6 +68,45 @@ export function boundedDirectToolOutput(receipt: { action: string; idempotencyKe
   const metadata = { receipt: { action: receipt.action, idempotencyKey: receipt.idempotencyKey,
     ...(observed ? { sha256: observationRef(receipt.idempotencyKey, JSON.parse(JSON.stringify(result.value))).sha256 } : {}) }, ...recovery }
   const reserved = JSON.stringify(metadata).length - 1
+  if (!Number.isSafeInteger(maxChars - reserved) || maxChars - reserved < 128) throw new Error('tool output budget must be at least 128 characters')
+  // Read APIs already return an exact source range. Keep their schema and a
+  // truthful continuation cursor when only the model-facing text needs to be
+  // bounded. The durable value, evidence and canonical receipt are untouched.
+  const range = observed ? boundedReadRange(result, metadata, maxChars) : undefined
+  if (range !== undefined) return range
   const output = boundedToolOutput(result, maxChars - reserved, receiptReferences([receipt]))
   return JSON.stringify({ ...JSON.parse(output), ...metadata })
+}
+
+function boundedReadRange(result: HostActionResult, metadata: object, maxChars: number): string | undefined {
+  const value = result.value
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return
+  const range = value as Record<string, unknown>
+  const { text, offset, nextOffset, textLength } = range
+  if (typeof text !== 'string' || !text || typeof range['sourceVersion'] !== 'string'
+    || typeof range['sourceId'] !== 'string' && typeof range['id'] !== 'string'
+    || !Number.isSafeInteger(offset) || Number(offset) < 0 || !Number.isSafeInteger(textLength)
+    || Number(textLength) < Number(offset) + text.length || typeof range['truncated'] !== 'boolean') return
+  const end = Number(offset) + text.length
+  if (nextOffset !== end && !(nextOffset === null && end === textLength)) return
+  if (JSON.stringify({ ...result, ...metadata }).length <= maxChars) return
+  const render = (length: number) => {
+    // Preserve UTF-16 range offsets without publishing half a code point.
+    if (length > 0 && /[\uD800-\uDBFF]/.test(text[length - 1]!)) length--
+    const visibleEnd = Number(offset) + length, hasMore = visibleEnd < Number(textLength)
+    return JSON.stringify({ ...result, value: { ...range, text: text.slice(0, length),
+      nextOffset: hasMore ? visibleEnd : null, hasMore, truncated: true },
+      modelView: { partial: true, originalRange: { offset, end },
+        continuation: 'Only the visible text range is rendered; continue at value.nextOffset when value.hasMore. The receipt hash covers the original recorded value.' },
+      ...metadata })
+  }
+  if (render(0).length >= maxChars) return
+  let low = 0, high = text.length
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    if (render(middle).length <= maxChars) low = middle
+    else high = middle - 1
+  }
+  if (low === 0 || (low === 1 && /[\uD800-\uDBFF]/.test(text[0]!))) return
+  return render(low)
 }

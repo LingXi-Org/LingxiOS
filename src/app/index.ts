@@ -343,7 +343,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
       })
     } },
     contextProvider: { ...(contextProvider.authorizeRequest ? { authorizeRequest: contextProvider.authorizeRequest.bind(contextProvider) } : {}),
-      async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal, loadOptions?: { responseProfile: import('../runtime/response-policy.js').ResponseProfile; requestVersion?: number; legacyMemoryProof?: boolean }) {
+      async loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal, loadOptions?: Parameters<ContextProvider['loadContext']>[2]) {
       if (behavior && !['memory_synthesis','memory_index','memory_evaluation'].includes(work.kind) && work.meta?.['harnessHash'] !== behavior.hash) throw new Error('harness version mismatch; resume with the pinned deployment or drain the old run')
       const context = { responseProfile: loadOptions?.responseProfile ?? 'deep',
         ...await contextProvider.loadContext(work, signal, loadOptions), ...(behavior ? { harness: structuredClone(behavior) } : {}) }
