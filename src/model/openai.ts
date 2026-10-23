@@ -33,7 +33,7 @@ export type ReasoningEffort = 'low' | 'high' | 'max'
 export interface OpenAIDriverOptions {
   publicTextProtocol?: 'purpose-json-v1'
   recovery?: Partial<ModelRecoveryPolicy>
-  capabilities?: Partial<Pick<ModelProfile, 'toolCalls' | 'jsonObject' | 'parallelTools'>>
+  capabilities?: Partial<Pick<ModelProfile, 'toolCalls' | 'jsonObject' | 'jsonObjectWithTools' | 'parallelTools'>>
   /** Calibrated tokenizer for this exact model configuration. */
   countTokens?: (text: string) => number
   maxThinkingTokens?: number
@@ -228,8 +228,8 @@ export class OpenAIChatDriver implements ModelDriver {
     if (!Number.isSafeInteger(this.maxOutputTokens) || this.maxOutputTokens < 1) throw new Error('maxOutputTokens must be a positive integer')
     if (!Number.isSafeInteger(this.contextWindowTokens) || this.contextWindowTokens <= this.maxOutputTokens) throw new Error('contextWindowTokens must be an integer greater than maxOutputTokens')
     this.profile = Object.freeze({ id: modelId, contextWindowTokens: this.contextWindowTokens, maxOutputTokens: this.maxOutputTokens,
-      maxThinkingTokens: this.maxThinkingTokens, toolCalls: true, jsonObject: true, parallelTools: true, ...options.capabilities })
-    for (const key of ['toolCalls', 'jsonObject', 'parallelTools'] as const) {
+      maxThinkingTokens: this.maxThinkingTokens, toolCalls: true, jsonObject: true, jsonObjectWithTools: true, parallelTools: true, ...options.capabilities })
+    for (const key of ['toolCalls', 'jsonObject', 'jsonObjectWithTools', 'parallelTools'] as const) {
       if (typeof this.profile[key] !== 'boolean') throw new Error(`invalid model capability ${key}`)
     }
     this.configurationFingerprint = createHash('sha256').update(JSON.stringify({
@@ -441,7 +441,7 @@ export class OpenAIChatDriver implements ModelDriver {
     const response = await this.request({
       model: this.modelId,
       messages: toWireMessages(request.instructions+(purposeParser?'\n\n'+PUBLIC_PURPOSE_INSTRUCTIONS:''), request.items),
-      ...(purposeParser?{response_format:{type:'json_object'}}:{}),
+      ...(purposeParser && (!tools.length || this.profile.jsonObjectWithTools !== false) ? { response_format: { type: 'json_object' } } : {}),
       ...(tools.length ? { tools, tool_choice: 'auto', parallel_tool_calls: this.profile.parallelTools } : {}),
       stream: true,
       stream_options: { include_usage: true },

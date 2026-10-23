@@ -10,6 +10,8 @@ export interface ModelProfile {
   maxThinkingTokens: number
   toolCalls: boolean
   jsonObject: boolean
+  /** JSON response mode alongside native tools; omitted means supported for compatibility. */
+  jsonObjectWithTools?: boolean
   parallelTools: boolean
 }
 
