@@ -119,11 +119,15 @@ it('pins explicit compaction effort in the provider fingerprint and preserves it
   assert.equal(streamed.singleAttempt().configurationFingerprint, streamed.configurationFingerprint)
   assert.equal(new OpenAIChatDriver('fixture', { ...options, auxiliaryStreaming: false }).configurationFingerprint,
     original.configurationFingerprint)
-  // Captured on unmodified 3.5.3: adding unset options must not invalidate replay identity.
-  assert.equal(new OpenAIChatDriver('fixture', { apiKey: 'synthetic-only' }).configurationFingerprint,
-    'c69171f62097093e89728df6c837f1088c7c258ef3e1c60d0cfdd053461c24ea')
-  assert.equal(new OpenAIChatDriver('fixture', { apiKey: 'synthetic-only', reasoningEffort: 'high', maxThinkingTokens: 0 }).configurationFingerprint,
-    '37cc95e4784d66462f8449fce49ad659d57f2291d9f71392ac22b9a06151fb3b')
+  // Freeze both effort configurations under the new nullable-delta policy.
+  // Their old snapshots remain explicit negatives, not silently accepted binds.
+  const defaultModel = new OpenAIChatDriver('fixture', { apiKey: 'synthetic-only' })
+  const highEffort = new OpenAIChatDriver('fixture', { apiKey: 'synthetic-only', reasoningEffort: 'high', maxThinkingTokens: 0 })
+  assert.equal(defaultModel.configurationFingerprint, '887057b8d1330db739531a5539bae51bfa6fa3c4ec6cf43e79a1241d1b52d4cb')
+  assert.notEqual(defaultModel.configurationFingerprint, 'c69171f62097093e89728df6c837f1088c7c258ef3e1c60d0cfdd053461c24ea')
+  assert.equal(highEffort.configurationFingerprint, 'b937791b9270acf558f8d7b4140b565c6798ce7bbd290a6793da05d4f1a4184b')
+  assert.notEqual(highEffort.configurationFingerprint, '37cc95e4784d66462f8449fce49ad659d57f2291d9f71392ac22b9a06151fb3b')
+  assert.equal(highEffort.singleAttempt().configurationFingerprint, highEffort.configurationFingerprint)
 })
 
 it('accepts all documented effort values through the standalone worker configuration', () => {

@@ -9,8 +9,10 @@ import { createWorker } from '../src/worker/index.js'
 import { OpenAIChatDriver } from '../src/model/openai.js'
 import type { SqlPool } from '../src/control-plane/pg-store.js'
 import { nullLogger } from '../src/logging.js'
+import { createHash } from 'node:crypto'
 
-for (const authorized of [true, false]) it(`native companion Worker preserves authorization=${authorized}, actual usage and one execution`, { timeout: 20_000 }, async () => {
+for (const publicTextProtocol of ['purpose-json-v2', 'purpose-json-v3'] as const)
+for (const authorized of [true, false]) it(`${publicTextProtocol} nullable companion Worker preserves authorization=${authorized}, actual usage and one execution`, { timeout: 20_000 }, async () => {
   const db = new PGlite(), directory = await mkdtemp(join(tmpdir(), 'native-companion-worker-'))
   await db.exec(await readFile(join(process.cwd(), 'db/schema.sql'), 'utf8'))
   let tail = Promise.resolve(), calls = 0, executions = 0, authorizations = 0
@@ -27,15 +29,18 @@ for (const authorized of [true, false]) it(`native companion Worker preserves au
       execute: async () => { executions++; return { ok: true, value: { answer: 42 } } },
     }] })
   const answer = authorized ? 'The synthetic answer is 42.' : 'The synthetic record cannot be read with this permission.'
-  const model = new OpenAIChatDriver('native-companion-worker', { apiKey: 'synthetic', maxAttempts: 1, publicTextProtocol: 'purpose-json-v2',
+  const model = new OpenAIChatDriver('native-companion-worker', { apiKey: 'synthetic', maxAttempts: 1, publicTextProtocol,
     capabilities: { jsonObjectWithTools: false, parallelTools: false }, fetchImpl: async (_url, init) => {
       const body = JSON.parse(String(init?.body))
       assert.equal(body.stream, true, 'no extra semantic reviewer is needed')
       calls++
       const delta = calls === 1 ? { content: 'INTERNAL_COMPANION_SENTINEL read a synthetic number.',
-        tool_calls: [{ index: 0, id: 'read-once', type: 'function', function: { name: 'fixture__read', arguments: '{}' } }] }
-        : { content: JSON.stringify({ commentary: '', answer, outcome: { status: authorized ? 'satisfied' : 'blocked', gaps: authorized ? [] : ['The record is not authorized.'] } }) }
-      return new Response('data: ' + JSON.stringify({ choices: [{ delta, finish_reason: calls === 1 ? 'tool_calls' : 'stop' }] })
+        tool_calls: [{ index: 0, id: 'read-once', type: 'function', function: { name: 'fixture__read', arguments: '{' } }] }
+        : { content: JSON.stringify({ ...(publicTextProtocol === 'purpose-json-v3' ? { operation: { kind: 'append', supersedes: [] } } : {}),
+          commentary: '', answer, outcome: { status: authorized ? 'satisfied' : 'blocked', gaps: authorized ? [] : ['The record is not authorized.'] } }) }
+      return new Response('data: ' + JSON.stringify({ choices: [{ delta, finish_reason: calls === 1 ? null : 'stop' }] })
+        + (calls === 1 ? '\n\ndata: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: null, type: null,
+          function: { name: null, arguments: '}' } }] }, finish_reason: 'tool_calls' }] }) : '')
         + '\n\ndata: {"choices":[],"usage":{"prompt_tokens":17,"completion_tokens":9}}\n\ndata: [DONE]\n\n')
     } })
   const worker = createWorker({ controlPlane: app, model, logger: nullLogger, kernel: { homesRoot: directory }, worker: { id: 'native-companion-worker', healthPort: 0 } })
@@ -50,6 +55,12 @@ for (const authorized of [true, false]) it(`native companion Worker preserves au
     assert.equal(state.run.status, authorized ? 'succeeded' : 'blocked')
     assert.equal(state.message?.body, answer)
     assert.equal(state.message?.envelope.goalOutcome.status, authorized ? 'satisfied' : 'blocked')
+    if (publicTextProtocol === 'purpose-json-v3') {
+      assert.equal(state.message?.publicTextSources?.segments.length, 1)
+      assert.equal(state.message?.publicTextSources?.bodyHash, createHash('sha256').update(answer).digest('hex'))
+      assert.equal(events.events.filter(event => event.kind === 'public.text.sealed').length, 1)
+      assert.deepEqual(events.events.find(event => event.kind === 'response.committed')?.data['publicTextSources'], state.message?.publicTextSources)
+    }
     assert.doesNotMatch(JSON.stringify(events), /INTERNAL_COMPANION_SENTINEL/)
     const ledger = await pool.query('SELECT observation FROM lingxios.agent_model_budget_calls WHERE work_id=$1', [identity.runId])
     assert.equal(ledger.rows.length, 2)
