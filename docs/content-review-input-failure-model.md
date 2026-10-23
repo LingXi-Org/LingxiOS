@@ -23,7 +23,7 @@ Failure cases to cover before changing implementation:
   bounded input admission; never truncate requirements or fail open.
 - Cancellation, malformed findings, provider errors and budget rejection must
   retain current gaps and must not claim completion. Keep existing usage/identity
-  accounting for both calls and exact input hashes for their different payloads.
+  accounting for every actual attempt and exact input hashes for repairs.
 - Do not mutate the request, evidence, observations, or primary review result.
 - Absent, malformed, invented, duplicate, agent-only or blocked finding IDs in
   the combined decision retain valid findings, without a fallback model call.

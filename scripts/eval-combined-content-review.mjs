@@ -41,15 +41,28 @@ const cases = [
 const results = []
 for (const sample of cases) {
   const before = observations.length, began = performance.now()
+  const responseShape = [], structured = model.structured
   const request = { version: 1, workId: work.id, tenantId: work.tenantId, sessionId: work.sessionId, authorId: 'human', sourceRef: sample.id,
     originalText: sample.text, revisions: sample.revisions ?? [], attachments: [], evidence: snapshotEvidence('e', []) }
+  model.structured = async input => {
+    const result = await structured(input), value = result.value
+    responseShape.push({ missing: Array.isArray(value?.missing) ? value.missing.length : typeof value?.missing,
+      limitations: Array.isArray(value?.limitations) ? value.limitations.map(item => ({ hasRequest: item?.requestQuote !== null })) : typeof value?.limitations,
+      deferred: Array.isArray(value?.deferred) ? value.deferred.map(item => ({
+        id: typeof item?.id === 'string' && /^(missing|limitation):\d+$/.test(item.id) ? item.id : 'invalid',
+        exactHumanQuote: typeof item?.quote === 'string' && [sample.text, ...(sample.revisions ?? []).filter(item => item.author.kind === 'human').map(item => item.text)].some(text => text.includes(item.quote)),
+      })) : typeof value?.deferred })
+    return result
+  }
   const result = await checkCandidateContent(model, request, sample.body, [], 32768, AbortSignal.timeout(95000))
+  model.structured = structured
   const calls = observations.slice(before)
   const gap = Boolean(result.missing.length + result.limitations.length)
   const report = { id: sample.id, passed: !result.error && gap === sample.gap,
     gap, missing: result.missing.length, limitations: result.limitations.length, error: result.error ?? null,
-    calls: calls.length, operations: calls.map(call => call.operation), elapsedMs: Math.round(performance.now() - began),
-    measured: calls.every(call => call.usage?.available), status: calls.map(call => call.status) }
+    calls: calls.length, operations: calls.map(call => call.operation), responseShape, elapsedMs: Math.round(performance.now() - began),
+    measured: calls.every(call => call.usage?.available), status: calls.map(call => call.status),
+    failure: calls.map(call => call.failure ? { category: call.failure.category, status: call.failure.status ?? null, retryable: call.failure.retryable } : null) }
   results.push(report); console.log(JSON.stringify(report))
 }
 const sourceSha256 = createHash('sha256').update(await readFile(new URL('../src/outcome/content-check.ts', import.meta.url))).digest('hex')
