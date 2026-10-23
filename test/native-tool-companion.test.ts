@@ -3,6 +3,7 @@ import { it } from 'node:test'
 import { ModelDriverError } from '../src/errors.js'
 import { OpenAIChatDriver, type OpenAIDriverOptions } from '../src/model/openai.js'
 import { publicModelDiagnostics } from '../src/model/diagnostics.js'
+import { modelProtocolCorrection } from '../src/runtime/protocol-correction.js'
 import type { ToolDefinition } from '../src/tools/catalog.js'
 
 const tool: ToolDefinition = { name: 'fixture__read', action: 'fixture.read', effect: 'read', approval: false,
@@ -83,7 +84,12 @@ for (const content of ['null', 'true', 'false', 'null {"commentary":"","answer":
   it(`rejects JSON scalar framing instead of classifying it as prose: ${content}`, async () => {
     const previews: string[] = []
     await assert.rejects(driver([...content].map(character => event({ content: character })).join('')
-      + event({ tool_calls: [call] }, 'tool_calls') + usage).run({ ...request, onTextDelta: text => { previews.push(text) } }), ModelDriverError)
+      + event({ tool_calls: [call] }, 'tool_calls') + usage).run({ ...request, onTextDelta: text => { previews.push(text) } }), error => {
+      assert.ok(error instanceof ModelDriverError)
+      assert.equal(error.diagnostics.protocolCode, 'public_text_invalid')
+      assert.equal(modelProtocolCorrection(error.diagnostics, 'disabled', 'purpose-json-v2').category, 'response_protocol')
+      return true
+    })
     assert.deepEqual(previews, [])
   })
 }
@@ -93,6 +99,7 @@ for (const scenario of badTurns) it(`rejects untyped text with ${scenario.name} 
     scenario.parallelTools ? { capabilities: { jsonObjectWithTools: false, parallelTools: true } } : {})
   await assert.rejects(model.run({ ...request, onTextDelta: text => { previews.push(text) } }), error => {
     assert.ok(error instanceof ModelDriverError)
+    if (scenario.name === 'unknown tool') assert.equal(error.diagnostics.protocolCode, 'tool_identity_invalid')
     assert.deepEqual(error.diagnostics.usage, { available: true, inputTokens: 17, outputTokens: 9 })
     return true
   })
@@ -127,4 +134,18 @@ it('does not convert an oversized companion or cancellation into a tool result',
 it('only projects the fixed non-public classification, never companion content or a supplied arbitrary label', () => {
   assert.deepEqual(publicModelDiagnostics({ publicText: 'unpublished_tool_companion', raw: 'PRIVATE_SENTINEL' }), { publicText: 'unpublished_tool_companion' })
   assert.deepEqual(publicModelDiagnostics({ publicText: 'PRIVATE_SENTINEL' }), {})
+})
+
+it('classifies an unframed final answer as a public protocol failure so correction restores the purpose contract', async () => {
+  for (const content of ['The answer is 42.', 'null', 'true', 'false']) {
+    await assert.rejects(driver(event({ content }, 'stop') + usage).run(request), error => {
+      assert.ok(error instanceof ModelDriverError)
+      assert.equal(error.diagnostics.protocolCode, 'public_text_invalid')
+      const correction = modelProtocolCorrection(error.diagnostics, 'disabled', 'purpose-json-v2')
+      assert.equal(correction.category, 'response_protocol')
+      assert.match(correction.content, /purpose-json-v2/)
+      assert.deepEqual(error.diagnostics.usage, { available: true, inputTokens: 17, outputTokens: 9 })
+      return true
+    })
+  }
 })

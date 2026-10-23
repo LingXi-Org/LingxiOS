@@ -24,12 +24,14 @@ export class ToolCompanionBoundary {
   }
 }
 
+export const companionHasJsonFraming = (text: string): boolean => /^\s*(?:null|true|false)(?![\p{L}\p{N}_])/u.test(text)
+
 export function completeCompanionTurn(input: {
   text: string
   calls: Map<number, { id: string; name: string; arguments: string }>
   finishReasons: string[]; malformed?: boolean
 }, exposed: readonly string[], parallel: boolean): boolean {
-  if (/^\s*(?:null|true|false)(?![\p{L}\p{N}_])/u.test(input.text)
+  if (companionHasJsonFraming(input.text)
     || input.malformed || input.finishReasons.length !== 1 || input.finishReasons[0] !== 'tool_calls'
     || !input.calls.size || !parallel && input.calls.size !== 1) return false
   const identities = new Set<string>()

@@ -1,6 +1,6 @@
 import type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
 import { publicPurposeInstructions, PublicPurposeParser, publicPurposeError } from './public-purpose.js'
-import { ToolCompanionBoundary, completeCompanionTurn } from './tool-companion.js'
+import { ToolCompanionBoundary, completeCompanionTurn, companionHasJsonFraming } from './tool-companion.js'
 /**
  * OpenAI-compatible chat-completions driver.
  *
@@ -491,7 +491,10 @@ export class OpenAIChatDriver implements ModelDriver {
     if (companion?.unpublished) {
       if (!completeCompanionTurn({ text, calls: accumulator.toolCalls, finishReasons: accumulator.finishReasons,
         ...(accumulator.malformedToolCalls ? { malformed: true } : {}) }, tools.map(tool => tool.function.name), this.profile.parallelTools)) {
-        throw new ModelDriverError('invalid native tool companion turn', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: 'tool_identity_invalid' })
+        const publicTextFailure = !accumulator.toolCalls.size || companionHasJsonFraming(text)
+        throw new ModelDriverError(publicTextFailure ? 'invalid public text protocol' : 'invalid native tool companion turn', {
+          ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: publicTextFailure ? 'public_text_invalid' : 'tool_identity_invalid',
+        })
       }
       text = ''
     } else if(purposeParser){

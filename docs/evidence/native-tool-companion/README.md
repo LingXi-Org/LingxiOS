@@ -16,6 +16,7 @@ The [failure model](../../native-tool-companion-failure-model.md) and new tests 
 
 - 106 relevant compiled regressions passed: driver protocols, model execution and accounting, cancellation/deadlines, child budget admission, protocol recovery, and formal Worker flows.
 - After the scalar-framing and EOF-cancellation accounting corrections, all 41 affected driver/model-execution checks passed, and TypeScript compilation passed again.
+- The final classification-only correction keeps unframed final answers and JSON scalar framing in `public_text_invalid` / `response_protocol`, while invalid tools remain tool-protocol failures. Its regression failed first; all 55 affected driver, protocol-recovery and model-execution checks plus TypeScript then passed. Acceptance boundaries and the shared correction budget are unchanged.
 - The new formal Worker scenarios use isolated PGlite and the actual worker/executor. Both issue exactly two model calls and settle two measured usage records. An authorized tool executes once, then a strict final answer succeeds; denied authorization executes zero tools and preserves a blocked outcome. A further worker poll does not replay the completed work.
 - Existing substantive structured text still streams before provider EOF; malformed structured output remains a failure. Default configuration fingerprint regressions remain green.
 
