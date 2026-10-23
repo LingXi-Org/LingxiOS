@@ -181,6 +181,20 @@ export class ControlPlaneService {
       if (!this.deps.workspace || step.kind !== 'ipython' || step.output === undefined) throw new ControlPlaneError(400, 'unexpected workspace checkpoint')
       step = { ...step, workspace: await this.deps.workspace.validate(work, step.workspace, signal) }
     }
+    if (step.kind === 'runtime.binding') {
+      const input = step.input
+      const nullableString = (value: unknown) => value === null || typeof value === 'string' && value.length <= 2000
+      if (step.id !== 'runtime:binding' || typeof input['runtime'] !== 'string' || !input['runtime']
+        || typeof input['prompt'] !== 'string' || !input['prompt']
+        || !nullableString(input['harness']) || !nullableString(input['model']) || !nullableString(input['provider'])
+        || input['semanticReview'] !== undefined && input['semanticReview'] !== 'disabled' && input['semanticReview'] !== 'required'
+        || input['additionalContentCorrections'] !== undefined && (!Number.isSafeInteger(input['additionalContentCorrections'])
+          || Number(input['additionalContentCorrections']) < 0 || Number(input['additionalContentCorrections']) > 3)
+        || input['fastProvider'] !== undefined && !nullableString(input['fastProvider'])
+        || step.requestVersion !== ((await this.heartbeat(proof)).steer?.length ?? 0) + 1) {
+        throw new ControlPlaneError(400, 'invalid runtime behavior binding')
+      }
+    }
     if (step.kind === 'runtime.checkpoint') {
       const state = step.input
       if (typeof state['last'] !== 'string' || !Number.isSafeInteger(state['count']) || Number(state['count']) < 0 || Number(state['count']) > 6
@@ -891,14 +905,26 @@ export class ControlPlaneService {
       const actionGap = businessActionDeliveryGap(session.request,
         await this.deps.actions.hasSuccessfulAction(work.id, message.envelope.requestVersion, sideEffects), artifacts.length > 0)
       if (actionGap) gaps.push(actionGap)
-      if (requiresReview(session.request, steps, this.deps.tools ?? TASK_TOOLS, artifacts)
-        || (await this.deps.work.children(work)).length) {
-        const hash = candidateHash({ body: message.body, requestVersion: message.envelope.requestVersion, artifacts })
-        const review = steps.findLast(step => step.kind === 'runtime.review' && step.requestVersion === message.envelope.requestVersion
-          && step.input['workId'] === work.id && step.input['candidateHash'] === hash)
+      const binding = steps.find(step => step.kind === 'runtime.binding')
+      const reviewMode = binding?.input['semanticReview']
+      if (binding && (binding.id !== 'runtime:binding' || binding.requestVersion > message.envelope.requestVersion)
+        || reviewMode !== undefined && reviewMode !== 'disabled' && reviewMode !== 'required') throw new Error('invalid runtime behavior binding')
+      // Preserve legacy acceptance rules for old workers. New workers pin the explicit mode;
+      // disabling a fallible evaluator never disables the native checks above or below.
+      const reviewRequired = reviewMode === 'required' || reviewMode === undefined
+        && (requiresReview(session.request, steps, this.deps.tools ?? TASK_TOOLS, artifacts) || (await this.deps.work.children(work)).length > 0)
+      const hash = candidateHash({ body: message.body, requestVersion: message.envelope.requestVersion, artifacts })
+      const review = steps.findLast(step => step.kind === 'runtime.review' && step.requestVersion === message.envelope.requestVersion
+        && step.input['workId'] === work.id && step.input['candidateHash'] === hash)
+      if (reviewRequired || review) {
         const checked = review?.output ? JSON.parse(review.output) : undefined
         if (!checked || checked.error || checked.workId !== work.id || checked.candidateHash !== hash
-          || checked.requestVersion !== message.envelope.requestVersion || !Array.isArray(checked.missing) || checked.missing.length) gaps.push('Complex candidate lacks an independent review for this request version and content')
+          || checked.requestVersion !== message.envelope.requestVersion || !Array.isArray(checked.missing)
+          || checked.missing.some((item: { priority?: string; blockedBy?: string }) => !item || item.priority !== 'optional' || item.blockedBy)
+          || checked.limitations !== undefined && (!Array.isArray(checked.limitations)
+            || checked.limitations.some((item: { requestQuote?: string | null }) => !item || item.requestQuote !== null))) {
+          gaps.push('Candidate lacks a valid required independent review for this request version and content')
+        }
       }
       validateCompletion(message.body, assessment, session.request, message.envelope.goalOutcome, gaps)
       if (message.envelope.goalOutcome.status === 'delegated' && (assessment?.status !== 'delegated'

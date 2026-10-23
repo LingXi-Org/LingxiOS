@@ -4,6 +4,7 @@ import { AgentRuntime } from '../src/runtime/runtime.js'
 import { ModelBudgetExceededError, ModelDriverError } from '../src/errors.js'
 import { snapshotEvidence } from '../src/context/evidence.js'
 import { checkCandidateContent } from '../src/outcome/content-check.js'
+import { candidateHash } from '../src/outcome/verification.js'
 import { createResponseEnvelope } from '../src/outcome/envelope.js'
 import type { HostPort } from '../src/host/port.js'
 import type { ModelDriver } from '../src/model/driver.js'
@@ -21,7 +22,9 @@ for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume'
     const messages: AssistantMessage[] = [], events: RunEvent[] = []
     const envelope = createResponseEnvelope('Verified portion.', { status: 'partial', verification: 'inconclusive', requestVersion: 1,
       gaps: ['Second part remains unavailable'] }, snapshotEvidence('w:evidence:1', []))
-    const host: HostPort = { ...durableProtocol(), claimWork: async () => null,
+    const host: HostPort = { ...durableProtocol(), verifyCandidate: async (_work,candidate) => ({
+      candidateHash: candidateHash(candidate),requestVersion: candidate.requestVersion,records: ['provider','budget'].includes(mode)
+        ? [{ checker: 'resource',status: 'failed',evidence: { reason: 'Second part needs repair' } }] : [] }), claimWork: async () => null,
       heartbeat: async () => ({ ok: true, ...(mode === 'revised' ? { steer: [{ id: 'r', text: 'Changed task.', createdAt: 'now' }] } : {}) }),
       loadContext: async () => ({ work, persona: { name: 'A', role: '', instructions: '' }, capabilities: [],
         messages: [{ ref: 'm', authorId: 'u', authorName: 'User', authorKind: 'human', body: mode === 'request_blocked'
@@ -49,7 +52,7 @@ for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume'
         return { text: '', output: [], finalCandidate: JSON.stringify({ body: mode === 'invalid_citation' ? '[Forged](#cite-S99)' : 'Verified portion.',
           status: 'partial', gaps: ['Second part remains unavailable'], checks: [{ requirement: 'Answer both parts.', status: 'unknown', basis: 'Only the first part was answered.' }] }), usage }
       } }
-    await new AgentRuntime(host, model, { execute: unexpected }).runWork(work)
+    await new AgentRuntime(host, model, { execute: unexpected },{ semanticReview: 'required' }).runWork(work)
     if (mode === 'capability_overview') {
       assert.equal(messages.length, 1)
       assert.equal(messages[0]!.body, '我可以帮助你学习。专业助手需要先加入项目。')
@@ -67,7 +70,8 @@ for (const mode of ['provider', 'budget', 'format', 'invalid_citation', 'resume'
       assert.equal(messages[0]!.envelope.goalOutcome.status, 'partial')
       assert.equal(messages[0]!.envelope.goalOutcome.verification, 'inconclusive')
       assert.match(JSON.stringify(messages[0]!.envelope.goalOutcome.gaps), mode === 'provider' ? /HTTP 400/ : ['review','declared_partial','request_blocked'].includes(mode) ? /remains unavailable/ : /budget exhausted/)
-      if (['declared_partial','request_blocked'].includes(mode)) assert.equal(turns, 1)
+      if (mode === 'request_blocked') assert.equal(turns, 1)
+      if (mode === 'declared_partial') assert.equal(turns, 3)
       assert.doesNotMatch(JSON.stringify(messages), /private credential|候选答复仍存在/)
     }
   })

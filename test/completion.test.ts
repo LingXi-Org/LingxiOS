@@ -86,3 +86,54 @@ it('requires settled actions and a reviewed committed response, and binds delega
     assert.deepEqual(workStore.inspect('w')?.goalOutcome, outcome)
   }
 })
+
+
+function semanticFixture() {
+  const workStore = new MemoryWorkStore(),steps = new MemoryStepStore(),actions = new MemoryActionLedger()
+  let committed: AssistantMessage | undefined
+  const sessions = new MemorySessionStore()
+  const service = new ControlPlaneService({ modelBudgets: new MemoryModelBudgetStore(),steps,work: workStore,actions,sessions,events: new MemoryEventStore(),
+    contextProvider: { loadContext: async () => { throw new Error('unexpected') } },capabilityResolver: { resolve: async () => [] },
+    actionExecutor: { prepare: async () => {},execute: async () => { throw new Error('unexpected') } },
+    delivery: { onEvent: async () => {},deliverMessage: async (_work,message) => { committed = message } } })
+  return { service,steps,actions,committed: () => committed }
+}
+const bindingInput = (mode: 'disabled' | 'required') => ({ runtime: 'synthetic',harness: null,prompt: 'synthetic',model: null,provider: null,semanticReview: mode })
+for (const mode of ['disabled','required','optional','limitation','legacy'] as const) it(`honors explicit semantic review binding at final commit: ${mode}`,async () => {
+  const f = semanticFixture(),text = 'Explain gravity and provide an example.'
+  await f.service.enqueue({ id: 'w',tenantId: 't',principalId: 'u',agentId: 'a',sessionId: 's',triggerRef: 'm',kind: 'turn',lane: 'interactive',meta: { text } })
+  const work = (await f.service.claim('worker'))!,evidence = snapshotEvidence('w:evidence:1',[])
+  await f.service.saveSession(work,{ key: '["t","a","s",null]',tenantId: 't',agentId: 'a',sessionId: 's',history: [],appliedWorkIds: ['w'],revision: 0,compactionEpoch: 0,
+    request: { version: 1,workId: 'w',tenantId: 't',sessionId: 's',authorId: 'u',sourceRef: 'm',originalText: text,revisions: [],attachments: [],evidence } })
+  const input: Record<string,unknown> = bindingInput(mode === 'disabled' ? 'disabled' : 'required')
+  if (mode === 'legacy') delete input['semanticReview']
+  await f.service.saveStep(work,{ id: 'runtime:binding',kind: 'runtime.binding',requestVersion: 1,input,output: '{}',artifacts: [] })
+  const body = 'Gravity attracts masses; a falling ball is an example.'
+  const hash = candidateHash({ body,requestVersion: 1,artifacts: [] })
+  if (mode === 'optional' || mode === 'limitation') await f.service.saveStep(work,{ id: 'review',kind: 'runtime.review',requestVersion: 1,
+    input: { workId: work.id,candidateHash: hash },output: JSON.stringify({ workId: work.id,candidateHash: hash,requestVersion: 1,
+      missing: mode === 'optional' ? [{ quote: text,reason: 'Optional extra illustration.',priority: 'optional' }] : [],
+      limitations: mode === 'limitation' ? [{ quote: body,requestQuote: text,reason: 'Due result is unavailable.',priority: 'optional' }] : [] }),artifacts: [] })
+  const message: AssistantMessage = { version: 2,runId: 'w',agentId: 'a',sessionId: 's',body,
+    envelope: createResponseEnvelope(body,{ status: 'satisfied',verification: 'not_run',requestVersion: 1 },evidence) }
+  if (mode === 'disabled' || mode === 'optional') { await f.service.commitResult(work,message); assert.equal(f.committed()?.body,body) }
+  else await assert.rejects(f.service.commitResult(work,message),/evidence or artifact records/)
+})
+
+it('rejects forged or mutated semantic review bindings and keeps native action obligations',async () => {
+  const f = semanticFixture(),text = 'Send the message.'
+  await f.service.enqueue({ id: 'w',tenantId: 't',principalId: 'u',agentId: 'a',sessionId: 's',triggerRef: 'm',kind: 'turn',lane: 'interactive',meta: { text,deliveryMode: 'action' } })
+  const work = (await f.service.claim('worker'))!,evidence = snapshotEvidence('w:evidence:1',[])
+  await f.service.saveSession(work,{ key: '["t","a","s",null]',tenantId: 't',agentId: 'a',sessionId: 's',history: [],appliedWorkIds: ['w'],revision: 0,compactionEpoch: 0,
+    request: { version: 1,workId: 'w',tenantId: 't',sessionId: 's',authorId: 'u',sourceRef: 'm',originalText: text,deliveryMode: 'action',revisions: [],attachments: [],evidence } })
+  for (const step of [
+    { id: 'runtime:binding',kind: 'runtime.binding',requestVersion: 1,input: { semanticReview: 'disabled' },output: '{}',artifacts: [] },
+    { id: 'replacement-binding',kind: 'runtime.binding',requestVersion: 1,input: bindingInput('disabled'),output: '{}',artifacts: [] },
+  ]) await assert.rejects(f.service.saveStep(work,step),/invalid runtime behavior binding/)
+  await f.service.saveStep(work,{ id: 'runtime:binding',kind: 'runtime.binding',requestVersion: 1,input: bindingInput('disabled'),output: '{}',artifacts: [] })
+  await assert.rejects(f.service.saveStep(work,{ id: 'runtime:binding',kind: 'runtime.binding',requestVersion: 1,input: bindingInput('required'),output: '{}',artifacts: [] }),/step identity changed/)
+  const body = 'Sent.'
+  await assert.rejects(f.service.commitResult(work,{ version: 2,runId: 'w',agentId: 'a',sessionId: 's',body,
+    envelope: createResponseEnvelope(body,{ status: 'satisfied',verification: 'not_run',requestVersion: 1 },evidence) }),/evidence or artifact records/)
+  assert.equal(f.committed(),undefined)
+})

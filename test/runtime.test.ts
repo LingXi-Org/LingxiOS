@@ -40,7 +40,7 @@ it('grounds a follow-up content review in the conversation supplied to generatio
       assert.ok(!context.includes(body))
       return { model: 'test', usage, value: { missing: [] } }
     }, run: async () => ({ text: body, usage, output: [{ role: 'assistant', content: body }] }) }
-  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected') } }).runWork(work)
+  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected') } }, { semanticReview: 'required' }).runWork(work)
   assert.equal(reviewed, true)
   assert.equal(outcome, 'satisfied')
 })
@@ -261,7 +261,7 @@ for (const format of ['object', 'plain text'] as const) it(`preserves ${format} 
   assert.equal(committed, true)
 })
 
-it('continues an actionable partial candidate before committing its result', async () => {
+it('preserves a directly returned partial candidate without inventing execution', async () => {
   const work: TurnContext['work'] = { id: 'w', tenantId: 't', agentId: 'a', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', fence: 1, homeEpoch: 1, leaseToken: 'token' }
   let turns = 0, executed = 0, body = ''
   const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),
@@ -269,7 +269,7 @@ it('continues an actionable partial candidate before committing its result', asy
       messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Create a file.', createdAt: 'now' }] }),
     executeAction: async () => ({ ok: true, value: { requestVersion: 1, pending: [], truncated: false } }),
     loadSession: async () => null, saveSession: async () => {}, emitEvent: async () => {},
-    commitResult: async (_work, message) => { assert.equal(executed, 1); body = message.body },
+    commitResult: async (_work, message) => { assert.equal(executed, 0); assert.equal(message.envelope.goalOutcome.status, 'partial'); body = message.body },
     completeWork: async () => {}, yieldWork: async () => {} }
   const unexpected = async () => { throw new Error('unexpected auxiliary call') }
   const model: ModelDriver = { structured: unexpected, compact: unexpected, run: async request => {
@@ -287,8 +287,8 @@ it('continues an actionable partial candidate before committing its result', asy
     executed++
     return { executionId: 'execution', stdout: '', stderr: '', result: null, artifacts: [], directives: [], truncated: false, durationMs: 1 }
   } }).runWork(work)
-  assert.equal(turns, 3)
-  assert.equal(body, 'File created.')
+  assert.equal(turns, 1)
+  assert.equal(body, 'I will create it.')
 })
 
 // A public contribution must commit before another member can work; continuing
@@ -326,7 +326,7 @@ for (const assessmentStatus of ['partial', 'satisfied'] as const) it(`commits on
       return text === '@b Please independently verify the calculation.' && context.work.conversation?.audience.participantIds.includes('b') === true
     }
   }()
-  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected kernel') } }, { policy }).runWork(work)
+  await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected kernel') } }, { policy, semanticReview: 'required' }).runWork(work)
   assert.equal(turns, 1)
   assert.equal(reviews, 1, 'one joint review retains the pending peer verification gap')
   assert.equal(committed?.body, '@b Please independently verify the calculation.')
@@ -436,7 +436,7 @@ it('reviews complex candidates against original requirements, bounds corrections
           : [{ quote: mode === 'invalid' ? 'Invented requirement' : 'include costs', reason: 'Costs are missing' }] }, model: 'fixture', usage }
       }, compact: async () => { throw new Error('unexpected compaction') },
     }
-    await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected kernel') } }).runWork(work)
+    await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected kernel') } }, { semanticReview: 'required' }).runWork(work)
     assert.equal(completion?.status, 'completed')
     assert.deepEqual(deltas, [body])
     assert.equal(reviews, mode === 'exhausted' ? 3 : 2)
@@ -508,7 +508,7 @@ it('preserves history across prompt upgrades and exposes assigned action receipt
     return { executionId: 'cell', stdout: '', stderr: '', result: null, durationMs: 1, truncated: false, artifacts: [], directives: [] }
   } }
   await new AgentRuntime(host, model, kernels).runWork(context.work)
-  assert.deepEqual(completion, { status: 'completed', goalOutcome: { status: 'partial', verification: 'inconclusive', requestVersion: 1, gaps: ['Durable business action reconciliation was unavailable', 'Content check was unavailable or returned invalid findings'] } })
+  assert.deepEqual(completion, { status: 'completed', goalOutcome: { status: 'partial', verification: 'inconclusive', requestVersion: 1, gaps: ['Durable business action reconciliation was unavailable'] } })
   assert.equal(calls, 2)
   session.history.push({ type: 'function_call', callId: 'interrupted', name: 'ipython', arguments: '{"code":"host.files.save()"}' })
   await new AgentRuntime(host, model, kernels).runWork({ ...context.work, fence: 2 })
@@ -587,10 +587,11 @@ it('discards an unexecuted model candidate when steering arrives during generati
     request: { version: 1, workId: 'w', tenantId: 't', sessionId: 's', authorId: 'u', sourceRef: 'm', evidence: snapshotEvidence('w:evidence:1', []), attachments: [], originalText: 'Original', revisions: [],
       contract: createTaskContract('Original', 1, { deliverables: ['OBSOLETE_DELIVERABLE'], constraints: [], actions: [], acceptance: ['Original condition'] }) },
   }
-  const host: HostPort = { ...durableProtocol(),
+  const protocol = durableProtocol(), steps: import('../src/control-plane/steps.js').ExecutionStep[] = []
+  const host: HostPort = { ...protocol, saveStep: async (owner,step) => { await protocol.saveStep(owner,step); steps.push(structuredClone(step)) },
     claimWork: async () => null,
     heartbeat: async () => ({ ok: true, steer: generated ? [{ id: 'revision', text: 'Use the new requirement', createdAt: 'now' }] : [] }),
-    loadContext: async () => ({ work, persona: { name: 'A', role: 'assistant', instructions: '' }, capabilities: [], messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Original', createdAt: 'now' }] }),
+    loadContext: async () => ({ work, executionSteps: steps, persona: { name: 'A', role: 'assistant', instructions: '' }, capabilities: [], messages: [{ ref: 'm', authorId: 'u', authorName: 'U', authorKind: 'human', body: 'Original', createdAt: 'now' }] }),
     executeAction: async (_work, action) => { assert.equal(action.action, 'task.inspect'); return { ok: true, value: { requestVersion: 2, pending: [], truncated: false } } }, emitEvent: async () => {},
     loadSession: async () => saved ? structuredClone(saved) : null, saveSession: async (_work, session) => { saved = structuredClone(session) },
     commitResult: async (_work, message) => { committed = message.body }, completeWork: async () => {}, yieldWork: async () => {},

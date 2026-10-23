@@ -15,7 +15,7 @@ const current = { quote: 'Prepare a complete draft.', reason: 'The draft is inco
 const future = { quote: humanQuote, reason: 'Publication has not occurred.' }
 const limitation = { quote: 'Publication awaits your confirmation.', requestQuote: humanQuote, reason: 'Publication is pending.' }
 const proof = { id: 'limitation:0', quote: humanQuote, reason: 'The human reserved publication.' }
-const publicLimitation = { quote: limitation.quote, reason: limitation.reason }
+const publicLimitation = limitation
 const unexpected = async (): Promise<never> => { throw new Error('unexpected model call') }
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 function fixture(responses: unknown[]) {
