@@ -20,7 +20,7 @@ export class CorrectionBudget {
   private count = 0
   private protocolRepairs = 0
   private observations = new Set<string>()
-  constructor(checkpoint?: ProgressCheckpoint) {
+  constructor(checkpoint?: ProgressCheckpoint, private readonly additionalContentCorrections = 0) {
     if (checkpoint) { this.last = checkpoint.last; this.count = checkpoint.count; this.observations = new Set(checkpoint.observations); this.protocolRepairs = checkpoint.protocolRepairs ?? 0 }
   }
   snapshot(): ProgressCheckpoint { return { last: this.last, count: this.count, observations: [...this.observations], protocolRepairs: this.protocolRepairs } }
@@ -32,7 +32,7 @@ export class CorrectionBudget {
     const key = createHash('sha256').update(category + ':' + failure).digest('hex')
     this.count = Math.min(6, this.count + 1)
     this.last = key
-    return this.count < 3
+    return this.count < 3 + (category === 'content_acceptance' ? this.additionalContentCorrections : 0)
   }
   observe(value: unknown): void {
     const key = createHash('sha256').update(JSON.stringify(stableObservation(value))).digest('hex')
@@ -42,7 +42,10 @@ export class CorrectionBudget {
     this.last = ''; this.count = 0
   }
   get rediagnose(): boolean { return this.count >= 2 }
-  has(category: CorrectionCategory): boolean { return this.count < 2 && (!category.endsWith('protocol') || this.protocolRepairs < 2) }
+  has(category: CorrectionCategory): boolean {
+    return this.count < 2 + (category === 'content_acceptance' ? this.additionalContentCorrections : 0)
+      && (!category.endsWith('protocol') || this.protocolRepairs < 2)
+  }
 }
 
 /** Only resource versions, artifact content and action state transitions count as progress. */

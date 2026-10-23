@@ -20,3 +20,23 @@ test('reworded errors and timestamps do not reset the bound; new resource versio
   budget.observe({ resource: 'document:1', revision: 'v2' })
   assert.equal(budget.snapshot().count, 0)
 })
+// Failure inventory: docs/evidence/loop-331-content-budget/FAILURE-MODEL.md.
+test('additional content corrections preserve protocol/kernel limits and spent checkpoints', () => {
+  for (const extra of [0,1,2,3]) {
+    let budget = new CorrectionBudget(undefined,extra)
+    assert.equal(budget.consume('tool_protocol'),true)
+    assert.equal(budget.consume('response_protocol'),true)
+    for (let n = 0; n <= extra; n++) {
+      budget = new CorrectionBudget(budget.snapshot(),extra)
+      assert.equal(budget.has('content_acceptance'),n < extra)
+      assert.equal(budget.consume('content_acceptance'),n < extra)
+      assert.ok(budget.snapshot().count <= 6)
+    }
+    budget.observe({ revision: 'new' })
+    assert.equal(budget.consume('tool_protocol'),false,'new progress cannot refill lifetime protocol repairs')
+    assert.equal(budget.consume('kernel_error'),true)
+    assert.equal(budget.consume('kernel_error'),true)
+    assert.equal(budget.has('kernel_error'),false)
+    assert.equal(budget.consume('kernel_error'),false,'content configuration cannot add tool retries')
+  }
+})
