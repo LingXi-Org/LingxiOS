@@ -76,7 +76,7 @@ export interface ApprovedModelFallback {
 
 /** One provider attempt boundary shared by generation, reviews, compaction and embeddings. */
 export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'recordModelUsage'>,
-  model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'protocolTokens' | 'countTokens' | 'configurationFingerprint' | 'recovery' | 'profile' | 'contextWindowTokens'>, work: WorkItem,
+  model: Pick<ModelDriver, 'modelId' | 'maxOutputTokens' | 'maxThinkingTokens' | 'toolDefinitionTokens' | 'protocolTokens' | 'countTokens' | 'generationInputTokens' | 'configurationFingerprint' | 'recovery' | 'profile' | 'contextWindowTokens'>, work: WorkItem,
   limits: Required<RootModelBudgetOptions>,
   emit?: (event: Omit<RunEvent, 'runId' | 'seq'>) => Promise<unknown>, namespace = 'model', memoryAdmission?: () => number | boolean | undefined, requestVersion?: () => number | undefined) {
   let sequence = 0, calls = 0, tokens = 0, cost = 0
@@ -247,6 +247,7 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
     ...(model.configurationFingerprint === undefined ? {} : { configurationFingerprint: model.configurationFingerprint }),
     profile: modelProfile(model),
     ...(model.countTokens ? { countTokens: model.countTokens.bind(model) } : {}),
+    ...(model.generationInputTokens ? { generationInputTokens: model.generationInputTokens.bind(model) } : {}),
     ...(model.contextWindowTokens === undefined ? {} : { contextWindowTokens: model.contextWindowTokens }),
     ...(model.maxOutputTokens === undefined ? {} : { maxOutputTokens: model.maxOutputTokens }),
     ...(model.maxThinkingTokens === undefined ? {} : { maxThinkingTokens: model.maxThinkingTokens }),
