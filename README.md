@@ -68,6 +68,10 @@ await control.stop()
 
 Creating a control plane never claims work. A Worker receives the model, Kernel, runtime policy, and optional native processors. Web/API processes expose authenticated ingress and control operations; Worker processes alone execute tasks.
 
+Trusted Worker configuration may set `additionalContentCorrections: 3` (an integer from 0 through 3; default 0) to give content acceptance more room within the shared continuation counter. For example, two protocol corrections can otherwise leave no continuation for a reviewed missing answer; adding three permits up to three further content corrections without new progress. Tool-error and lifetime protocol limits remain unchanged. Only host configuration may choose this value, never request metadata or model output. Nonzero values are pinned in the runtime behavior binding even without a harness, so a bound run cannot resume under a different allowance. Older unbound runs with execution checkpoints must resume with the default allowance; enabling extras applies to new runs and does not refill historical executions.
+
+This is not a five-call limit for an entire run: genuine new observations retain their existing reset behavior, and each correction may require generation, content-review, and deferral-review calls. All attempts still spend the existing root call, token, cost, and cumulative execution-time budgets. Cancellation, current authorization, explicit blockers, and unknown-effect reconciliation remain effective; extra content corrections do not authorize replaying uncertain side effects.
+
 See [reasoning effort and optional auxiliary streaming](docs/reasoning-effort-contract.md) for explicit provider parameters, compatible defaults, and deterministic HTTP timing tests.
 
 ## Native tools and recovery

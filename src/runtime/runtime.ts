@@ -105,6 +105,8 @@ export interface AgentRuntimeOptions {
   recordModelPayloads?: boolean
   modelTrace?: ModelTracePolicy
   rootModelBudget?: RootModelBudgetOptions
+  /** Trusted host allowance, 0–3 (default 0), for content acceptance only; root budgets still apply. */
+  additionalContentCorrections?: number
 }
 
 export type { ModelCallObservation, ModelCallObserver, RootModelBudgetOptions } from '../model/execution.js'
@@ -145,6 +147,7 @@ export class AgentRuntime {
   private readonly recordModelPayloads: boolean
   private readonly modelTrace: Required<Pick<ModelTracePolicy, 'sampleRate' | 'retentionDays'>> & Pick<ModelTracePolicy, 'redact'>
   private readonly rootModelBudget: Required<RootModelBudgetOptions>
+  private readonly additionalContentCorrections: number
   private readonly processors = new Map<string, WorkProcessor | 'conversation'>()
   private readonly eventSeqByRun = new Map<string, number>()
   private readonly eventTails = new Map<string, Promise<void>>()
@@ -196,6 +199,10 @@ export class AgentRuntime {
     private readonly kernels: KernelExecutor,
     options: AgentRuntimeOptions = {},
   ) {
+    this.additionalContentCorrections = options.additionalContentCorrections === undefined ? 0 : options.additionalContentCorrections
+    if (!Number.isSafeInteger(this.additionalContentCorrections) || this.additionalContentCorrections < 0 || this.additionalContentCorrections > 3) {
+      throw new Error('additionalContentCorrections must be a safe integer between 0 and 3')
+    }
     this.fastModel = options.fastModel
     this.fallbackModel = options.fallbackModel
     this.metrics = options.metrics
@@ -422,18 +429,25 @@ export class AgentRuntime {
       session.request.revisions.push(steer)
       delete session.request.contract
     }
-    if (context.harness) {
-      const binding = { runtime: releaseVersions.runtime, harness: context.harness.hash, prompt: this.promptContractVersion,
+    const priorBinding = context.executionSteps?.find(step => step.kind === 'runtime.binding')
+    if (context.harness || this.additionalContentCorrections || priorBinding) {
+      // An old unbound execution used the default allowance. A new worker must
+      // not grant extra corrections retroactively, even without a harness.
+      if (!priorBinding && this.additionalContentCorrections && (context.executionCheckpoint
+        || context.executionSteps?.some(step => step.kind === 'runtime.checkpoint'))) {
+        throw new Error('unbound execution must resume with the default content correction allowance')
+      }
+      const binding = { runtime: releaseVersions.runtime, harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
+        ...(this.additionalContentCorrections ? { additionalContentCorrections: this.additionalContentCorrections } : {}),
         ...(fastModel ? { fastProvider: fastModel.configurationFingerprint ?? null } : {}) }
-      const prior = context.executionSteps?.find(step => step.kind === 'runtime.binding')
-      if (prior && canonicalJson(prior.input) !== canonicalJson(binding)) throw new Error('run behavior version changed; restore the pinned worker configuration')
-      if (!prior) await this.hostFor(work).saveStep(work, { id: 'runtime:binding', kind: 'runtime.binding',
+      if (priorBinding && canonicalJson(priorBinding.input) !== canonicalJson(binding)) throw new Error('run behavior version changed; restore the pinned worker configuration')
+      if (!priorBinding) await this.hostFor(work).saveStep(work, { id: 'runtime:binding', kind: 'runtime.binding',
         requestVersion: (session.request?.revisions.length ?? 0) + 1, input: binding, output: '{}', artifacts: [] })
     }
     sessionRef.session = session
     await this.hostFor(work).saveSession(work, session)
-    const budget = new CorrectionBudget(context.executionCheckpoint)
+    const budget = new CorrectionBudget(context.executionCheckpoint,this.additionalContentCorrections)
     let nextStreamPartIndex = 0
     let streamedText = ''
     let finalText = ''
