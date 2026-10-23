@@ -1,5 +1,6 @@
 import type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
 import { publicPurposeInstructions, PublicPurposeParser, publicPurposeError } from './public-purpose.js'
+import { ToolCompanionBoundary, completeCompanionTurn, companionHasJsonFraming } from './tool-companion.js'
 /**
  * OpenAI-compatible chat-completions driver.
  *
@@ -119,6 +120,7 @@ interface StreamAccumulator {
   finishReasons: string[]
   model?: string
   usage?: ProviderUsage
+  malformedToolCalls?: boolean
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -243,6 +245,7 @@ export class OpenAIChatDriver implements ModelDriver {
       capabilities: jsonObjectWithTools === false ? { ...legacyCapabilities, jsonObjectWithTools: false } : legacyCapabilities,
       previewFormat: this.previewFormat,
       ...(this.publicTextProtocol?{publicTextProtocol:this.publicTextProtocol}:{}),
+      ...(this.publicTextProtocol && jsonObjectWithTools === false ? { toolCompanionPolicy: 'unpublished-native-prose-v1' } : {}),
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
     })).digest('hex')
@@ -373,7 +376,7 @@ export class OpenAIChatDriver implements ModelDriver {
             finish_reason?: string | null
             delta?: {
               content?: string | null
-              tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }>
+              tool_calls?: Array<{ index?: number; id?: string; type?: string; function?: { name?: string; arguments?: string } }>
             }
           }>
         }
@@ -386,6 +389,9 @@ export class OpenAIChatDriver implements ModelDriver {
         if (chunk.usage) accumulator.usage = chunk.usage
         const choice = chunk.choices?.[0]
         if (!choice) continue
+        if (chunk.choices!.length > 1 || accumulator.finishReasons.length && (choice.delta?.content || choice.delta?.tool_calls?.length)) {
+          accumulator.malformedToolCalls = true
+        }
         if (choice.finish_reason) accumulator.finishReasons.push(choice.finish_reason)
         const content = choice.delta?.content
         if (typeof content === 'string' && content.length > 0) {
@@ -394,14 +400,26 @@ export class OpenAIChatDriver implements ModelDriver {
         }
         for (const toolCall of choice.delta?.tool_calls ?? []) {
           const index = toolCall.index ?? 0
+          if (!Number.isSafeInteger(index) || index < 0 || toolCall.index !== undefined && !Number.isSafeInteger(toolCall.index)
+            || toolCall.type !== undefined && toolCall.type !== 'function'
+            || toolCall.function !== undefined && (!toolCall.function || typeof toolCall.function !== 'object' || Array.isArray(toolCall.function))) accumulator.malformedToolCalls = true
           let entry = accumulator.toolCalls.get(index)
           if (!entry) {
             entry = { id: '', name: '', arguments: '' }
             accumulator.toolCalls.set(index, entry)
           }
-          if (toolCall.id) entry.id = toolCall.id
-          if (toolCall.function?.name) entry.name += toolCall.function.name
-          if (toolCall.function?.arguments) entry.arguments += toolCall.function.arguments
+          if (toolCall.id !== undefined) {
+            if (typeof toolCall.id !== 'string' || entry.id && entry.id !== toolCall.id) accumulator.malformedToolCalls = true
+            if (typeof toolCall.id === 'string') entry.id = toolCall.id
+          }
+          if (toolCall.function?.name !== undefined) {
+            if (typeof toolCall.function.name !== 'string') accumulator.malformedToolCalls = true
+            else entry.name += toolCall.function.name
+          }
+          if (toolCall.function?.arguments !== undefined) {
+            if (typeof toolCall.function.arguments !== 'string') accumulator.malformedToolCalls = true
+            else entry.arguments += toolCall.function.arguments
+          }
         }
       }
     } catch (error) {
@@ -442,6 +460,7 @@ export class OpenAIChatDriver implements ModelDriver {
     if (tools.length && !this.profile.toolCalls) throw new Error('selected model does not support tool calls')
     if(this.publicTextProtocol&&!this.profile.jsonObject)throw new Error('public text protocol requires JSON object support')
     const purposeParser=this.publicTextProtocol?new PublicPurposeParser(this.publicTextProtocol):undefined
+    const companion = purposeParser && tools.length && this.profile.jsonObjectWithTools === false ? new ToolCompanionBoundary() : undefined
     const response = await this.request({
       model: this.modelId,
       messages: toWireMessages(request.instructions+(purposeParser?'\n\n'+publicPurposeInstructions(this.publicTextProtocol):''), request.items),
@@ -452,6 +471,7 @@ export class OpenAIChatDriver implements ModelDriver {
     }, request.signal)
     const accumulator = await this.consumeStream(response, purposeParser?async chunk=>{
       request.signal?.throwIfAborted()
+      if (companion) { const framed = companion.push(chunk); if (framed === null) return; chunk = framed }
       for(const part of purposeParser.push(chunk)){
         request.signal?.throwIfAborted()
         await request.onTextDelta?.(part.text,{purpose:part.purpose})
@@ -459,13 +479,25 @@ export class OpenAIChatDriver implements ModelDriver {
       }
     }:request.onTextDelta)
     const diagnostics = { finishReasons: accumulator.finishReasons, usage: this.usageOf(accumulator) }
+    if (request.signal?.aborted) throw new ModelDriverError('model request cancelled', {
+      ...diagnostics, kind: 'provider', category: 'cancelled',
+    }, { cause: request.signal.reason })
     if (!accumulator.finishReasons.length || accumulator.finishReasons.some(reason => reason !== 'stop' && reason !== 'tool_calls')) {
       throw new ModelDriverError('model stream did not finish normally', { ...diagnostics, kind: 'provider' })
     }
     const output: ModelItem[] = []
     let text = accumulator.text
     let outcomeDeclaration:OutcomeDeclaration|undefined
-    if(purposeParser){
+    if (companion?.unpublished) {
+      if (!completeCompanionTurn({ text, calls: accumulator.toolCalls, finishReasons: accumulator.finishReasons,
+        ...(accumulator.malformedToolCalls ? { malformed: true } : {}) }, tools.map(tool => tool.function.name), this.profile.parallelTools)) {
+        const publicTextFailure = !accumulator.toolCalls.size || companionHasJsonFraming(text)
+        throw new ModelDriverError(publicTextFailure ? 'invalid public text protocol' : 'invalid native tool companion turn', {
+          ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: publicTextFailure ? 'public_text_invalid' : 'tool_identity_invalid',
+        })
+      }
+      text = ''
+    } else if(purposeParser){
       try {
         if(text.length){
           purposeParser.finish()
@@ -503,7 +535,8 @@ export class OpenAIChatDriver implements ModelDriver {
     }
     const result: ModelTurnResult = { output, text, usage: diagnostics.usage, ...(outcomeDeclaration ? { outcomeDeclaration } : {}) }
     if (accumulator.model !== undefined) result.model = accumulator.model
-    if (accumulator.finishReasons.length > 0) result.diagnostics = { finishReasons: accumulator.finishReasons }
+    if (accumulator.finishReasons.length > 0) result.diagnostics = { finishReasons: accumulator.finishReasons,
+      ...(companion?.unpublished ? { publicText: 'unpublished_tool_companion' } : {}) }
     return result
   }
 

@@ -142,7 +142,7 @@ it('accepts a first native tool turn with absent content and split arguments in 
 })
 
 for (const jsonObjectWithTools of [true, false]) for (const content of [
-  'Unframed public progress.',
+  ...(jsonObjectWithTools ? ['Unframed public progress.'] : []),
   '{"commentary":"Checking","answer":""} trailing',
   '{"commentary":"Checking","answer":"',
 ]) it(`rejects malformed public content with a native call (combined JSON mode ${jsonObjectWithTools}): ${JSON.stringify(content)}`, async () => {
