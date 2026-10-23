@@ -57,7 +57,8 @@ for (const backend of ['memory', 'postgres'] as const) it(`${backend}: revoked e
     await client.completeWork(old, { status: 'completed', goalOutcome: { status: 'partial', verification: 'not_run', requestVersion: 1 } })
     await enqueue('next')
     const next = (await client.claimWork())!
-    assert.deepEqual(await client.loadSession(next, key), session, 'authorized history must survive a new turn')
+    assert.deepEqual(await client.loadSession(next, key), { ...session,
+      historyBoundary: { workId: 'old', requestVersion: 1 } }, 'authorized history must survive a new turn')
     revoked = true
     workDenied = true
     await assert.rejects(client.loadSession(next, key))
@@ -71,7 +72,8 @@ for (const backend of ['memory', 'postgres'] as const) it(`${backend}: revoked e
     assert.equal(context.snapshotVersion?.requestVersion, 1)
     const fresh = { ...cleared!, request: snapshotRequest(context), appliedWorkIds: [next.id] }
     await client.saveSession(next, fresh)
-    assert.deepEqual(await client.loadSession(next, key), fresh, 'fresh request must save with the original revision')
+    assert.deepEqual(await client.loadSession(next, key), { ...fresh,
+      historyBoundary: { workId: 'next', requestVersion: 1 } }, 'fresh request must save with the original revision')
     await client.completeWork(next, { status: 'completed', goalOutcome: { status: 'partial', verification: 'not_run', requestVersion: 1 } })
 
     revoked = false
