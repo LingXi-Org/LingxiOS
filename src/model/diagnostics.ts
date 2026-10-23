@@ -22,6 +22,7 @@ function finiteNonnegative(value: unknown): value is number {
  */
 export function publicModelDiagnostics(value: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {}
+  if (field(value, 'publicText') === 'unpublished_tool_companion') out['publicText'] = 'unpublished_tool_companion'
   for (const [key, allowed] of [['kind', kinds], ['category', categories], ['protocolCode', protocolCodes]] as const) {
     const candidate = field(value, key)
     if (typeof candidate === 'string' && allowed.has(candidate)) out[key] = candidate
