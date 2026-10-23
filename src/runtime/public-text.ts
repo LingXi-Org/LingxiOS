@@ -1,3 +1,4 @@
+import type { PublicTextProtocol } from '../model/outcome-declaration.js'
 import type { PublicTextEndReason, PublicTextIdentity, PublicTextSafetyInput, PublicTextSafetyDecision } from '../protocol/public-text.js'
 import type { RunEvent } from '../protocol/types.js'
 import { ModelDriverError } from '../errors.js'
@@ -192,7 +193,7 @@ export class PublicTextAttemptWriter {
   constructor(private readonly identity:PublicTextIdentity,
     private readonly emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>,private readonly signal:AbortSignal,
     private readonly assess:((input:Readonly<PublicTextSafetyInput>)=>PublicTextSafetyDecision)|undefined,
-    private readonly protocol:'purpose-json-v1'|undefined){}
+    private readonly protocol:PublicTextProtocol|undefined){}
   get partId(){return this.writers.get(this.protocol?'answer':'legacy')?.partId}
   async push(text:string,metadata?:{purpose:import('../protocol/public-text.js').PublicTextPurpose}){
     const key=this.protocol?metadata?.purpose:'legacy'

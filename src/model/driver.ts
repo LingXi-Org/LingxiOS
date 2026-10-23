@@ -1,3 +1,5 @@
+import type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
+export type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
 import type { PublicTextPurpose } from '../protocol/public-text.js'
 /**
  * Model driver port. The runtime speaks only this interface; concrete
@@ -18,6 +20,8 @@ export interface ModelTurnResult {
   callId?: string
   /** Optional explicit structured self-assessment from a driver; plain answers use text. */
   finalCandidate?: string
+  /** Explicit purpose-json-v2 final declaration; not an independent verification. */
+  outcomeDeclaration?: OutcomeDeclaration
   /** Items to append to session history (assistant text and/or tool calls). */
   output: ModelItem[]
   /** Full assistant text of this turn ('' when the turn is a tool call). */
@@ -90,7 +94,7 @@ export interface ModelDriver {
   /** Only declare an independent user channel, or a JSON candidate with a top-level body string. */
   readonly previewFormat?: 'candidate-json' | 'user-text'
   /** Explicit public text generation protocol; absent means unknown purpose. */
-  readonly publicTextProtocol?: 'purpose-json-v1' | undefined
+  readonly publicTextProtocol?: PublicTextProtocol | undefined
   readonly profile?: ModelProfile
   /** A provider tokenizer or calibrated upper bound; never a fixed bytes/constant guess. */
   countTokens?(text: string): number

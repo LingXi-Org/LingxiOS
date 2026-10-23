@@ -585,3 +585,61 @@ it('reserves a selected scope before the paid review so interruption cannot purc
   assert.deepEqual({ turns,reviews },{ turns: 2,reviews: 1 })
   assert.equal(f.result().committed?.envelope.goalOutcome.status,'partial')
 })
+
+// Same-generation v2 outcome declaration; no second semantic judge.
+for (const status of ['satisfied','partial','blocked'] as const) it(`honors an explicit same-generation ${status} declaration without review or rewriting`,async()=>{
+  const f=fixture('Perform the requested work.');let turns=0,reviews=0
+  const model:ModelDriver={publicTextProtocol:'purpose-json-v2' as ModelDriver['publicTextProtocol'],
+    compact:async()=>{throw new Error('unexpected compaction')},structured:async()=>{reviews++;throw new Error('unexpected judge')},
+    run:async()=>{turns++;return {text:status==='satisfied'?'Completed result.':'The requested work is unavailable.',output:[],usage,
+      outcomeDeclaration:{status,gaps:status==='satisfied'?[]:['The requested work is unavailable.']}}}}
+  await new AgentRuntime(f.host,model,kernel).runWork(f.work)
+  assert.equal(f.result().committed?.envelope.goalOutcome.status,status)
+  assert.equal(f.result().committed?.envelope.goalOutcome.verification,'not_run')
+  assert.deepEqual({turns,reviews},{turns:1,reviews:0})
+})
+
+it('keeps native pending receipts stronger than a satisfied declaration',async()=>{
+  const f=fixture('Perform the requested work.')
+  f.host.executeAction=async()=>({ok:true,value:{requestVersion:1,pending:[{action:'record.update',state:'unknown'}],truncated:false}})
+  const model:ModelDriver={publicTextProtocol:'purpose-json-v2' as ModelDriver['publicTextProtocol'],
+    compact:async()=>{throw new Error('unexpected')},structured:async()=>{throw new Error('unexpected judge')},
+    run:async()=>({text:'Completed result.',output:[],usage,outcomeDeclaration:{status:'satisfied',gaps:[]}})}
+  await new AgentRuntime(f.host,model,kernel).runWork(f.work)
+  assert.equal(f.result().committed?.envelope.goalOutcome.status,'partial')
+  assert.match(JSON.stringify(f.result().committed?.envelope.goalOutcome.gaps),/unknown/)
+})
+
+it('never falls back to satisfied when an opted-in driver omits a final declaration',async()=>{
+  const f=fixture('Perform the requested work.');let calls=0
+  const model:ModelDriver={publicTextProtocol:'purpose-json-v2' as ModelDriver['publicTextProtocol'],
+    compact:async()=>{throw new Error('unexpected')},structured:async()=>{throw new Error('unexpected judge')},
+    run:async()=>{calls++;return {text:'The requested work is unavailable.',output:[],usage}}}
+  await new AgentRuntime(f.host,model,kernel).runWork(f.work)
+  assert.notEqual(f.result().committed?.envelope.goalOutcome.status,'satisfied')
+  assert.ok(calls<=3,'existing protocol correction limit remains bounded')
+})
+
+it('binds v2 for custom producers and refuses to reinterpret an old run before generation',async()=>{
+  for(const fromV2 of [false,true]){
+    const f=fixture();let turns=0
+    const base:ModelDriver={compact:async()=>{throw new Error('unexpected')},structured:async()=>{throw new Error('unexpected judge')},
+      run:async()=>{turns++;return {text:'Complete answer.',output:[],usage,...(fromV2?{outcomeDeclaration:{status:'satisfied' as const,gaps:[]}}:{})}}}
+    const first:ModelDriver={...base,...(fromV2?{publicTextProtocol:'purpose-json-v2' as const}:{})}
+    await new AgentRuntime(f.host,first,kernel).runWork(f.work)
+    assert.equal(f.steps.find(step=>step.kind==='runtime.binding')?.input['publicTextProtocol'],fromV2?'purpose-json-v2':undefined)
+    f.work.fence++
+    await new AgentRuntime(f.host,{...base,...(!fromV2?{publicTextProtocol:'purpose-json-v2' as const}:{})},kernel).runWork(f.work)
+    assert.equal(turns,1);assert.equal(f.result().completion?.status,'failed')
+  }
+})
+
+it('does not execute returned side effects with an invalid terminal declaration',async()=>{
+  const f=fixture();let attempts=0,effects=0
+  const original=f.host.executeAction
+  f.host.executeAction=async(...args)=>{if(args[1].action!=='task.inspect')effects++;return original(...args)}
+  const model:ModelDriver={publicTextProtocol:'purpose-json-v2',compact:async()=>{throw new Error('unexpected')},structured:async()=>{throw new Error('unexpected judge')},
+    run:async()=>{attempts++;return {text:'Done.',output:[{type:'function_call',callId:'write',name:'record__update',arguments:'{}'}],usage,outcomeDeclaration:{status:'satisfied',gaps:[]}}}}
+  await new AgentRuntime(f.host,model,kernel).runWork(f.work)
+  assert.equal(effects,0);assert.ok(attempts<=3);assert.notEqual(f.result().completion?.goalOutcome?.status,'satisfied')
+})

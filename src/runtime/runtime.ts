@@ -1,3 +1,4 @@
+import { snapshotOutcomeDeclaration, type OutcomeDeclaration } from '../model/outcome-declaration.js'
 import { PublicTextAttemptWriter, isPublicTextPublicationFailure, isPublicTextSafetyFailure } from './public-text.js'
 import { isMemoryDeletionReceipt } from '../memory/confirmation.js'
 import { waitContractViolation } from '../tools/contracts.js'
@@ -446,6 +447,8 @@ export class AgentRuntime {
       const binding = { runtime: releaseVersions.runtime, semanticReview: this.semanticReview,
         ...(semanticReviewPolicy ? { semanticReviewPolicy } : {}), harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
+        ...(deepModel.publicTextProtocol==='purpose-json-v2'?{publicTextProtocol:deepModel.publicTextProtocol}:{}),
+        ...(fastModel?.publicTextProtocol==='purpose-json-v2'?{fastPublicTextProtocol:fastModel.publicTextProtocol}:{}),
         ...(this.additionalContentCorrections ? { additionalContentCorrections: this.additionalContentCorrections } : {}),
         ...(fastModel ? { fastProvider: fastModel.configurationFingerprint ?? null } : {}) }
       if (priorBinding && canonicalJson(priorBinding.input) !== canonicalJson(binding)) throw new Error('run behavior version changed; restore the pinned worker configuration')
@@ -754,7 +757,7 @@ export class AgentRuntime {
           continue
         }
         if (!isPublicTextSafetyFailure(error) && error instanceof ModelDriverError && error.diagnostics.kind === 'protocol') {
-          const correction=modelProtocolCorrection(error.diagnostics,codeExecution)
+          const correction=modelProtocolCorrection(error.diagnostics,codeExecution,model.publicTextProtocol)
           if(budget.consume(correction.category,error.diagnostics.protocolCode ?? 'model protocol violation')){
             protocolCorrection={role:'user',content:correction.content}
             continue
@@ -819,6 +822,27 @@ export class AgentRuntime {
       if (!preview && model.previewFormat === 'candidate-json') parser.push(turn.text)
       if (!calls.length && model.previewFormat === 'candidate-json' && parser.complete && turn.finalCandidate === undefined) turn = { ...turn, finalCandidate: turn.text }
 
+      let declaration: OutcomeDeclaration | undefined
+      if (model.publicTextProtocol === 'purpose-json-v2' || turn.outcomeDeclaration !== undefined) {
+        try {
+          if (model.publicTextProtocol !== 'purpose-json-v2' || turn.finalCandidate !== undefined) throw new Error('outcome declaration requires the explicit v2 protocol')
+          if (calls.length) { if (turn.outcomeDeclaration !== undefined) throw new Error('tool turns cannot declare a terminal outcome') }
+          else declaration = snapshotOutcomeDeclaration(turn.outcomeDeclaration)
+        } catch {
+          // Custom drivers have the same fail-closed boundary as the wire driver.
+          // No returned tool call executes while its declaration is invalid.
+          await this.publications.get(runId)?.end('failed').catch(()=>{})
+          if (!calls.length) await rememberCandidate(turn.text, liveContext, ['Final outcome declaration is invalid'])
+          const correction = modelProtocolCorrection({kind:'protocol',finishReasons:[],protocolCode:'public_text_invalid'},codeExecution,model.publicTextProtocol)
+          if (!budget.consume('response_protocol','invalid outcome declaration')) {
+            terminalError = new AgentOSError('response_protocol_exhausted','Outcome declaration correction budget exhausted')
+            break
+          }
+          protocolCorrection = {role:'user',content:correction.content}
+          continue
+        }
+      }
+
       let assessment: GoalAssessment | undefined
       if (calls.length === 0 && turn.finalCandidate !== undefined) {
         try {
@@ -852,8 +876,8 @@ export class AgentRuntime {
 
       if (calls.length === 0) {
         let violation = this.policy.validateAssistantText(turn.text, liveContext)
-        if (!violation) violation = this.policy.validateCompletion?.(turn.text, assessment ?? { status: 'satisfied', checks: [], gaps: [] }, liveContext) ?? null
-        if (!violation) await rememberCandidate(turn.text, liveContext, assessment?.gaps)
+        if (!violation) violation = this.policy.validateCompletion?.(turn.text, assessment ?? { status: declaration?.status ?? 'satisfied', checks: [], gaps: declaration?.gaps ?? [] }, liveContext) ?? null
+        if (!violation) await rememberCandidate(turn.text, liveContext, declaration?.gaps ?? assessment?.gaps)
         let contentCheckError: string | undefined
         let reviewScope: SemanticReviewScope | undefined
         let invalidReviewScope = false
@@ -932,7 +956,7 @@ export class AgentRuntime {
             if (!stillCurrent) {
               resourceGaps.push(`Previously unresolved workflow scope ${reviewScope.id}: a prior scope review does not verify this candidate; complete the native workflow or retain its limitation`)
               acceptanceGaps = [...resourceGaps]
-              await rememberCandidate(turn.text, liveContext, [...(assessment?.gaps ?? []), ...acceptanceGaps])
+              await rememberCandidate(turn.text, liveContext, [...(declaration?.gaps ?? assessment?.gaps ?? []), ...acceptanceGaps])
             }
           }
         }
@@ -965,7 +989,7 @@ export class AgentRuntime {
           resourceGaps.push(...requiredMissing.filter(item => item.blockedBy).map(item => `Unfulfilled result for ${JSON.stringify(item.quote)}: ${item.reason}; request constraint: ${JSON.stringify(item.blockedBy)}`))
           acceptanceGaps = [...resourceGaps, ...(contentCheckError ? [contentCheckError] : []),
             ...requiredMissing.map(item => `Content review finding for ${JSON.stringify(item.quote)}: ${item.reason}`)]
-          await rememberCandidate(turn.text, liveContext, [...(assessment?.gaps ?? []), ...acceptanceGaps])
+          await rememberCandidate(turn.text, liveContext, [...(declaration?.gaps ?? assessment?.gaps ?? []), ...acceptanceGaps])
           const repairable = [...requiredMissing.filter(item => !item.blockedBy),
             ...requiredLimitations.filter(item => !item.blockedBy && !requiredMissing.some(missing => missing.quote === item.requestQuote))]
           if (conversationHandoff) resourceGaps.push(...repairable.map(item => `Unfulfilled result for ${JSON.stringify(item.quote)}: ${item.reason}`))
@@ -985,11 +1009,11 @@ export class AgentRuntime {
         }
         if (!violation) {
           try {
-            const gaps = assessment ? [...assessment.gaps, ...resourceGaps, ...(contentCheckError ? [contentCheckError] : [])]
-              : [...resourceGaps, ...(contentCheckError ? [contentCheckError] : [])]
+            const gaps = [...(declaration?.gaps ?? assessment?.gaps ?? []), ...resourceGaps, ...(contentCheckError ? [contentCheckError] : [])]
+            const declaredStatus = declaration?.status ?? (assessment?.status === 'delegated' ? 'satisfied' : assessment?.status) ?? 'satisfied'
             finalEnvelope = createResponseEnvelope(turn.text.trim(), {
               ...(assessment?.status === 'delegated' ? { status: 'delegated' as const, taskRef: assessment.taskRef! }
-                : { status: assessment ? gaps.length && assessment.status === 'satisfied' ? 'partial' as const : assessment.status : gaps.length ? 'partial' as const : 'satisfied' as const }),
+                : { status: gaps.length && declaredStatus === 'satisfied' ? 'partial' as const : declaredStatus }),
               verification: needsVerification ? 'inconclusive' : 'not_run',
               requestVersion: (session.request?.revisions.length ?? 0) + 1,
               ...(gaps.length ? { gaps } : {}),
