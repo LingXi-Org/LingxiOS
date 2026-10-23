@@ -175,7 +175,7 @@ for (const exposed of [false, true]) it(`rejects terminal null outcome and prese
   const model = new OpenAIChatDriver('fixture', { ...options, fetchImpl: async () => new Response(frame({ content: publicWire('Known answer.') }, 'stop')) })
   await assert.rejects(model.run({ ...request, tools: exposed ? [tool] : [] }), (error: unknown) => {
     const diagnostics = (error as import('../src/errors.js').ModelDriverError).diagnostics
-    assert.equal(diagnostics.protocolCode, 'public_text_invalid')
+    assert.equal(diagnostics.protocolCode, 'terminal_outcome_required')
     const correction = modelProtocolCorrection(diagnostics, 'disabled', 'purpose-json-v3')
     assert.match(correction.content, /trusted model driver/)
     assert.doesNotMatch(correction.content, /satisfied|"outcome"|Tool-turn assistant content example/)
@@ -331,4 +331,29 @@ it('cancels after public operation without publishing text or returning a call',
   await assert.rejects(model.run({ ...request, signal: stop.signal,
     onTextOperation: () => { stop.abort(new Error('synthetic cancellation')) }, onTextDelta: text => { seen.push(text) } }))
   assert.deepEqual(seen, [])
+})
+
+for (const wire of ['{"PRIVATE_UNKNOWN_KEY":', '{"public_output":null,"arguments":']) it(`reports a fixed native envelope code without exposing unknown fields (${wire.length} chars)`, async () => {
+  const seen:string[]=[]
+  const model = new OpenAIChatDriver('fixture', { ...options, fetchImpl: async () => new Response(frame({ tool_calls: [call(wire)] }, 'tool_calls')) })
+  await assert.rejects(model.run({...request,onTextDelta:text=>{seen.push(text)}}), (error: unknown) => {
+    const diagnostics = (error as import('../src/errors.js').ModelDriverError).diagnostics
+    assert.equal(diagnostics.protocolCode, 'native_envelope_invalid')
+    assert.deepEqual(seen,[])
+    const correction = modelProtocolCorrection(diagnostics, 'disabled', 'purpose-json-v3')
+    assert.match(correction.content, /native.tool.*envelope/i)
+    assert.doesNotMatch(JSON.stringify(diagnostics) + correction.content, /PRIVATE_UNKNOWN_KEY/)
+    return true
+  })
+})
+
+for(const [name,content,code] of [
+  ['missing outcome','{"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":"Known."}','public_text_invalid'],
+  ['unfinished text','{"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":"Known.','public_text_incomplete'],
+  ['empty content','','public_text_invalid'],
+] as const) it(`does not relabel ${name} as a missing terminal outcome`,async()=>{
+  const model=new OpenAIChatDriver('fixture',{...options,fetchImpl:async()=>new Response(frame({content},'stop'))})
+  await assert.rejects(model.run(request),(error:unknown)=>{
+    assert.equal((error as import('../src/errors.js').ModelDriverError).diagnostics.protocolCode,code);return true
+  })
 })

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { Tokenizer, TokenParser, TokenType, type ParsedTokenInfo } from '@streamparser/json'
-import { PublicPurposeParser, publicPurposeError } from './public-purpose.js'
+import { ModelDriverError } from '../errors.js'
+import { PublicPurposeParser } from './public-purpose.js'
 import type { ToolDefinition } from '../tools/catalog.js'
 
 export const NATIVE_TOOL_PUBLIC_OUTPUT_INSTRUCTIONS = `Public output wire contract (purpose-json-v3), native tool public output envelope v1:
@@ -19,6 +20,11 @@ Only declare satisfied when the accumulated requested result was delivered. Do n
 answer:null is allowed only on a terminal turn finishing an already nonempty sealed answer in the current answer context; otherwise provide substantive answer text. Never replay an already delivered body.
 gaps has at most 16 nonempty strings, each at most 1000 characters, 8192 total. satisfied requires [].
 No duplicate/extra keys, markdown framing or trailing prose. The envelope is transport encoding, not user-visible JSON. User formatting constrains the answer field. Previously decoded history is not a wire template. Do not add separate review calls.`
+
+function nativeEnvelopeError(): ModelDriverError {
+  return new ModelDriverError('invalid native public output envelope', { kind: 'protocol', category: 'protocol',
+    protocolCode: 'native_envelope_invalid', finishReasons: [] })
+}
 
 const publicOutputSchema = { type: 'object', properties: {
   operation: { type: 'object', properties: { kind: { enum: ['append', 'replace'] },
@@ -94,13 +100,13 @@ export class NativeToolPublicOutput {
   }
   private token({ token, value, offset }: ParsedTokenInfo) {
     const expect = (type: TokenType, next: typeof this.stage, key?: string) => {
-      if (token !== type || key !== undefined && value !== key) throw publicPurposeError()
+      if (token !== type || key !== undefined && value !== key) throw nativeEnvelopeError()
       this.stage = next
     }
     switch (this.stage) {
       case 'root': expect(TokenType.LEFT_BRACE, 'key'); break
       case 'key':
-        if (token !== TokenType.STRING || value !== 'public_output' && value !== 'arguments' || this.fields.has(value)) throw publicPurposeError()
+        if (token !== TokenType.STRING || value !== 'public_output' && value !== 'arguments' || this.fields.has(value)) throw nativeEnvelopeError()
         this.field = value; this.fields.add(value); this.stage = 'colon'; break
       case 'colon': expect(TokenType.COLON, 'value'); break
       case 'value':
@@ -125,11 +131,11 @@ export class NativeToolPublicOutput {
         if (this.fields.size === 2) expect(TokenType.RIGHT_BRACE, 'done')
         else expect(TokenType.COMMA, 'key')
         break
-      case 'done': throw publicPurposeError()
+      case 'done': throw nativeEnvelopeError()
     }
   }
   push(chunk: string): ReturnType<PublicPurposeParser['push']> {
-    if (this.finished || this.invalid) throw publicPurposeError()
+    if (this.finished || this.invalid) throw nativeEnvelopeError()
     try {
       chunk = this.pendingSurrogate + chunk
       this.pendingSurrogate = ''
@@ -137,11 +143,11 @@ export class NativeToolPublicOutput {
       if (last >= 0xd800 && last <= 0xdbff) { this.pendingSurrogate = chunk.slice(-1); chunk = chunk.slice(0, -1) }
       if (!chunk) return []
       // Reject unpaired UTF-16 instead of letting Buffer replace it with U+FFFD.
-      if (/[\uD800-\uDFFF]/u.test(chunk)) throw publicPurposeError()
+      if (/[\uD800-\uDFFF]/u.test(chunk)) throw nativeEnvelopeError()
       const bytes = Buffer.from(chunk)
       const previousLength = this.length
       this.length += bytes.length
-      if (this.length > 16 * 1024 * 1024) throw publicPurposeError()
+      if (this.length > 16 * 1024 * 1024) throw nativeEnvelopeError()
       this.chunks.push(bytes)
       const wasComplete = this.publicEnd !== undefined
       this.tokenizer.write(bytes)
@@ -151,18 +157,18 @@ export class NativeToolPublicOutput {
       for (const part of parts) if (part.purpose === 'answer') this.text += part.text
       if (!wasComplete && this.publicEnd !== undefined) {
         this.purpose.finish()
-        if (this.purpose.outcome !== null || this.purpose.answerIsNull) throw publicPurposeError()
+        if (this.purpose.outcome !== null || this.purpose.answerIsNull) throw nativeEnvelopeError()
       }
       return parts
-    } catch { this.invalid = true; throw publicPurposeError() }
+    } catch { this.invalid = true; throw nativeEnvelopeError() }
   }
   finish(): { arguments: string; text: string } {
-    if (this.invalid || this.finished || this.pendingSurrogate) throw publicPurposeError()
+    if (this.invalid || this.finished || this.pendingSurrogate) throw nativeEnvelopeError()
     try {
       this.tokenizer.end()
-      if (this.stage !== 'done' || this.argsStart === undefined || this.argsEnd === undefined) throw publicPurposeError()
+      if (this.stage !== 'done' || this.argsStart === undefined || this.argsEnd === undefined) throw nativeEnvelopeError()
       this.finished = true
       return { arguments: Buffer.concat(this.chunks).subarray(this.argsStart, this.argsEnd).toString('utf8'), text: this.text }
-    } catch { this.invalid = true; throw publicPurposeError() }
+    } catch { this.invalid = true; throw nativeEnvelopeError() }
   }
 }

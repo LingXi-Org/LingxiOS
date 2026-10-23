@@ -8,8 +8,12 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
     ? 'Use only exposed native tools or an allowed ipython call when needed.'
     : 'Python execution is disabled for this request. Use only exposed native tools when needed.'
   const code=diagnostics.protocolCode
-  if(code==='public_text_invalid'||code==='public_text_incomplete'||code==='public_text_answer_required'){
-    const failure=code==='public_text_answer_required'
+  if(code==='native_envelope_invalid'||code==='terminal_outcome_required'||code==='public_text_invalid'||code==='public_text_incomplete'||code==='public_text_answer_required'){
+    const failure=code==='native_envelope_invalid'
+      ? 'The previous native-tool response did not satisfy the required public-output envelope. Its business action was not dispatched.'
+      :code==='terminal_outcome_required'
+        ? 'The previous no-tool response used a null outcome. A terminal response requires an explicit truthful outcome declaration; do not assume completion.'
+        :code==='public_text_answer_required'
       ? 'The previous response contained no substantive answer and no native tool call. Public commentary alone does not complete the request.'
       :code==='public_text_incomplete'
         ? 'The previous public response ended before the complete JSON object was closed.'

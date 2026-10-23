@@ -589,11 +589,11 @@ export class OpenAIChatDriver implements ModelDriver {
         catch (error) { this.throwStreamFailure(error, accumulator) }
       }
       if (!nativeOutput || contentObserved || companionHasJsonFraming(accumulator.text)) {
-        throw new ModelDriverError('invalid native public output envelope', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: 'public_text_invalid' })
+        throw new ModelDriverError('invalid native public output envelope', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: !nativeOutput ? 'native_envelope_invalid' : 'public_text_invalid' })
       }
       let decoded: ReturnType<NativeToolPublicOutput['finish']>
       try { decoded = nativeOutput.finish() }
-      catch { throw new ModelDriverError('invalid native public output envelope', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: 'public_text_invalid' }) }
+      catch { throw new ModelDriverError('invalid native public output envelope', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: 'native_envelope_invalid' }) }
       text = decoded.text
       accumulator.toolCalls.get(0)!.arguments = decoded.arguments
     } else if (companion?.unpublished) {
@@ -613,7 +613,9 @@ export class OpenAIChatDriver implements ModelDriver {
         }
         if(this.publicTextProtocol==='purpose-json-v2'||this.publicTextProtocol==='purpose-json-v3'){
           if(accumulator.toolCalls.size){if(accumulator.text.length&&purposeParser.outcome!==null)throw publicPurposeError()}
-          else {if(!purposeParser.outcome)throw publicPurposeError();outcomeDeclaration=purposeParser.outcome}
+          else {if(purposeParser.outcome===null)throw new ModelDriverError('terminal response requires an outcome declaration', {
+            ...diagnostics, kind:'protocol', category:'protocol', protocolCode:'terminal_outcome_required',
+          });if(!purposeParser.outcome)throw publicPurposeError();outcomeDeclaration=purposeParser.outcome}
         }
         if(!accumulator.toolCalls.size&&!text.trim()&&!(this.publicTextProtocol==='purpose-json-v3'&&purposeParser.answerIsNull
           &&request.answerContext?.segmentIds.length))throw publicPurposeError('public_text_answer_required')
