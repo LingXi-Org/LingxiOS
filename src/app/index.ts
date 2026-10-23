@@ -104,7 +104,8 @@ export interface LingxiOSOptions {
   contextProvider?: ContextProvider
   /** Native acceptance checks, using live business records rather than model assertions. */
   verifyRun?: (context: RunVerificationContext) => Promise<VerificationRecord[]>
-  /** Trusted current-candidate nomination. Returning guidance never grants or activates a skill. */
+  /** Trusted current-candidate nomination. Undefined means no scope is currently required;
+   * throw if current authority is revoked, unavailable or indeterminate. Guidance never grants or activates a skill. */
   semanticReviewPolicy?: SemanticReviewPolicyIdentity & {
     resolve(context: SemanticReviewContext): Promise<SemanticReviewScope | undefined>
   }
