@@ -13,6 +13,8 @@ const string = (value: unknown): string | null => typeof value === 'string' && v
 const time = (value: unknown): number | null => value == null ? null : number(new Date(value as Date | string).getTime())
 const id = (...values: unknown[]) => createHash('sha256').update(JSON.stringify(values)).digest('hex')
 const rootId = (runId: string) => id('agent', runId)
+const pythonId = (runId: string, stepId: string, fence: number | null, requestVersion: number | null) => id('python', runId, stepId, fence, requestVersion)
+const actionName = (value: unknown) => typeof value === 'string' && /^[a-zA-Z][\w-]{0,79}\.[a-zA-Z][\w-]{0,79}$/.test(value) ? value : null
 const state = (value: unknown): TraceState => value === 'queued' || value === 'leased' ? 'running' : value === 'waiting' ? 'waiting'
   : value === 'partial' || value === 'blocked' ? value : value === 'succeeded' ? 'complete' : value === 'cancelled' ? 'cancelled' : value === 'failed' ? 'failed' : 'unknown'
 const active = (value: unknown) => ['queued', 'leased', 'waiting'].includes(String(value))
@@ -57,10 +59,11 @@ export async function readRunTrace(database: SqlQueryable, identity: RunIdentity
   // Only timing/identity fields are selected from internal diagnostic events.
   const events = await database.query(`SELECT run_id,seq,kind,stage,data->'_executionTrace' AS timing,
     data->>'callId' AS call_id,data->>'model' AS model,data->>'operation' AS operation,data->>'toolCallId' AS tool_call_id,
-    data->>'name' AS name,data->'result'->>'status' AS tool_status
+    data->>'name' AS name,data->>'stepId' AS step_id,data->'result'->>'status' AS tool_status
     FROM lingxios.agent_run_events WHERE run_id=ANY($1::text[]) AND tenant_id=$2
       AND kind=ANY($3::text[]) AND (expires_at IS NULL OR expires_at>NOW())
-    ORDER BY run_id,seq LIMIT 2049`, [runIds, identity.tenantId, ['run.started', 'model.request.started', 'tool.started', 'tool.completed']])
+    ORDER BY run_id,seq LIMIT 2049`, [runIds, identity.tenantId, ['run.started', 'model.request.started', 'tool.started', 'tool.completed',
+      'ipython.started', 'ipython.completed', 'ipython.failed', 'ipython.timeout', 'ipython.cancelled', 'ipython.waiting']])
   if (events.rows.length > 2048) truncated = true
   const calls = await database.query(`SELECT work_id,call_id,fence,observation->>'model' AS model,
     observation->'executionTiming' AS timing,observation->>'status' AS status,observation->>'operation' AS operation,
@@ -68,6 +71,17 @@ export async function readRunTrace(database: SqlQueryable, identity: RunIdentity
     FROM lingxios.agent_model_budget_calls WHERE work_id=ANY($1::text[])
     ORDER BY work_id,call_id LIMIT 513`, [runIds])
   if (calls.rows.length > 512) truncated = true
+  // Reserved native-only diagnostic steps contain no arguments/results. The
+  // action ledger itself remains authoritative for effects and replay.
+  const actions = await database.query(`SELECT step.work_id,step.step_id,step.request_version,
+    step.input->'startedAt' AS started_at,step.input->'fence' AS fence,step.input->>'name' AS name,
+    step.input->>'cellId' AS cell_id,step.input->>'actionKey' AS action_key,
+    CASE WHEN step.output IS NULL THEN NULL ELSE (step.output #>> '{}')::jsonb->'completedAt' END AS completed_at,
+    CASE WHEN step.output IS NULL THEN NULL ELSE (step.output #>> '{}')::jsonb->>'state' END AS state,
+    ledger.idempotency_key IS NOT NULL AS has_receipt
+    FROM lingxios.agent_steps step LEFT JOIN lingxios.agent_action_ledger ledger ON ledger.idempotency_key=step.input->>'actionKey'
+    WHERE step.work_id=ANY($1::text[]) AND step.kind='runtime.action_trace' ORDER BY step.step_seq LIMIT 513`, [runIds])
+  if (actions.rows.length > 512) truncated = true
   const sequences = await database.query(`SELECT run_id,MAX(seq) AS seq FROM lingxios.agent_run_events WHERE run_id=ANY($1::text[]) AND tenant_id=$2 GROUP BY run_id`, [runIds, identity.tenantId])
   const sequence = new Map(sequences.rows.map(row => [String(row['run_id']),Number(row['seq'])]))
   const spans: RunTraceSpan[] = []
@@ -106,10 +120,39 @@ export async function readRunTrace(database: SqlQueryable, identity: RunIdentity
         costMicros: measured && cost['usage'] === 'measured' && (Number(pricing['inputMicrosPerMillion']) > 0 || Number(pricing['outputMicrosPerMillion']) > 0)
           ? number(cost['amountMicros']) : null }))
     }
+    const python = new Map<string, { begin?: Record<string, unknown>; end?: Record<string, unknown> }>()
+    for (const event of runEvents) {
+      const callId = string(event['call_id']), stepId = string(event['step_id']), timing = object(event['timing'])
+      // Old generic ipython envelopes also wrap direct tools or parse failures.
+      // Only an explicit native Python identity with measured timing is admitted.
+      if (event['name'] !== 'ipython' || !callId || !stepId || !event['kind']?.toString().startsWith('ipython.') || !number(timing['at'])) continue
+      const key = pythonId(runId, stepId, integer(timing['fence']), integer(timing['requestVersion']))
+      const item = python.get(key) ?? {}
+      if (event['kind'] === 'ipython.started') item.begin ??= event
+      else item.end ??= event
+      python.set(key, item)
+    }
+    for (const [spanId, { begin, end: result }] of python) {
+      const timing = object((begin ?? result)?.['timing']), start = number(object(begin?.['timing'])['at'])
+      const observedEnd = number(object(result?.['timing'])['at'])
+      const ended = observedEnd !== null && (start === null || observedEnd >= start) ? observedEnd : null
+      spans.push(finish({ spanId, parentSpanId: rootId(runId), runId, requestVersion: integer(timing['requestVersion']),
+        fence: integer(timing['fence']), attemptId: string(timing['attemptId']), kind: 'tool',
+        state: result?.['kind'] === 'ipython.cancelled' ? 'cancelled' : result?.['kind'] === 'ipython.waiting' ? 'waiting'
+          : result?.['kind'] === 'ipython.completed' ? 'complete'
+          : result ? 'failed' : row['status'] === 'leased' && integer(timing['fence']) === Number(row['fence']) ? 'running' : 'unknown',
+        seq: Number((result ?? begin)?.['seq']), startedAt: start, completedAt: ended, timingBasis: 'python-execution',
+        toolCallId: String((begin ?? result)?.['call_id']), stepId: String((begin ?? result)?.['step_id']), name: 'ipython' }))
+    }
+    const native = actions.rows.slice(0, 512).filter(action => action['work_id'] === runId)
     const tools = new Map<string, { begin?: Record<string, unknown>; end?: Record<string, unknown> }>()
     for (const event of runEvents) {
       const toolCallId = string(event['tool_call_id']), timing = object(event['timing'])
       if (!toolCallId || !event['kind']?.toString().startsWith('tool.')) continue
+      // A cached callback under a new fence is still the original action, not
+      // another execution. Native trace evidence wins over presentation hooks.
+      if (actions.rows.length > 512 && toolCallId.startsWith('host:')
+        || native.some(action => `host:${action['action_key']}` === toolCallId && Number(action['request_version']) === integer(timing['requestVersion']))) continue
       const key = id('tool', runId, toolCallId, timing['fence'] ?? null, timing['requestVersion'] ?? null)
       const item = tools.get(key) ?? {}
       if (event['kind'] === 'tool.started') item.begin ??= event
@@ -126,7 +169,23 @@ export async function readRunTrace(database: SqlQueryable, identity: RunIdentity
       spans.push(finish({ spanId, parentSpanId: rootId(runId), runId, requestVersion: integer(timing['requestVersion']),
         fence: integer(timing['fence']), attemptId: string(timing['attemptId']), kind: 'tool', state: toolState,
         seq: result ? Number(result['seq']) : begin ? Number(begin['seq']) : null, startedAt: start, completedAt: ended, timingBasis: 'host-action',
-        toolCallId: String(begin?.['tool_call_id'] ?? result?.['tool_call_id']), name: string(begin?.['name']) }))
+        toolCallId: String(begin?.['tool_call_id'] ?? result?.['tool_call_id']), name: actionName(begin?.['name']) }))
+    }
+    for (const action of native) {
+      const start = number(action['started_at']), observedEnd = number(action['completed_at'])
+      const ended = observedEnd !== null && (start === null || observedEnd >= start) ? observedEnd : null
+      const fence = integer(action['fence']), requestVersion = integer(Number(action['request_version'])), cellId = string(action['cell_id'])
+      const toolCallId = `host:${action['action_key']}`
+      const begin = runEvents.find(event => event['kind'] === 'tool.started' && event['tool_call_id'] === toolCallId
+        && object(event['timing'])['fence'] === fence && object(event['timing'])['requestVersion'] === requestVersion)
+      const parent = cellId ? pythonId(runId, cellId, fence, requestVersion) : null
+      const observedState = action['state']
+      const actionState: TraceState = ended !== null && ['complete', 'waiting', 'failed', 'cancelled', 'unknown'].includes(String(observedState))
+        ? observedState as TraceState : !action['has_receipt'] && row['status'] === 'leased' && fence === Number(row['fence']) ? 'running' : 'unknown'
+      spans.push(finish({ spanId: id('native-action', runId, action['step_id']), parentSpanId: parent && python.get(parent)?.begin ? parent : rootId(runId),
+        runId, requestVersion, fence, attemptId: string(object(begin?.['timing'])['attemptId']), kind: 'tool', state: actionState,
+        seq: begin ? Number(begin['seq']) : null, startedAt: start, completedAt: ended, timingBasis: 'host-action',
+        toolCallId, ...(cellId ? { stepId: cellId } : {}), name: actionName(action['name']) }))
     }
   }
   if (spans.length > 512) truncated = true

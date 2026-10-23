@@ -31,7 +31,7 @@ import { isMemorySummary, SUMMARY_PREFIX } from '../memory/history.js'
  * - run-event envelope validation, attempt-range fencing, and dedupe;
  * - stream-integrity verification of final assistant messages.
  */
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { snapshotEvidence } from '../context/evidence.js'
 import { createResponseEnvelope, snapshotArtifacts } from '../outcome/envelope.js'
@@ -195,6 +195,7 @@ export class ControlPlaneService {
 
   async saveStep(proof: LeaseProof, step: import('./steps.js').ExecutionStep, signal?: AbortSignal): Promise<void> {
     const work = await this.requireLease(proof, { rejectCancelled: true })
+    if (step?.kind === 'runtime.action_trace') throw new ControlPlaneError(400, 'action trace steps are reserved for native dispatch')
     if (!step || typeof step.id !== 'string' || !step.id || step.id.length > 512
       || !Number.isSafeInteger(step.requestVersion) || step.requestVersion < 1 || typeof step.kind !== 'string'
       || !step.input || typeof step.input !== 'object' || Array.isArray(step.input)
@@ -658,6 +659,22 @@ export class ControlPlaneService {
     if (reservation === 'existing' && (!tool || tool.effect === 'uncertain')) {
       return await this.reconcileNative(work, action, options) ?? { ok: false, executionState: 'unknown', error: 'action intent exists without a receipt; reconcile before retrying' }
     }
+    // Native dispatch evidence, separate from presentation hooks and receipts.
+    // Persist before invoking anything; a replay above creates no new interval.
+    const trace = { id: `action-trace:${randomUUID()}`, kind: 'runtime.action_trace', requestVersion,
+      input: { startedAt: Date.now(), fence: work.fence, actionKey: action.idempotencyKey, name: action.action, cellId: action.cellId }, artifacts: [] }
+    const traceProof = { workId: work.id, fence: proof.fence, leaseTokenHash: hashToken(proof.leaseToken) }
+    try { await this.deps.steps.save(traceProof, trace) }
+    catch (error) {
+      // A newly reserved uncertain action cannot be dispatched by a concurrent
+      // replay. Record this known non-dispatch, rather than stranding its intent
+      // as an unknown effect. Existing safe-to-retry actions may be in flight
+      // elsewhere: never replace their shared receipt with a diagnostic result.
+      if (reservation === 'started' && (!tool || tool.effect === 'uncertain')) return this.deps.actions.record(action.idempotencyKey, {
+        ok: false, executionState: 'no_effect', code: 'trace_unavailable', error: 'Action dispatch did not start because its trace marker was unavailable.',
+      })
+      throw error
+    }
     let result: HostActionResult
     try {
       if (action.action === 'task.inspect') {
@@ -735,7 +752,17 @@ export class ControlPlaneService {
         ...(error instanceof NoEffectError ? { code: error.code, ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}) } : {}), error: errorMessage(error) }
     }
     result = enforceWaitContract(tool, result)
+    const cancelled = options.signal.aborted && options.signal.reason?.name !== 'TimeoutError'
     const recorded = await this.deps.actions.record(action.idempotencyKey, result)
+    try {
+      await this.deps.steps.save(traceProof, { ...trace, output: JSON.stringify({ completedAt: Date.now(),
+        state: recorded.approval ? 'waiting' : recorded.ok ? 'complete' : recorded.executionState === 'unknown' ? 'unknown'
+          : cancelled ? 'cancelled' : 'failed' }) })
+    } catch {
+      // An effect/receipt may already have committed. A diagnostic failure must
+      // never rewrite it or ask the caller to execute the action again.
+      this.deps.logger?.warn('Native action trace completion unavailable', { workId: work.id })
+    }
     this.deps.metrics?.counter('agentos_actions_executed_total', 'Host actions executed').inc({
       namespace, ok: String(recorded.ok),
     })

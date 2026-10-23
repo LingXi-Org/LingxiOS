@@ -78,6 +78,7 @@ export class PgStepStore implements StepStore {
   }
   async list(workId: string, requestVersion?: number) {
     const { rows } = await this.database.query(`SELECT * FROM lingxios.agent_steps WHERE work_id=$1
+      AND kind<>'runtime.action_trace'
       AND ($2::integer IS NULL OR request_version=$2) ORDER BY step_seq LIMIT 2049`, [workId, requestVersion ?? null])
     if (rows.length > 2048) throw new Error('step history exceeds the bounded recovery limit')
     return rows.map(fromRow)
@@ -102,7 +103,7 @@ export class MemoryStepStore implements StepStore {
     return step?.requestVersion === version ? structuredClone(step) : null
   }
   async list(workId: string, version?: number) {
-    return [...this.entries].filter(([key, step]) => JSON.parse(key)[0] === workId && (version === undefined || step.requestVersion === version))
+    return [...this.entries].filter(([key, step]) => JSON.parse(key)[0] === workId && step.kind !== 'runtime.action_trace' && (version === undefined || step.requestVersion === version))
       .map(([, step]) => structuredClone(step))
   }
 }

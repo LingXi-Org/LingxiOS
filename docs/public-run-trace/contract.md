@@ -82,3 +82,46 @@ past all user events must both finish with the exact authorized readRunTrace
 snapshot, including revision and actual start/end. They must not emit a null
 trace because a known terminal outcome was classified as unknown. Wrong-fence,
 stale-version and unavailable reads remain rejected; no budget or SQL changes.
+
+## Native tool execution coverage
+
+Python spans use `kind: tool`, the fixed name `ipython`, optional `stepId`, the
+original `toolCallId`, and `timingBasis: python-execution`. Their clock boundaries
+are control-plane observations of the Python invocation lifecycle, including
+its output checkpoint, not Python CPU time. Only explicit Python identities are
+admitted; the historical generic `ipython.*` wrapper around direct tools does
+not create another span. Known timeout, failure, approval wait and acknowledged
+kernel cancellation retain their real observed state and boundary. A missing
+terminal event remains unknown after its attempt stops.
+
+Native host dispatch is now observed independently of Worker presentation hooks.
+After authorization and cached-receipt checks, the control plane persists a
+reserved `runtime.action_trace` marker in the existing step store before invoking
+the action. Its interval ends after receipt persistence. This includes internal
+`task.inspect` and `task.check_resource` calls. These are host dispatch intervals,
+not claims about remote side-effect completion, resource correctness or browser
+execution. Nested private operations inside a tool and transport retries are not
+invented as separate stages without their own measurements.
+
+Native spans keep the existing `host-action` timing basis, exact host
+`toolCallId` and optional cell `stepId`. A Python parent is supplied only for an
+observed cell with the same run, request and fence. Otherwise the owning agent is
+the parent. The originating model `attemptId` is nullable when no matching hook
+provides it. Native-only steps have no event `seq`; their opaque revision still
+changes, so an equal root sequence must not suppress a replacement snapshot.
+
+Each actual dispatch has a distinct native trace identity. A cached receipt
+creates no new interval, including after recovery under a new fence. Exact
+action identity and request version suppress duplicate Worker hook spans; a
+label alone never merges calls. Tool spans never copy LLM usage or cost. A
+failed final diagnostic write leaves an unknown end without changing an already
+persisted action receipt. A failed pre-dispatch write prevents dispatch; a newly
+reserved uncertain action records known non-dispatch rather than inventing an
+unknown effect. Safe concurrent retries retain their existing ledger rules.
+
+These reserved diagnostic steps are absent from both ordinary and optimized
+context/recovery snapshots, progress facts and semantic-review observations.
+Their SQL projection selects only safe names, identities, timestamps and states.
+The existing read authorization, traversal bounds and truncation behavior remain
+in force. No schema, snapshot version or release identifier changes are made by
+this feature branch. Older history receives no guessed starts, ends or parents.
