@@ -163,11 +163,11 @@ export async function* sseDataEvents(body: ReadableStream<Uint8Array>): AsyncGen
   let buffer = ''
   for await (const chunk of bodyText(body)) {
     buffer += chunk
-    let boundary: number
+    let boundary: RegExpExecArray | null
     // An SSE event ends at a blank line; tolerate \r\n line endings.
-    while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
-      const rawEvent = buffer.slice(0, boundary)
-      buffer = buffer.slice(boundary + (buffer[boundary] === '\r' ? 4 : 2))
+    while ((boundary = /\r?\n\r?\n/.exec(buffer)) !== null) {
+      const rawEvent = buffer.slice(0, boundary.index)
+      buffer = buffer.slice(boundary.index + boundary[0].length)
       const data = rawEvent
         .split(/\r?\n/)
         .filter((line) => line.startsWith('data:'))
@@ -402,12 +402,13 @@ export class OpenAIChatDriver implements ModelDriver {
       }
     } catch (error) {
       const usage = this.usageOf(accumulator)
-      if (!usage.available) throw error
+      if (!usage.available && !(error instanceof ModelDriverError)) throw error
       const diagnostics = error instanceof ModelDriverError ? error.diagnostics
         : { kind: 'provider' as const, category: modelFailure(error).category, finishReasons: accumulator.finishReasons }
       throw new ModelDriverError(error instanceof ModelDriverError ? error.message : 'model stream failed',
         { ...diagnostics, category: diagnostics.category ?? modelFailure(error).category,
-          usage: diagnostics.usage?.available ? diagnostics.usage : usage }, { cause: error })
+          finishReasons: diagnostics.finishReasons.length ? diagnostics.finishReasons : accumulator.finishReasons,
+          ...(diagnostics.usage?.available ? { usage: diagnostics.usage } : usage.available ? { usage } : {}) }, { cause: error })
     }
     return accumulator
   }
@@ -461,12 +462,15 @@ export class OpenAIChatDriver implements ModelDriver {
     let text = accumulator.text
     if(purposeParser){
       try {
-      if(text.length){
-        purposeParser.finish()
-        text=(JSON.parse(text) as {answer:string}).answer
-      }
-      if(!accumulator.toolCalls.size&&!text.trim())throw publicPurposeError()
-      }catch{throw new ModelDriverError('invalid public text protocol',{...diagnostics,kind:'protocol',category:'protocol'})}
+        if(text.length){
+          purposeParser.finish()
+          text=(JSON.parse(text) as {answer:string}).answer
+        }
+        if(!accumulator.toolCalls.size&&!text.trim())throw publicPurposeError('public_text_answer_required')
+      }catch(error){throw new ModelDriverError('invalid public text protocol',{
+        ...diagnostics,kind:'protocol',category:'protocol',
+        protocolCode:error instanceof ModelDriverError ? error.diagnostics.protocolCode ?? 'public_text_invalid' : 'public_text_invalid',
+      })}
     }
     if (text.trim()) output.push({ role: 'assistant', content: text })
     const toolCalls = [...accumulator.toolCalls.entries()].sort(([a], [b]) => a - b)
@@ -474,7 +478,7 @@ export class OpenAIChatDriver implements ModelDriver {
       if (!call.id.trim()
         || call.name === IPYTHON_TOOL_NAME && !allowPython
         || call.name !== IPYTHON_TOOL_NAME && !request.tools?.some(tool => tool.name === call.name)) {
-        throw new ModelDriverError('model returned an invalid tool identity', { ...diagnostics, kind: 'protocol' })
+        throw new ModelDriverError('model returned an invalid tool identity', { ...diagnostics, kind: 'protocol', protocolCode: 'tool_identity_invalid' })
       }
       output.push({
         type: 'function_call',
@@ -485,7 +489,7 @@ export class OpenAIChatDriver implements ModelDriver {
     }
     if (output.length === 0) {
       throw new ModelDriverError('model returned neither assistant text nor a tool call', {
-        ...diagnostics, kind: 'protocol',
+        ...diagnostics, kind: 'protocol', protocolCode: 'response_empty',
       })
     }
     const result: ModelTurnResult = { output, text, usage: diagnostics.usage }

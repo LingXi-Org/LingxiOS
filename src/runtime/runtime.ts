@@ -49,6 +49,7 @@ import type { KernelExecutor, KernelExecutionOptions } from '../kernel/manager.j
 import { nullLogger, type Logger } from '../logging.js'
 import type { ModelDriver } from '../model/driver.js'
 import { publicModelDiagnostics } from '../model/diagnostics.js'
+import { modelProtocolCorrection } from './protocol-correction.js'
 import { inputTokens, modelProfile } from '../model/profile.js'
 import { RUN_SEQUENCE_SPAN } from '../protocol/constants.js'
 import {
@@ -104,6 +105,8 @@ export interface AgentRuntimeOptions {
   recordModelPayloads?: boolean
   modelTrace?: ModelTracePolicy
   rootModelBudget?: RootModelBudgetOptions
+  /** Trusted host allowance, 0–3 (default 0), for content acceptance only; root budgets still apply. */
+  additionalContentCorrections?: number
 }
 
 export type { ModelCallObservation, ModelCallObserver, RootModelBudgetOptions } from '../model/execution.js'
@@ -144,6 +147,7 @@ export class AgentRuntime {
   private readonly recordModelPayloads: boolean
   private readonly modelTrace: Required<Pick<ModelTracePolicy, 'sampleRate' | 'retentionDays'>> & Pick<ModelTracePolicy, 'redact'>
   private readonly rootModelBudget: Required<RootModelBudgetOptions>
+  private readonly additionalContentCorrections: number
   private readonly processors = new Map<string, WorkProcessor | 'conversation'>()
   private readonly eventSeqByRun = new Map<string, number>()
   private readonly eventTails = new Map<string, Promise<void>>()
@@ -195,6 +199,10 @@ export class AgentRuntime {
     private readonly kernels: KernelExecutor,
     options: AgentRuntimeOptions = {},
   ) {
+    this.additionalContentCorrections = options.additionalContentCorrections === undefined ? 0 : options.additionalContentCorrections
+    if (!Number.isSafeInteger(this.additionalContentCorrections) || this.additionalContentCorrections < 0 || this.additionalContentCorrections > 3) {
+      throw new Error('additionalContentCorrections must be a safe integer between 0 and 3')
+    }
     this.fastModel = options.fastModel
     this.fallbackModel = options.fallbackModel
     this.metrics = options.metrics
@@ -421,18 +429,25 @@ export class AgentRuntime {
       session.request.revisions.push(steer)
       delete session.request.contract
     }
-    if (context.harness) {
-      const binding = { runtime: releaseVersions.runtime, harness: context.harness.hash, prompt: this.promptContractVersion,
+    const priorBinding = context.executionSteps?.find(step => step.kind === 'runtime.binding')
+    if (context.harness || this.additionalContentCorrections || priorBinding) {
+      // An old unbound execution used the default allowance. A new worker must
+      // not grant extra corrections retroactively, even without a harness.
+      if (!priorBinding && this.additionalContentCorrections && (context.executionCheckpoint
+        || context.executionSteps?.some(step => step.kind === 'runtime.checkpoint'))) {
+        throw new Error('unbound execution must resume with the default content correction allowance')
+      }
+      const binding = { runtime: releaseVersions.runtime, harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
+        ...(this.additionalContentCorrections ? { additionalContentCorrections: this.additionalContentCorrections } : {}),
         ...(fastModel ? { fastProvider: fastModel.configurationFingerprint ?? null } : {}) }
-      const prior = context.executionSteps?.find(step => step.kind === 'runtime.binding')
-      if (prior && canonicalJson(prior.input) !== canonicalJson(binding)) throw new Error('run behavior version changed; restore the pinned worker configuration')
-      if (!prior) await this.hostFor(work).saveStep(work, { id: 'runtime:binding', kind: 'runtime.binding',
+      if (priorBinding && canonicalJson(priorBinding.input) !== canonicalJson(binding)) throw new Error('run behavior version changed; restore the pinned worker configuration')
+      if (!priorBinding) await this.hostFor(work).saveStep(work, { id: 'runtime:binding', kind: 'runtime.binding',
         requestVersion: (session.request?.revisions.length ?? 0) + 1, input: binding, output: '{}', artifacts: [] })
     }
     sessionRef.session = session
     await this.hostFor(work).saveSession(work, session)
-    const budget = new CorrectionBudget(context.executionCheckpoint)
+    const budget = new CorrectionBudget(context.executionCheckpoint,this.additionalContentCorrections)
     let nextStreamPartIndex = 0
     let streamedText = ''
     let finalText = ''
@@ -724,14 +739,12 @@ export class AgentRuntime {
           protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return only safe user-facing content. Do not include private reasoning or internal protocol.'}
           continue
         }
-        if (!isPublicTextSafetyFailure(error) && error instanceof ModelDriverError && error.diagnostics.kind === 'protocol' && budget.consume('tool_protocol', errorMessage(error))) {
-          protocolCorrection = {
-            role: 'user',
-            content: codeExecution === 'enabled'
-              ? 'Protocol correction: the previous response violated the tool protocol. Reply again with valid structured tools, an ipython call, or the candidate answer.'
-              : 'Protocol correction: the previous response violated the tool protocol. Python execution is disabled for this request. Reply with an exposed structured tool or the candidate answer.',
+        if (!isPublicTextSafetyFailure(error) && error instanceof ModelDriverError && error.diagnostics.kind === 'protocol') {
+          const correction=modelProtocolCorrection(error.diagnostics,codeExecution)
+          if(budget.consume(correction.category,error.diagnostics.protocolCode ?? 'model protocol violation')){
+            protocolCorrection={role:'user',content:correction.content}
+            continue
           }
-          continue
         }
         if (error instanceof ModelBudgetExceededError || lastGood) {
           terminalError = error instanceof Error ? error : new Error('Model call failed')
@@ -1561,7 +1574,8 @@ export class AgentRuntime {
       log.error('terminal event emission failed', { error: publicFailure(eventError) })
     })
     const terminalReason = cancelled ? 'cancelled' : error instanceof HardLimitExceededError || error instanceof ModelContextBudgetError ? 'context_limit'
-      : error instanceof ModelBudgetExceededError ? 'budget_limit' : isPublicTextPublicationFailure(error) ? 'execution_failed' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
+      : error instanceof ModelBudgetExceededError ? 'budget_limit' : isPublicTextPublicationFailure(error) ? 'execution_failed'
+        : error instanceof ModelDriverError && error.diagnostics.kind !== 'protocol' ? 'model_unavailable' : 'execution_failed'
     await this.hostFor(work).completeWork(work, { status, terminalReason, error: publicFailure(error), goalOutcome: {
       status: 'blocked', verification: 'inconclusive', requestVersion: (session?.request?.revisions.length ?? 0) + 1,
       gaps: [cancelled ? 'Execution was cancelled' : publicFailure(error)],
