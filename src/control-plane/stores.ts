@@ -234,6 +234,8 @@ export interface ContextProvider {
   authorizeRequest?(work: Omit<WorkItem, 'leaseToken'>, request: import('../context/request.js').RequestSnapshot): Promise<void>
   loadContext(work: Omit<WorkItem, 'leaseToken'>, signal?: AbortSignal,
     options?: { responseProfile: import('../runtime/response-policy.js').ResponseProfile; requestVersion?: number;
+      /** Already authorized first-version evidence owned by this work. An optimization hint, never an authorization grant. */
+      frozenEvidence?: { workId: string; requestVersion: 1; snapshotId: string };
       /** Server-derived hint to check unproven legacy session observations. */
       legacyMemoryProof?: boolean }): Promise<{
     responseProfile?: import('../runtime/response-policy.js').ResponseProfile

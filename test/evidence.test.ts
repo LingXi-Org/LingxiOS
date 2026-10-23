@@ -75,7 +75,8 @@ it('records attachment range citations and reauthorizes snapshots before reads, 
   const read = await service.executeAction(work, evidenceRead)
   assert.equal(read.ok, true)
   assert.deepEqual(read.value, { index: 0, marker: 'S1', sourceId: 'attachment:file', sourceVersion: 'v1',
-    chunkId: 'file:8:18', title: 'facts.txt', text: 'Value: 47.', textLength: 10, offset: 0, nextOffset: 10, truncated: true })
+    chunkId: 'file:8:18', title: 'facts.txt', text: 'Value: 47.', textLength: 10, offset: 0, nextOffset: null,
+    hasMore: false, sourceTruncated: true, truncated: true })
   for (const index of [-1, 1, 0.5]) {
     const denied = await service.executeAction(work, { ...evidenceRead, cellId: `bad-${index}`,
       idempotencyKey: JSON.stringify([work.id,`bad-${index}`,0]), args: { ...evidenceRead.args, index } })
