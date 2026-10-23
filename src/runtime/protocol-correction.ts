@@ -1,8 +1,9 @@
+import type { PublicTextProtocol } from '../model/outcome-declaration.js'
 import type { ModelDiagnostics } from '../errors.js'
-import { PUBLIC_PURPOSE_INSTRUCTIONS } from '../model/public-purpose.js'
+import { publicPurposeInstructions } from '../model/public-purpose.js'
 
 /** Only fixed local contract facts enter a correction, never a raw provider body. */
-export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecution:'enabled'|'disabled'):
+export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecution:'enabled'|'disabled',protocol:PublicTextProtocol='purpose-json-v1'):
   {category:'response_protocol'|'tool_protocol';content:string} {
   const execution=codeExecution==='enabled'
     ? 'Use only exposed native tools or an allowed ipython call when needed.'
@@ -16,7 +17,7 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
         : 'The previous public response violated the required JSON field order, string encoding, or framing.'
     return {category:'response_protocol',content:`Protocol correction: ${failure}
 Reply again for the original request, preserving completed tool results; do not repeat completed or uncertain side effects.
-${PUBLIC_PURPOSE_INSTRUCTIONS}
+${publicPurposeInstructions(protocol)}
 ${execution}`}
   }
   if(code==='response_empty')return {category:'response_protocol',content:`Protocol correction: the previous response contained neither an answer nor a tool call. Provide the substantive answer or an exposed native tool call needed to obtain it. Preserve completed tool results and do not repeat completed or uncertain side effects. ${execution}`}
