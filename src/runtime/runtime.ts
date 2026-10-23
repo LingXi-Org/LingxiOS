@@ -49,6 +49,7 @@ import type { KernelExecutor, KernelExecutionOptions } from '../kernel/manager.j
 import { nullLogger, type Logger } from '../logging.js'
 import type { ModelDriver } from '../model/driver.js'
 import { publicModelDiagnostics } from '../model/diagnostics.js'
+import { modelProtocolCorrection } from './protocol-correction.js'
 import { inputTokens, modelProfile } from '../model/profile.js'
 import { RUN_SEQUENCE_SPAN } from '../protocol/constants.js'
 import {
@@ -722,14 +723,12 @@ export class AgentRuntime {
           protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return only safe user-facing content. Do not include private reasoning or internal protocol.'}
           continue
         }
-        if (!isPublicTextSafetyFailure(error) && error instanceof ModelDriverError && error.diagnostics.kind === 'protocol' && budget.consume('tool_protocol', errorMessage(error))) {
-          protocolCorrection = {
-            role: 'user',
-            content: codeExecution === 'enabled'
-              ? 'Protocol correction: the previous response violated the tool protocol. Reply again with valid structured tools, an ipython call, or the candidate answer.'
-              : 'Protocol correction: the previous response violated the tool protocol. Python execution is disabled for this request. Reply with an exposed structured tool or the candidate answer.',
+        if (!isPublicTextSafetyFailure(error) && error instanceof ModelDriverError && error.diagnostics.kind === 'protocol') {
+          const correction=modelProtocolCorrection(error.diagnostics,codeExecution)
+          if(budget.consume(correction.category,error.diagnostics.protocolCode ?? 'model protocol violation')){
+            protocolCorrection={role:'user',content:correction.content}
+            continue
           }
-          continue
         }
         if (error instanceof ModelBudgetExceededError || lastGood) {
           terminalError = error instanceof Error ? error : new Error('Model call failed')
@@ -1559,7 +1558,8 @@ export class AgentRuntime {
       log.error('terminal event emission failed', { error: publicFailure(eventError) })
     })
     const terminalReason = cancelled ? 'cancelled' : error instanceof HardLimitExceededError || error instanceof ModelContextBudgetError ? 'context_limit'
-      : error instanceof ModelBudgetExceededError ? 'budget_limit' : isPublicTextPublicationFailure(error) ? 'execution_failed' : error instanceof ModelDriverError ? 'model_unavailable' : 'execution_failed'
+      : error instanceof ModelBudgetExceededError ? 'budget_limit' : isPublicTextPublicationFailure(error) ? 'execution_failed'
+        : error instanceof ModelDriverError && error.diagnostics.kind !== 'protocol' ? 'model_unavailable' : 'execution_failed'
     await this.hostFor(work).completeWork(work, { status, terminalReason, error: publicFailure(error), goalOutcome: {
       status: 'blocked', verification: 'inconclusive', requestVersion: (session?.request?.revisions.length ?? 0) + 1,
       gaps: [cancelled ? 'Execution was cancelled' : publicFailure(error)],

@@ -1,0 +1,129 @@
+(node:97220) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+(Use `node --trace-warnings ...` to show where the warning was created)
+TAP version 13
+# (node:97227) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: protocol recovery worker: empty-answer
+ok 1 - protocol recovery worker: empty-answer
+  ---
+  duration_ms: 4271.684893
+  type: 'test'
+  ...
+# {"scenario":"empty-answer","wire":2,"executions":0,"status":"succeeded","settled":2}
+# Subtest: protocol recovery worker: incomplete
+ok 2 - protocol recovery worker: incomplete
+  ---
+  duration_ms: 3032.432103
+  type: 'test'
+  ...
+# {"scenario":"incomplete","wire":2,"executions":0,"status":"succeeded","settled":2}
+# Subtest: protocol recovery worker: tool-once
+ok 3 - protocol recovery worker: tool-once
+  ---
+  duration_ms: 3441.321127
+  type: 'test'
+  ...
+# {"scenario":"tool-once","wire":3,"executions":1,"status":"succeeded","settled":4}
+# Subtest: protocol recovery worker: persistent
+ok 4 - protocol recovery worker: persistent
+  ---
+  duration_ms: 2490.50231
+  type: 'test'
+  ...
+# {"scenario":"persistent","wire":3,"executions":0,"status":"failed","terminalReason":"execution_failed","settled":3}
+# Subtest: protocol recovery worker: provider
+ok 5 - protocol recovery worker: provider
+  ---
+  duration_ms: 3609.002119
+  type: 'test'
+  ...
+# {"scenario":"provider","wire":1,"executions":0,"status":"failed","terminalReason":"model_unavailable","settled":1}
+# (node:97246) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
+# (Use `node --trace-warnings ...` to show where the warning was created)
+# Subtest: preserves SSE events with every supported LF/CRLF delimiter and every network split
+ok 6 - preserves SSE events with every supported LF/CRLF delimiter and every network split
+  ---
+  duration_ms: 147.0191
+  type: 'test'
+  ...
+# Subtest: decodes a complete purpose answer across mixed SSE line endings without a correction
+ok 7 - decodes a complete purpose answer across mixed SSE line endings without a correction
+  ---
+  duration_ms: 298.335841
+  type: 'test'
+  ...
+# Subtest: protocol cause answer_required retains observed stop and measured usage
+ok 8 - protocol cause answer_required retains observed stop and measured usage
+  ---
+  duration_ms: 10.659909
+  type: 'test'
+  ...
+# Subtest: protocol cause answer_required retains observed stop and unavailable usage
+ok 9 - protocol cause answer_required retains observed stop and unavailable usage
+  ---
+  duration_ms: 2.40798
+  type: 'test'
+  ...
+# Subtest: protocol cause incomplete retains observed stop and measured usage
+ok 10 - protocol cause incomplete retains observed stop and measured usage
+  ---
+  duration_ms: 1.097022
+  type: 'test'
+  ...
+# Subtest: protocol cause incomplete retains observed stop and unavailable usage
+ok 11 - protocol cause incomplete retains observed stop and unavailable usage
+  ---
+  duration_ms: 1.151733
+  type: 'test'
+  ...
+# Subtest: protocol cause invalid retains observed stop and measured usage
+ok 12 - protocol cause invalid retains observed stop and measured usage
+  ---
+  duration_ms: 2.764373
+  type: 'test'
+  ...
+# Subtest: protocol cause invalid retains observed stop and unavailable usage
+ok 13 - protocol cause invalid retains observed stop and unavailable usage
+  ---
+  duration_ms: 6.700333
+  type: 'test'
+  ...
+# Subtest: protocol cause tool_identity retains observed stop and measured usage
+ok 14 - protocol cause tool_identity retains observed stop and measured usage
+  ---
+  duration_ms: 8.588815
+  type: 'test'
+  ...
+# Subtest: protocol cause tool_identity retains observed stop and unavailable usage
+ok 15 - protocol cause tool_identity retains observed stop and unavailable usage
+  ---
+  duration_ms: 2.302932
+  type: 'test'
+  ...
+# Subtest: protocol cause legacy_empty retains observed stop and measured usage
+ok 16 - protocol cause legacy_empty retains observed stop and measured usage
+  ---
+  duration_ms: 5.788531
+  type: 'test'
+  ...
+# Subtest: protocol cause legacy_empty retains observed stop and unavailable usage
+ok 17 - protocol cause legacy_empty retains observed stop and unavailable usage
+  ---
+  duration_ms: 11.939864
+  type: 'test'
+  ...
+# Subtest: only exposes known fixed protocol codes, never arbitrary driver extensions
+ok 18 - only exposes known fixed protocol codes, never arbitrary driver extensions
+  ---
+  duration_ms: 0.210859
+  type: 'test'
+  ...
+1..18
+# tests 18
+# suites 0
+# pass 18
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 18382.008851

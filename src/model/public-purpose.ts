@@ -12,8 +12,8 @@ Keep such content in answer even when tools are called; do not relabel it as com
 Use the ordinary native tool_calls channel for tools; never encode tools into these text fields.
 Previously unwrapped assistant history is already decoded; only the new response uses this JSON encoding.`
 
-export function publicPurposeError():ModelDriverError {
-  return new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',finishReasons:[]})
+export function publicPurposeError(protocolCode:'public_text_invalid'|'public_text_incomplete'|'public_text_answer_required'='public_text_invalid'):ModelDriverError {
+  return new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',protocolCode,finishReasons:[]})
 }
 /** Bounded framing state only: released body characters are never buffered until EOF. */
 export class PublicPurposeParser {
@@ -69,5 +69,5 @@ export class PublicPurposeParser {
     }catch{this.invalid=true;throw publicPurposeError()}
     return out
   }
-  finish(){if(!this.complete)throw publicPurposeError()}
+  finish(){if(!this.complete)throw publicPurposeError(this.invalid?'public_text_invalid':'public_text_incomplete')}
 }

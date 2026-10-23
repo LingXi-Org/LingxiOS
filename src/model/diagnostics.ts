@@ -4,6 +4,7 @@ const kinds = new Set(['provider', 'protocol'])
 const categories = new Set(['authorization', 'quota', 'rate_limit', 'timeout', 'network', 'unavailable',
   'protocol', 'cancelled', 'circuit_open', 'unknown'])
 const finishReasons = new Set(['stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'missing', 'unknown'])
+const protocolCodes = new Set(['public_text_invalid', 'public_text_incomplete', 'public_text_answer_required', 'tool_identity_invalid', 'response_empty'])
 
 function field(value: unknown, key: string): unknown {
   try { return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined }
@@ -21,7 +22,7 @@ function finiteNonnegative(value: unknown): value is number {
  */
 export function publicModelDiagnostics(value: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {}
-  for (const [key, allowed] of [['kind', kinds], ['category', categories]] as const) {
+  for (const [key, allowed] of [['kind', kinds], ['category', categories], ['protocolCode', protocolCodes]] as const) {
     const candidate = field(value, key)
     if (typeof candidate === 'string' && allowed.has(candidate)) out[key] = candidate
   }

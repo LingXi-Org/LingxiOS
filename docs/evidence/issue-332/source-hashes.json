@@ -1,0 +1,10 @@
+{
+  "src/errors.ts": "2a44230923c11b7c01e8471e7f21cb2e17899a855fe520a2d0207e635e7fa45e",
+  "src/model/diagnostics.ts": "bc75a11fee87a77a28458ae9e89bf8550bc25bb48777c7ce72d796217db42e5e",
+  "src/model/openai.ts": "1acb0a5f6de24b3bf24d86c7a48f59b2e87bc7a129ace107c1ca946b9dfa5372",
+  "src/model/public-purpose.ts": "c9e40a4ddc1ec16eb1cd9418115b5cd7d30378671abc740ba166345e495e9e1f",
+  "src/runtime/protocol-correction.ts": "db39d26539ad1644b5b0b5b8ba8765c6e2814dc764adf936767c1cc48bc134bc",
+  "src/runtime/runtime.ts": "ec9bb8be54e0bf954853eb8b8d4e1624401603ef2c320b9762b016c4c2180875",
+  "test/protocol-recovery.test.ts": "31785e417a760ff4896cde42364b7fd94826dfc3b2d37c43c066cbde12fb4ab5",
+  "test/protocol-recovery-worker.test.ts": "cf6c8aa90d31c54a9987d2ccbc72c30be91431c2a4067ef6722f439b7ee4f053"
+}
