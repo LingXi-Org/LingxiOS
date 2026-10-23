@@ -28,6 +28,8 @@ export interface ModelTurnResult {
 }
 
 export interface ModelTurnRequest {
+  /** Runtime-owned diagnostic classification; never provider instructions. */
+  operation?: 'generation' | 'correction'
   /** Runtime-owned final gate; queue wrappers run it after obtaining capacity. */
   beforeProvider?: (() => void | Promise<void>) | undefined
   admission?: import('../resource-quota.js').ResourcePriority

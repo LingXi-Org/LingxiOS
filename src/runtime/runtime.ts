@@ -652,10 +652,12 @@ export class AgentRuntime {
       const preview = !publishes && liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
       let providerBegan = performance.now()
       let firstBody = false
+      const generationOperation = protocolCorrection ? 'correction' : 'generation'
       try {
         protocolCorrection = null
         const generationSignal = signals.generationSignal()
         turn = await model.run({
+          operation: generationOperation,
           instructions,
           ...(session.promptContext.manifest ? { prompt: session.promptContext.manifest } : {}),
           items: modelItems,
