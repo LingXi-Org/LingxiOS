@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
+import { createHash } from 'node:crypto'
 import { abortable } from '../deadline.js'
 import { authorizeConversationWork } from '../collaboration/access.js'
 import { publicTextPayload, type PublicTextEndReason } from '../protocol/public-text.js'
@@ -52,12 +53,33 @@ export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undef
         const current=workItemFromRow(row,'',1)
         if(!await allowed(policy,current,data.requestVersion,context))throw new Error('public text publication is not authorized')
         const prior=(await database.query(`SELECT kind,data FROM lingxios.agent_run_events WHERE run_id=$1
-          AND kind IN ('public.text.delta','public.text.ended') AND data->>'partId'=$2 ORDER BY seq DESC LIMIT 1`,[event.runId,data.partId])).rows[0]
+          AND kind IN ('public.text.operation','public.text.delta','public.text.ended','public.text.sealed') AND data->>'partId'=$2 ORDER BY seq DESC LIMIT 1`,[event.runId,data.partId])).rows[0]
         const previous=prior?.['data'] as Record<string,unknown>|undefined
-        if(previous&&['version','purpose','requestVersion','fence','attemptId','partIndex'].some(key=>previous[key]!==Reflect.get(data,key)))throw new Error('public text identity changed')
-        if(prior?.['kind']==='public.text.ended')throw new Error('public text part is already closed')
-        const chunks=previous?Number(previous['chunkIndex'])+1:0
-        if('text' in data?data.chunkIndex!==chunks:!chunks||data.chunkCount!==chunks)throw new Error('public text chunk sequence is incomplete')
+        if(previous&&['version','purpose','requestVersion','fence','attemptId','partIndex','messageId','segmentId','operation','supersedes'].some(key=>!isDeepStrictEqual(previous[key],Reflect.get(data,key))))throw new Error('public text identity changed')
+        if(event.kind==='public.text.operation'){
+          if(prior)throw new Error('answer operation already exists')
+          return append(database)
+        }
+        if(data.version===3&&!prior)throw new Error('answer operation must precede text')
+        if(event.kind==='public.text.sealed'){
+          if(prior?.['kind']!=='public.text.ended'||!['completed','tool'].includes(String(previous?.['reason']))
+            ||!('bodyHash' in data)||data.chunkCount!==previous?.['chunkCount'])throw new Error('only a complete answer segment can be sealed')
+          const chunks=(await database.query(`SELECT data->>'text' AS text FROM lingxios.agent_run_events WHERE run_id=$1
+            AND kind='public.text.delta' AND data->>'partId'=$2 ORDER BY seq`,[event.runId,data.partId])).rows
+          const text=chunks.map(row=>String(row['text'])).join('')
+          if(!text||chunks.length!==data.chunkCount||createHash('sha256').update(text).digest('hex')!==data.bodyHash)throw new Error('answer seal does not match durable text')
+          const inserted=await append(database)
+          if(!inserted)throw new Error('answer seal sequence already exists')
+          const input={...data,sealedSeq:event.seq}, stepId='sealed:'+createHash('sha256').update(data.partId).digest('hex')
+          // The event and recovery record share the same authorized lease transaction.
+          await database.query(`INSERT INTO lingxios.agent_steps(work_id,step_id,request_version,kind,input_hash,input,output,artifacts,completed_at)
+            VALUES($1,$2,$3,'runtime.answer_segment',$4,$5::jsonb,$6::jsonb,'[]'::jsonb,NOW())`,
+          [work.id,stepId,data.requestVersion,createHash('sha256').update(JSON.stringify(input)).digest('hex'),JSON.stringify(input),JSON.stringify(JSON.stringify({text}))])
+          return true
+        }
+        if(prior?.['kind']==='public.text.ended'||prior?.['kind']==='public.text.sealed')throw new Error('public text part is already closed')
+        const chunks=previous&&prior?.['kind']!=='public.text.operation'?Number(previous['chunkIndex'])+1:0
+        if('text' in data?data.chunkIndex!==chunks:!('chunkCount' in data)||!chunks||data.chunkCount!==chunks)throw new Error('public text chunk sequence is incomplete')
         return append(database)
       })
     },

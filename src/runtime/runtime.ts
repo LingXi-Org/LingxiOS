@@ -1,3 +1,6 @@
+import { AnswerSegmentSet } from './answer-segments.js'
+import { snapshotPublicTextSources, type PublicTextSources } from '../protocol/answer-segments.js'
+import { validateToolBatch, compileToolSchemas } from './tool-batch.js'
 import { snapshotOutcomeDeclaration, type OutcomeDeclaration } from '../model/outcome-declaration.js'
 import { PublicTextAttemptWriter, isPublicTextPublicationFailure, isPublicTextSafetyFailure } from './public-text.js'
 import { isMemoryDeletionReceipt } from '../memory/confirmation.js'
@@ -411,10 +414,26 @@ export class AgentRuntime {
     deepModel: ModelDriver,
   ): Promise<void> {
     const host = this.hostFor(work)
-    const fastModel = this.fastModel ? executionModel(host, this.fastModel, work, this.rootModelBudget,
-      event => this.event(work, runId, event), 'fast-model',undefined,()=>this.memoryAdmissionRuns.get(runId),()=>this.traceRequestVersions.get(runId)) : undefined
     const contextBegan = performance.now()
     const context = await (host.loadInitialContext?.(work) ?? host.loadContext(work))
+    // Select once from trusted authorization, before provider admission/binding.
+    // Private/delegated work keeps the existing strict v2 contract. This is not
+    // error recovery and never opens the public streaming permission gate.
+    const select = (source:ModelDriver) => {
+      if(source.publicTextProtocol!=='purpose-json-v3'||work.conversation?.internal!==true)return source
+      if(!source.withPublicTextProtocol)throw new Error('v3 driver must support explicit private-work protocol selection')
+      const selected=source.withPublicTextProtocol('purpose-json-v2')
+      if(selected.publicTextProtocol!=='purpose-json-v2')throw new Error('invalid private-work protocol selection')
+      return selected
+    }
+    if(this.model.publicTextProtocol==='purpose-json-v3'&&work.conversation?.internal===true){
+      const fallback=this.fallbackModel?{...this.fallbackModel,model:select(this.fallbackModel.model)}:undefined
+      deepModel=executionModel(host,select(this.model),work,this.rootModelBudget,event=>this.event(work,runId,event),'model',fallback,
+        ()=>this.memoryAdmissionRuns.get(runId),()=>this.traceRequestVersions.get(runId))
+    }
+    const fastModel=this.fastModel?executionModel(host,select(this.fastModel),work,this.rootModelBudget,
+      event=>this.event(work,runId,event),'fast-model',undefined,()=>this.memoryAdmissionRuns.get(runId),()=>this.traceRequestVersions.get(runId)):undefined
+
     if (context.memory?.admission) this.memoryAdmissionRuns.set(runId,context.memory.admissionRequestVersion ?? 0)
     if(context.memory || context.capabilities.includes('memory') || context.tools?.some(tool=>tool.action.startsWith('memory.'))) this.privateMemoryRuns.add(runId)
     await this.event(work, runId, {
@@ -444,11 +463,11 @@ export class AgentRuntime {
       if (!priorBinding && (context.executionCheckpoint || context.executionSteps?.some(step => step.kind === 'runtime.checkpoint'))) {
         throw new Error('unbound execution must resume with the original pinned worker configuration')
       }
-      const binding = { runtime: releaseVersions.runtime, semanticReview: this.semanticReview,
+      const binding = { runtime: releaseVersions.runtime, ...(this.model.publicTextProtocol==='purpose-json-v3'?{publicTextSelection:'public-v3-internal-v2-v1'}:{}), semanticReview: this.semanticReview,
         ...(semanticReviewPolicy ? { semanticReviewPolicy } : {}), harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
-        ...(deepModel.publicTextProtocol==='purpose-json-v2'?{publicTextProtocol:deepModel.publicTextProtocol}:{}),
-        ...(fastModel?.publicTextProtocol==='purpose-json-v2'?{fastPublicTextProtocol:fastModel.publicTextProtocol}:{}),
+        ...(deepModel.publicTextProtocol==='purpose-json-v2'||deepModel.publicTextProtocol==='purpose-json-v3'?{publicTextProtocol:deepModel.publicTextProtocol}:{}),
+        ...(fastModel?.publicTextProtocol==='purpose-json-v2'||fastModel?.publicTextProtocol==='purpose-json-v3'?{fastPublicTextProtocol:fastModel.publicTextProtocol}:{}),
         ...(this.additionalContentCorrections ? { additionalContentCorrections: this.additionalContentCorrections } : {}),
         ...(fastModel ? { fastProvider: fastModel.configurationFingerprint ?? null } : {}) }
       if (priorBinding && canonicalJson(priorBinding.input) !== canonicalJson(binding)) throw new Error('run behavior version changed; restore the pinned worker configuration')
@@ -463,7 +482,10 @@ export class AgentRuntime {
     let finalText = ''
     let finalEnvelope: ResponseEnvelope | undefined
     let finalPublicTextPartId: string | undefined
-    let lastGood: { text: string; envelope: ResponseEnvelope; publicTextPartId?: string } | undefined
+    let finalPublicTextSources: PublicTextSources | undefined
+    let answerSegments = new AnswerSegmentSet(runId,(session.request?.revisions.length ?? 0)+1,work.fence,context.executionSteps)
+    let pendingReplacement = false
+    let lastGood: { text: string; envelope: ResponseEnvelope; publicTextPartId?: string; publicTextSources?: PublicTextSources } | undefined
     let terminalError: Error | undefined
     let acceptanceGaps: string[] = []
     const artifacts: KernelArtifact[] = [...context.priorArtifacts ?? []]
@@ -477,7 +499,11 @@ export class AgentRuntime {
       })
     }
 
-    const rememberCandidate = async (body: string, liveContext: TurnContext, gaps: string[] = [], publicTextPartId = this.publications.get(runId)?.partId) => {
+    const rememberCandidate = async (body: string, liveContext: TurnContext, gaps: string[] = [], publicTextPartId = this.publications.get(runId)?.partId, publicTextSources?: PublicTextSources) => {
+      // A withheld replacement must not displace the last independently valid source set.
+      if (pendingReplacement && publicTextSources === undefined) return
+      const sources = publicTextSources ?? (answerSegments.hasBody ? answerSegments.assemble().sources : undefined)
+      if (sources) publicTextPartId = undefined
       const text = body.trim()
       const assessment: GoalAssessment = { status: 'partial', checks: [], gaps }
       if (!text || text.length > 100_000 || this.policy.validateAssistantText(text, liveContext)
@@ -489,16 +515,20 @@ export class AgentRuntime {
         evidence(), artifacts, session.request?.contract, session.request?.resourceChecks)
       } catch { return /* Invalid citations or artifacts must never become a partial delivery. */ }
       await this.hostFor(work).saveStep(work, { id: `candidate:${randomUUID()}`, kind: 'runtime.candidate',
-        requestVersion: envelope.requestVersion, input: publicTextPartId ? { publicTextPartId, publicTextBodyHash: createHash('sha256').update(text).digest('hex') } : {}, output: JSON.stringify(envelope), artifacts: [] })
-      lastGood = { text, envelope, ...publicTextPartId ? { publicTextPartId } : {} }
+        requestVersion: envelope.requestVersion, input: sources ? { publicTextSources:sources } : publicTextPartId ? { publicTextPartId, publicTextBodyHash: createHash('sha256').update(text).digest('hex') } : {}, output: JSON.stringify(envelope), artifacts: [] })
+      lastGood = { text, envelope, ...sources ? {publicTextSources:sources} : publicTextPartId ? { publicTextPartId } : {} }
     }
     const savedCandidate = context.executionSteps?.findLast(step => step.kind === 'runtime.candidate'
       && step.requestVersion === (session.request?.revisions.length ?? 0) + 1)
     if (savedCandidate?.output) {
       const candidate = JSON.parse(savedCandidate.output) as ResponseEnvelope
       await rememberCandidate(candidate.body, context, candidate.goalOutcome.gaps,
-        typeof savedCandidate.input['publicTextPartId'] === 'string' ? savedCandidate.input['publicTextPartId'] : undefined)
+        typeof savedCandidate.input['publicTextPartId'] === 'string' ? savedCandidate.input['publicTextPartId'] : undefined,
+        savedCandidate.input['publicTextSources'] ? snapshotPublicTextSources(savedCandidate.input['publicTextSources'],candidate.body.length) : undefined)
     }
+
+    pendingReplacement=answerSegments.records.some(item=>item.identity.operation==='replace')
+      && (!lastGood?.publicTextSources || canonicalJson(lastGood.publicTextSources)!==canonicalJson(answerSegments.assemble().sources))
 
     const applySteering = async () => {
       const steers = signals.drainSteer()
@@ -525,6 +555,8 @@ export class AgentRuntime {
             content: `Highest-priority human steering:\n${steers.map((item) => item.text).join('\n')}`,
           })
         }
+        answerSegments = new AnswerSegmentSet(runId,(session.request?.revisions.length ?? 0)+1,work.fence)
+        pendingReplacement = false
       }
     }
 
@@ -546,6 +578,8 @@ export class AgentRuntime {
       if (liveContext.memory?.admission) this.memoryAdmissionRuns.set(runId,liveContext.memory.admissionRequestVersion ?? 0)
       if (liveContext.responseProfile === 'fast' && !fastModel) throw new Error('automatic response routing requires a fast model configuration')
       const model = liveContext.responseProfile === 'fast' ? fastModel! : deepModel
+      const react = model.publicTextProtocol === 'purpose-json-v3'
+      if (react && (!liveContext.publicTextAllowed || model.previewFormat !== 'user-text')) throw new AgentOSError('public_text_required','The explicit v3 producer requires authorized durable public text publication')
       // The first deep context after an upgrade supplies the evidence skipped by the fast pass.
       if (session.request && !session.request.evidence.items.length && liveContext.evidence?.length
         && liveContext.executionSteps?.some(step => step.kind === 'runtime.response'
@@ -559,6 +593,7 @@ export class AgentRuntime {
       const { codeExecution } = execution
       liveContext.tools = execution.tools
       const modelTools = exposedTools(execution.tools, liveContext.executionSteps ?? [], liveContext.discoveredTools)
+      if (react) compileToolSchemas(modelTools) // Unsupported trusted schemas fail before a model call, never after an effect.
       session.promptContext = buildPromptContext(liveContext, this.policy, session.compactionEpoch, this.promptContractVersion, undefined, execution, this.promptCache)
       const preferenceItems = (session.promptContext.blocks ?? []).filter(block => block.trust !== 'platform' && block.trust !== 'product').map(contextItem)
       const modelContext = (value: typeof liveContext) => value.memory
@@ -573,6 +608,8 @@ export class AgentRuntime {
       const restoredMessages = session.history.some(item => isMemorySummary(item) && invalidMemorySources(item, liveContext.memory))
         ? this.policy.turnInputItems(liveContext, false) : []
       const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...restoredMessages, ...(protocolCorrection ? [protocolCorrection] : [])]
+      if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
+        +'\nContinue with append and only new text. Revisions must explicitly replace the exact active revision IDs in source order. A final null answer confirms only the existing assembled body, not unperformed work.'})
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
       const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
@@ -695,6 +732,7 @@ export class AgentRuntime {
           items: modelItems,
           tools: modelTools,
           codeExecution,
+          ...(react ? {answerContext:answerSegments.context} : {}),
           signal: generationSignal,
           onAttempt: callId => {
             const start = () => {
@@ -704,7 +742,7 @@ export class AgentRuntime {
               if (publishes) {
                 const requestVersion=(session.request?.revisions.length ?? 0)+1
                 const partId='public:'+createHash('sha256').update(JSON.stringify([runId,requestVersion,work.fence,callId,0])).digest('hex')
-                this.publications.set(runId,new PublicTextAttemptWriter({version:1,requestVersion,fence:work.fence,attemptId:callId,partId,partIndex:0},
+                this.publications.set(runId,new PublicTextAttemptWriter({version:1,requestVersion,fence:work.fence,attemptId:callId,partId,partIndex:0,...react?{messageId:answerSegments.messageId}:{}},
                   event=>this.event(work,runId,event),generationSignal,
                   this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined,model.publicTextProtocol))
               }
@@ -722,6 +760,16 @@ export class AgentRuntime {
             }
             const previous = this.publications.get(runId)
             return previous ? previous.end('superseded').then(start) : start()
+          },
+          onTextOperation: async operation => {
+            if (!react) throw new Error('answer operations require the explicit v3 producer')
+            generationSignal.throwIfAborted()
+            const publication=this.publications.get(runId)
+            if(!publication)throw new Error('answer publication was not started')
+            // Validate the replacement target before any candidate byte is visible.
+            const partId=publication.answerRevisionId
+            const segmentId=answerSegments.prepare(operation,partId)
+            await publication.begin(operation,segmentId)
           },
           onTextDelta: async (delta,metadata) => {
             if (publishes) {
@@ -801,8 +849,10 @@ export class AgentRuntime {
         (item): item is Extract<ModelItem, { type: 'function_call' }> => 'type' in item && item.type === 'function_call',
       )
       try {
-        await this.publications.get(runId)?.finish(turn.text)
-        if(calls.length)await this.publications.get(runId)?.end('tool')
+        if (!react) {
+          await this.publications.get(runId)?.finish(turn.text)
+          if(calls.length)await this.publications.get(runId)?.end('tool')
+        }
       } catch(error) {
         await this.publications.get(runId)?.end('failed').catch(()=>{})
         if(isPublicTextSafetyFailure(error)&&budget.consume('response_protocol','public text safety rejected')){
@@ -823,22 +873,57 @@ export class AgentRuntime {
       if (!calls.length && model.previewFormat === 'candidate-json' && parser.complete && turn.finalCandidate === undefined) turn = { ...turn, finalCandidate: turn.text }
 
       let declaration: OutcomeDeclaration | undefined
-      if (model.publicTextProtocol === 'purpose-json-v2' || turn.outcomeDeclaration !== undefined) {
+      if (model.publicTextProtocol === 'purpose-json-v2' || react || turn.outcomeDeclaration !== undefined) {
         try {
-          if (model.publicTextProtocol !== 'purpose-json-v2' || turn.finalCandidate !== undefined) throw new Error('outcome declaration requires the explicit v2 protocol')
+          if ((!react && model.publicTextProtocol !== 'purpose-json-v2') || turn.finalCandidate !== undefined) throw new Error('outcome declaration requires an explicit outcome protocol')
           if (calls.length) { if (turn.outcomeDeclaration !== undefined) throw new Error('tool turns cannot declare a terminal outcome') }
           else declaration = snapshotOutcomeDeclaration(turn.outcomeDeclaration)
         } catch {
           // Custom drivers have the same fail-closed boundary as the wire driver.
           // No returned tool call executes while its declaration is invalid.
           await this.publications.get(runId)?.end('failed').catch(()=>{})
-          if (!calls.length) await rememberCandidate(turn.text, liveContext, ['Final outcome declaration is invalid'])
+          if (!react && !calls.length) await rememberCandidate(turn.text, liveContext, ['Final outcome declaration is invalid'])
           const correction = modelProtocolCorrection({kind:'protocol',finishReasons:[],protocolCode:'public_text_invalid'},codeExecution,model.publicTextProtocol)
           if (!budget.consume('response_protocol','invalid outcome declaration')) {
             terminalError = new AgentOSError('response_protocol_exhausted','Outcome declaration correction budget exhausted')
             break
           }
           protocolCorrection = {role:'user',content:correction.content}
+          continue
+        }
+      }
+
+      if (react) {
+        try {
+          // Validate the entire batch before sealing any candidate or dispatching any effect.
+          validateToolBatch(calls,modelTools,codeExecution,model.profile?.parallelTools)
+          const publication=this.publications.get(runId)
+          if (turn.text) {
+            if (!turn.answerOperation || !publication?.segmentIdentity
+              || canonicalJson(turn.answerOperation)!==canonicalJson({kind:publication.segmentIdentity.operation,supersedes:publication.segmentIdentity.supersedes})) throw new Error('answer operation changed after publication')
+            await publication.finish(turn.text)
+            await publication.end(calls.length ? 'tool' : 'completed')
+            const record=await publication.seal(turn.text)
+            answerSegments.seal(record)
+            pendingReplacement ||= record.identity.operation==='replace'
+          } else {
+            if (!calls.length && (turn.answerIsNull!==true || !answerSegments.hasBody)) throw new Error('a null final answer requires sealed sources')
+            if (turn.answerOperation?.kind==='replace') throw new Error('an empty replacement cannot remove an answer')
+            await publication?.end(calls.length ? 'tool' : 'completed')
+          }
+          if (answerSegments.hasBody) {
+            const assembled=answerSegments.assemble()
+            if (calls.length) await rememberCandidate(assembled.body,liveContext)
+            else turn={...turn,text:assembled.body}
+          }
+        } catch (error) {
+          if (error instanceof LeaseLostError || error instanceof RunCancelledError || signals.lifecycle.signal.aborted || isPublicTextPublicationFailure(error)) throw error
+          await this.publications.get(runId)?.end('failed').catch(()=>{})
+          if (!budget.consume('response_protocol','invalid answer source or tool batch')) {
+            terminalError=new AgentOSError('response_protocol_exhausted','Answer source or tool protocol correction exhausted')
+            break
+          }
+          protocolCorrection={role:'user',content:'The complete response was rejected before tool dispatch. Correct the answer operation and the complete tool batch against the exposed schemas. Preserve sealed sources and recorded effects; do not retry unknown writes. '+errorMessage(error)}
           continue
         }
       }
@@ -1037,18 +1122,25 @@ export class AgentRuntime {
           continue
         }
         await this.publications.get(runId)?.end('completed')
-        finalPublicTextPartId = this.publications.get(runId)?.partId
+        finalPublicTextPartId = react ? undefined : this.publications.get(runId)?.partId
+        if (react) {
+          finalPublicTextSources=answerSegments.assemble().sources
+          await host.saveStep(work,{id:`public-text-sources:${randomUUID()}`,kind:'runtime.public_text_source',requestVersion:(session.request?.revisions.length??0)+1,
+            input:{publicTextSources:finalPublicTextSources},output:'{}',artifacts:[]})
+        }
         if (finalPublicTextPartId) await this.hostFor(work).saveStep(work, { id: `public-text:${finalPublicTextPartId}`, kind: 'runtime.public_text_source',
           requestVersion: (session.request?.revisions.length ?? 0) + 1,
           input: { publicTextPartId: finalPublicTextPartId, publicTextBodyHash: createHash('sha256').update(turn.text.trim()).digest('hex') }, output: '{}', artifacts: [] })
         session.history.push(...stripMemorySources(turn.output))
         finalText = turn.text.trim()
         if (finalText) {
+          if (!react) {
           const partIndex = nextStreamPartIndex++
           await this.event(work, runId, {
             kind: 'model.delta', stage: 'delta', visibility: 'user',
             data: { delta: finalText, partType: 'text', partIndex, partStart: true, requestVersion: (session.request?.revisions.length ?? 0) + 1 },
           })
+          }
           streamedText += finalText
         }
         break
@@ -1120,12 +1212,13 @@ export class AgentRuntime {
       }
       finalText = lastGood.text
       finalPublicTextPartId = lastGood.publicTextPartId
+      finalPublicTextSources = lastGood.publicTextSources
       finalEnvelope = createResponseEnvelope(finalText, {
         status: 'partial', verification: 'inconclusive', requestVersion: (session.request?.revisions.length ?? 0) + 1, gaps,
       }, evidence(), artifacts, session.request?.contract, session.request?.resourceChecks)
       session.history.push({ role: 'assistant', content: finalText })
       await this.hostFor(work).saveSession(work, session)
-      await this.event(work, runId, {
+      if (!finalPublicTextSources) await this.event(work, runId, {
         kind: 'model.delta', stage: 'delta', visibility: 'user',
         data: { delta: finalText, partType: 'text', partIndex: nextStreamPartIndex++, partStart: true, requestVersion: (session.request?.revisions.length ?? 0) + 1 },
       })
@@ -1139,7 +1232,7 @@ export class AgentRuntime {
       version: 2, runId, agentId: work.agentId, sessionId: work.sessionId,
       ...(work.threadId !== undefined ? { threadId: work.threadId } : {}),
       body: durableText,
-      ...finalPublicTextPartId ? { publicTextPartId: finalPublicTextPartId } : {},
+      ...finalPublicTextSources ? {publicTextSources:finalPublicTextSources} : finalPublicTextPartId ? { publicTextPartId: finalPublicTextPartId } : {},
       envelope: finalEnvelope,
     }
     this.previews.get(runId)?.buffer.close()

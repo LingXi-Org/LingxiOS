@@ -1,5 +1,7 @@
 export type { RunTraceSnapshot, RunTraceSpan, TraceState } from './protocol/run-trace.js'
 export type { PublicTextPurpose, PublicTextIdentity, PublicTextSafetyInput, PublicTextSafetyDecision } from './protocol/public-text.js'
+export { answerMessageId, assemblePublicTextSources, snapshotPublicTextOperation, snapshotPublicTextSources } from './protocol/answer-segments.js'
+export type { PublicTextOperation, PublicTextSource, PublicTextSources } from './protocol/answer-segments.js'
 export type { PublicTextAuthorizationContext, PublicTextAttempt } from './app/public-text.js'
 export { userInputWait, type UserInputWaitResult } from './protocol/input-wait.js'
 /** First-release public API: assembled runtime and stable data contracts. */

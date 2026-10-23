@@ -192,6 +192,7 @@ export class OpenAIChatDriver implements ModelDriver {
   countTokens(text: string): number { return this.options.countTokens?.(text) ?? Buffer.byteLength(text) }
   readonly maxThinkingTokens: number
   readonly protocolTokens: number
+  withPublicTextProtocol(publicTextProtocol:PublicTextProtocol):ModelDriver { return new OpenAIChatDriver(this.modelId,{...this.options,publicTextProtocol}) }
   singleAttempt(): ModelDriver { return new OpenAIChatDriver(this.modelId, { ...this.options, maxAttempts: 1 }) }
   readonly configurationFingerprint: string
   readonly contextWindowTokens: number
@@ -207,7 +208,7 @@ export class OpenAIChatDriver implements ModelDriver {
 
   constructor(readonly modelId: string, private readonly options: OpenAIDriverOptions) {
     this.recovery = recoveryPolicy(options.recovery)
-    if(options.publicTextProtocol!==undefined&&options.publicTextProtocol!=='purpose-json-v1'&&options.publicTextProtocol!=='purpose-json-v2')throw new Error('invalid public text protocol')
+    if(options.publicTextProtocol!==undefined&&!['purpose-json-v1','purpose-json-v2','purpose-json-v3'].includes(options.publicTextProtocol))throw new Error('invalid public text protocol')
     this.publicTextProtocol=options.publicTextProtocol
     this.protocolTokens=this.publicTextProtocol?this.countTokens(publicPurposeInstructions(this.publicTextProtocol)):0
     this.baseUrl = (options.baseUrl ?? DEFAULT_MODEL.baseUrl).replace(/\/+$/, '')
@@ -460,6 +461,7 @@ export class OpenAIChatDriver implements ModelDriver {
     if (tools.length && !this.profile.toolCalls) throw new Error('selected model does not support tool calls')
     if(this.publicTextProtocol&&!this.profile.jsonObject)throw new Error('public text protocol requires JSON object support')
     const purposeParser=this.publicTextProtocol?new PublicPurposeParser(this.publicTextProtocol):undefined
+    let operationPublished=false
     const companion = purposeParser && tools.length && this.profile.jsonObjectWithTools === false ? new ToolCompanionBoundary() : undefined
     const response = await this.request({
       model: this.modelId,
@@ -472,7 +474,9 @@ export class OpenAIChatDriver implements ModelDriver {
     const accumulator = await this.consumeStream(response, purposeParser?async chunk=>{
       request.signal?.throwIfAborted()
       if (companion) { const framed = companion.push(chunk); if (framed === null) return; chunk = framed }
-      for(const part of purposeParser.push(chunk)){
+      const parts=purposeParser.push(chunk)
+      if(purposeParser.operation&&!operationPublished){await request.onTextOperation?.(purposeParser.operation);operationPublished=true}
+      for(const part of parts){
         request.signal?.throwIfAborted()
         await request.onTextDelta?.(part.text,{purpose:part.purpose})
         request.signal?.throwIfAborted()
@@ -484,6 +488,10 @@ export class OpenAIChatDriver implements ModelDriver {
     }, { cause: request.signal.reason })
     if (!accumulator.finishReasons.length || accumulator.finishReasons.some(reason => reason !== 'stop' && reason !== 'tool_calls')) {
       throw new ModelDriverError('model stream did not finish normally', { ...diagnostics, kind: 'provider' })
+    }
+    if(this.publicTextProtocol==='purpose-json-v3'&&(accumulator.malformedToolCalls||accumulator.finishReasons.length!==1
+      ||accumulator.finishReasons[0] !== (accumulator.toolCalls.size?'tool_calls':'stop'))){
+      throw new ModelDriverError('invalid model turn boundary',{...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid'})
     }
     const output: ModelItem[] = []
     let text = accumulator.text
@@ -501,13 +509,14 @@ export class OpenAIChatDriver implements ModelDriver {
       try {
         if(text.length){
           purposeParser.finish()
-          text=(JSON.parse(text) as {answer:string}).answer
+          text=(JSON.parse(text) as {answer:string|null}).answer ?? ''
         }
-        if(this.publicTextProtocol==='purpose-json-v2'){
+        if(this.publicTextProtocol==='purpose-json-v2'||this.publicTextProtocol==='purpose-json-v3'){
           if(accumulator.toolCalls.size){if(accumulator.text.length&&purposeParser.outcome!==null)throw publicPurposeError()}
           else {if(!purposeParser.outcome)throw publicPurposeError();outcomeDeclaration=purposeParser.outcome}
         }
-        if(!accumulator.toolCalls.size&&!text.trim())throw publicPurposeError('public_text_answer_required')
+        if(!accumulator.toolCalls.size&&!text.trim()&&!(this.publicTextProtocol==='purpose-json-v3'&&purposeParser.answerIsNull
+          &&request.answerContext?.segmentIds.length))throw publicPurposeError('public_text_answer_required')
       }catch(error){throw new ModelDriverError('invalid public text protocol',{
         ...diagnostics,kind:'protocol',category:'protocol',
         protocolCode:error instanceof ModelDriverError ? error.diagnostics.protocolCode ?? 'public_text_invalid' : 'public_text_invalid',
@@ -515,6 +524,10 @@ export class OpenAIChatDriver implements ModelDriver {
     }
     if (text.trim()) output.push({ role: 'assistant', content: text })
     const toolCalls = [...accumulator.toolCalls.entries()].sort(([a], [b]) => a - b)
+    if(this.publicTextProtocol==='purpose-json-v3'&&toolCalls.length&&!completeCompanionTurn({text:'',calls:accumulator.toolCalls,
+      finishReasons:accumulator.finishReasons,...(accumulator.malformedToolCalls?{malformed:true}:{})},tools.map(tool=>tool.function.name),this.profile.parallelTools)){
+      throw new ModelDriverError('invalid native tool batch',{...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid'})
+    }
     for (const [, call] of this.profile.parallelTools ? toolCalls : toolCalls.slice(0, 1)) {
       if (!call.id.trim()
         || call.name === IPYTHON_TOOL_NAME && !allowPython
@@ -528,12 +541,13 @@ export class OpenAIChatDriver implements ModelDriver {
         arguments: call.arguments.trim(),
       })
     }
-    if (output.length === 0) {
+    if (output.length === 0 && !(this.publicTextProtocol==='purpose-json-v3'&&purposeParser?.answerIsNull&&request.answerContext?.segmentIds.length&&outcomeDeclaration)) {
       throw new ModelDriverError('model returned neither assistant text nor a tool call', {
         ...diagnostics, kind: 'protocol', protocolCode: 'response_empty',
       })
     }
     const result: ModelTurnResult = { output, text, usage: diagnostics.usage, ...(outcomeDeclaration ? { outcomeDeclaration } : {}) }
+    if(this.publicTextProtocol==='purpose-json-v3'&&purposeParser?.operation){result.answerOperation=purposeParser.operation;result.answerIsNull=purposeParser.answerIsNull}
     if (accumulator.model !== undefined) result.model = accumulator.model
     if (accumulator.finishReasons.length > 0) result.diagnostics = { finishReasons: accumulator.finishReasons,
       ...(companion?.unpublished ? { publicText: 'unpublished_tool_companion' } : {}) }
