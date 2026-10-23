@@ -33,6 +33,12 @@ an unknown version. The shared session's raw request boundary is kept separate
 from its work-specific effective request; neither the latest request nor a
 reused provider call ID is enough to assign every old record's origin.
 
+The read-derived history boundary also participates in lost-save-response
+reconciliation. Its expected value must come from the request this save wrote,
+not from a missing or stale client read. A different raw persisted boundary must
+still reject the retry even when the work-specific effective request matches;
+revision, lease and all other saved fields remain strict.
+
 Recovery and input-wait closure use these same owners. Foreign or unknown
 effects are never labelled `not_started` merely to close a protocol pair.
 Compaction estimates the authorized projected input, including archive framing,

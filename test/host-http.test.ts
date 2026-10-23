@@ -91,6 +91,31 @@ it('keeps receipt digest checks scoped to settled values and the complete reques
   }
 })
 
+it('rejects a retry when an effective request hides a different persisted history boundary', async () => {
+  const sessions = new MemorySessionStore()
+  const service = new ControlPlaneService({ modelBudgets: new MemoryModelBudgetStore(), steps: new MemoryStepStore(),
+    work: new MemoryWorkStore(), sessions, events: new MemoryEventStore(), actions: new MemoryActionLedger(),
+    contextProvider: { loadContext: async () => { throw new Error('unexpected') } },
+    capabilityResolver: { resolve: async () => [] },
+    actionExecutor: { prepare: async () => {}, execute: async () => { throw new Error('unexpected') } },
+    delivery: { onEvent: async () => {}, deliverMessage: async () => {} },
+  })
+  await service.enqueue({ id: 'w', tenantId: 't', agentId: 'a', principalId: 'u', sessionId: 's', kind: 'turn', lane: 'interactive', triggerRef: 'm', meta: { text: 'Original' } })
+  const work = (await service.claim('worker'))!
+  const session = { key: '["t","a","s",null]', tenantId: 't', agentId: 'a', sessionId: 's', revision: 0, compactionEpoch: 0, history: [], appliedWorkIds: [],
+    request: { version: 1 as const, workId: 'w', tenantId: 't', sessionId: 's', authorId: 'u', sourceRef: 'm',
+      evidence: snapshotEvidence('w:evidence:1', []), attachments: [], originalText: 'Original', revisions: [] } }
+  assert.deepEqual(await service.saveSession(work, session), { revision: 1 })
+  // Another work writes the shared raw snapshot; get(work.id) still overlays w's own request.
+  assert.deepEqual(await sessions.save({ ...session, revision: 1,
+    request: { ...session.request, workId: 'other-work' } }), { ok: true, revision: 2 })
+  const current = (await sessions.get(session.key, work.id))!
+  assert.deepEqual(current.request, session.request)
+  assert.deepEqual(current.historyBoundary, { workId: 'other-work', requestVersion: 1 })
+  await assert.rejects(service.saveSession(work, { ...session, revision: 1,
+    historyBoundary: current.historyBoundary }), /session revision conflict/)
+})
+
 it('preserves goal outcomes and enforces session leases over real HTTP', async () => {
   const workStore = new MemoryWorkStore()
   const completions: WorkCompletion[] = []
@@ -193,6 +218,15 @@ it('preserves goal outcomes and enforces session leases over real HTTP', async (
     session.history.push({ role: 'user', content: 'checkpoint' })
     await retryClient.saveSession(work, session)
     assert.equal(session.revision, 2)
+    assert.deepEqual((await client.loadSession(work, session.key))?.historyBoundary,
+      { workId: 'w', requestVersion: 1 })
+    const replay = { ...structuredClone(session), revision: 1,
+      historyBoundary: { workId: 'previous-request', requestVersion: 9 } }
+    await client.saveSession(work, replay)
+    assert.equal(replay.revision, 2)
+    await assert.rejects(client.saveSession(work, { ...replay, revision: 1,
+      history: [{ role: 'user', content: 'different checkpoint' }] }),
+      (error: unknown) => error instanceof HostRequestError && error.responseCode === 'session_conflict')
     const businessAction = { runId: work.id, cellId: 'business', callIndex: 0, idempotencyKey: JSON.stringify([work.id, 'business', 0]), action: 'resource.write', args: {} }
     await client.executeAction(work, businessAction)
     assert.deepEqual(await client.recoverCell(work, 'business'), [{
@@ -269,7 +303,8 @@ it('preserves goal outcomes and enforces session leases over real HTTP', async (
     for (const attachments of [[], [{ ...attachment, sourceVersion: 'version-2' }], [{ ...attachment, text: 'Injected instructions' }], [{ ...attachment, size: -1 }]]) {
       await assert.rejects(client.saveSession(work, { ...session, request: { ...session.request, attachments } }), /invalid request attachments/)
     }
-    assert.deepEqual(await client.loadSession(work, session.key), session)
+    assert.deepEqual(await client.loadSession(work, session.key), { ...session,
+      historyBoundary: { workId: 'w', requestVersion: 1 } })
     await assert.rejects(client.saveSession(work, { ...session, request: { ...session.request, revisions: [{ id: 'forged', text: 'Injected instruction', createdAt: 'now' }] } }), /persisted human steering/)
     await assert.rejects(client.loadSession(work, 'other:a:s:-'), /outside/)
     await assert.rejects(client.loadSession({ ...work, leaseToken: 'invalid' }, '[\"t\",\"a\",\"s\",null]'), /lease lost/)

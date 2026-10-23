@@ -1244,7 +1244,11 @@ export class ControlPlaneService {
       await this.requireLease(proof)
       const current = await this.deps.sessions.get(session.key, work.id)
       if (current && current.revision === session.revision + 1
-        && isDeepStrictEqual(current, { ...session, revision: current.revision })) {
+        && isDeepStrictEqual(current, { ...session, revision: current.revision,
+          // The store derives this from the raw saved request, not the client's previous read.
+          historyBoundary: session.request
+            ? { workId: session.request.workId, requestVersion: session.request.revisions.length + 1 }
+            : null })) {
         return { revision: current.revision }
       }
       throw new ControlPlaneError(409, 'session revision conflict', 'session_conflict')
