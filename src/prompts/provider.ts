@@ -3,7 +3,7 @@ import type { PromptContext, TurnContext } from '../protocol/types.js'
 import type { RuntimePolicy } from '../runtime/policy.js'
 import { executionSnapshot, type ExecutionSnapshot } from '../runtime/execution-policy.js'
 
-export const PROMPT_CONTRACT_VERSION = 'prompt-v3.2'
+export const PROMPT_CONTRACT_VERSION = 'prompt-v3.3'
 const compiled = new WeakMap<RuntimePolicy, Map<string, PromptContext>>()
 
 /** Gather trusted configuration once per hop; persisted instructions are never an input. */

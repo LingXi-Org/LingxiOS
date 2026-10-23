@@ -41,7 +41,7 @@ it('does not reset repeated failures for timestamps or wording in observations a
   assert.equal(new CorrectionBudget(budget.snapshot()).consume('response_protocol', 'three'), false)
 })
 
-async function fixture(original: string, model: ModelDriver, tools?: TurnContext['tools']) {
+async function fixture(original: string, model: ModelDriver, tools?: TurnContext['tools'], semanticReview: 'disabled' | 'required' = 'disabled') {
   let message: AssistantMessage | undefined, session: SessionRecord | undefined
   const steps: import('../src/control-plane/steps.js').ExecutionStep[] = []
   const events: import('../src/protocol/types.js').RunEvent[] = []
@@ -53,7 +53,7 @@ async function fixture(original: string, model: ModelDriver, tools?: TurnContext
     executeAction: async () => ({ ok: true, value: { requestVersion: 1, pending: [], truncated: false } }),
     saveStep: async (_work, step) => { steps.push(structuredClone(step)) }, emitEvent: async (_work, event) => { events.push(event) },
     commitResult: async (_work, value) => { message = value }, completeWork: async (_work, value) => { completion = value }, yieldWork: async () => {} }
-  await new AgentRuntime(host, model, { execute: unexpected }).runWork(work)
+  await new AgentRuntime(host, model, { execute: unexpected },{ semanticReview }).runWork(work)
   return { message, session, steps, events, completion }
 }
 
@@ -87,7 +87,10 @@ it('sends only available capabilities and generic truthfulness rules for represe
         assert.doesNotMatch(request.instructions, /email|calendar|日历|邮件/i)
         assert.doesNotMatch(JSON.stringify(request.tools), /email|calendar|日历|邮件/i)
         assert.match(request.instructions, /Never invent identifiers, receipts or resource state/)
-        return { text: answer!, output: [], usage }
+        return original!.includes('邮件')
+          ? { text: '',output: [],usage,finalCandidate: JSON.stringify({ body: answer,status: 'blocked',gaps: ['No authorized execution tools are available.'],
+            checks: [{ requirement: original,status: 'unknown',basis: 'No authorized execution tools are available.' }] }) }
+          : { text: answer!,output: [],usage }
       },
       structured: async request => ({ model: 'fixture', usage, value: Array.isArray((request.input as { findings?: unknown }).findings)
         ? { deferred: [] } : { missing: original!.includes('邮件') ? [{ quote: original!, reason: 'No execution receipt exists.' }] : [] } }),
@@ -110,7 +113,7 @@ it('independently reviews omitted requirements without relying on a model-author
       assert.equal((request.input as { originalText: string }).originalText, 'Name both options and include their costs.')
       assert.match(request.instructions, /derived checklist can omit requirements/)
       return { model: 'reviewer', value: { missing: reviews === 1 ? [{ quote: 'include their costs', reason: 'Both prices are missing.' }] : [] }, usage }
-    } })
+    } },undefined,'required')
   assert.equal(calls, 2); assert.equal(reviews, 2)
   assert.equal(result.message?.envelope.goalOutcome.status, 'satisfied')
   const review = result.steps.filter(step => step.kind === 'runtime.review').at(-1)!
@@ -133,7 +136,7 @@ it('reviews an omitted file even when the model executes no tool', async () => {
     structured: async request => {
       if (Array.isArray((request.input as { findings?: unknown }).findings)) return { model: 'reviewer', value: { deferred: [] }, usage }
       reviews++; return { model: 'reviewer', value: { missing: [{ quote: 'report file', reason: 'No file was created or attached.' }] }, usage }
-    } })
+    } },undefined,'required')
   assert.equal(reviews, 3)
   assert.notEqual(result.message?.envelope.goalOutcome.status, 'satisfied')
 })

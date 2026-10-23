@@ -297,6 +297,8 @@ export interface ContextMessage {
  * into the session.
  */
 export interface TurnContext {
+  /** Trusted resolver identity, frozen by the worker behavior binding. */
+  semanticReviewPolicy?: import('../outcome/verification.js').SemanticReviewPolicyIdentity
   responseProfile?: import('../runtime/response-policy.js').ResponseProfile
   session?: SessionRecord | null
   snapshotVersion?: { fence: number; requestVersion: number; sessionRevision: number }

@@ -13,7 +13,7 @@ export type { KernelExecutor, ManagedKernelExecutor, KernelHostBridge } from '..
 
 /** Standalone HTTP worker; products register their processors through createWorker. */
 export async function startWorker(env: NodeJS.ProcessEnv = process.env,
-  options: Pick<WorkerOptions, 'kernelFactory' | 'policy' | 'processors'> = {}) {
+  options: Pick<WorkerOptions, 'kernelFactory' | 'policy' | 'processors' | 'semanticReview'> = {}) {
   const config = loadWorkerConfig(env)
   const worker = createWorker({ ...options,
     controlPlane: { url: config.controlPlaneUrl, serviceToken: config.serviceToken },
