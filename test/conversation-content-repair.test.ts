@@ -53,7 +53,7 @@ for (const assessment of [false,true]) it(`repairs an ordinary conversation omis
     } }
   await new AgentRuntime(f.host,model,kernel).runWork(f.work)
   assert.equal(turns,2)
-  assert.equal(reviews,assessment ? 1 : 3)
+  assert.equal(reviews,assessment ? 1 : 2, 'one joint review per candidate, without a serial scope call')
   assert.equal(f.result().committed?.body,'The complete comparison is supplied.')
   assert.equal(f.result().committed?.envelope.goalOutcome.status,'satisfied')
 })

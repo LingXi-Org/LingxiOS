@@ -8,6 +8,7 @@ export interface RunTraceSpan {
   seq: number | null; revision: string
   childRunId?: string
   callId?: string; model?: string | null; usageAvailable?: boolean
+  operation?: import('../model/operation.js').ModelOperation
   inputTokens?: number | null; outputTokens?: number | null; costMicros?: number | null
   toolCallId?: string; name?: string | null
 }

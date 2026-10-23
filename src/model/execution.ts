@@ -9,6 +9,7 @@ import { abortable } from '../deadline.js'
 import { fitsModel, inputTokens as estimateInputTokens, modelProfile } from './profile.js'
 import { modelFailure, recoveryPolicy, type ModelFailure } from './recovery.js'
 import type { ModelBudgetLimits } from '../control-plane/stores.js'
+import type { ModelOperation } from './operation.js'
 
 export interface ModelPricing {
   version: string
@@ -30,6 +31,7 @@ export interface ModelCallObservation {
   callId: string
   logicalCallId?: string
   purpose: 'agent-turn' | 'structured' | 'compaction' | 'embedding'
+  operation?: ModelOperation
   workId: string
   tenantId: string
   agentId: string
@@ -80,11 +82,15 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
   let sequence = 0, calls = 0, tokens = 0, cost = 0
   const started = Date.now()
   const invoke = async <T extends { model?: string; usage: ModelUsage }>(purpose: ModelCallObservation['purpose'],
-    request: { signal?: AbortSignal | undefined; input?: unknown; instructions?: string; prompt?: PromptManifest },
+    request: { signal?: AbortSignal | undefined; input?: unknown; instructions?: string; prompt?: PromptManifest;
+      operation?: 'generation' | 'correction'; purpose?: import('./profile.js').ModelPurpose },
     operation: (signal: AbortSignal, callId: string, diagnostics: Record<string, unknown>, selected: typeof model,
       admit?: () => Promise<void>) => Promise<T>,
     callModel = model, fallback?: { model: typeof model; authorize(signal: AbortSignal): Promise<void> }): Promise<T> => {
     const traceRequestVersion = requestVersion?.() ?? work.requestVersion
+    const operationKind: ModelOperation = purpose === 'agent-turn' ? request.operation === 'correction' ? 'correction' : 'generation'
+      : purpose === 'structured' ? request.purpose === 'content-review' || request.purpose === 'memory-synthesis' || request.purpose === 'approval-explanation'
+        ? request.purpose : 'structured' : purpose
     const instructionsSha256 = request.instructions === undefined ? undefined : textSha256(request.instructions)
     if (request.prompt && request.prompt.instructionsSha256 !== instructionsSha256) throw new Error('prompt manifest does not match model instructions')
     const logicalCallId = `${work.id}:${work.fence}:${namespace}:${++sequence}`
@@ -141,7 +147,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       try {
         await emit?.({
           kind: 'model.request.started', stage: 'started', visibility: 'internal',
-          data: { callId, logicalCallId, purpose, ...(traceRequestVersion ? { requestVersion: traceRequestVersion } : {}), model: callModel.modelId ?? 'unknown',
+          data: { callId, logicalCallId, purpose, operation: operationKind, ...(traceRequestVersion ? { requestVersion: traceRequestVersion } : {}), model: callModel.modelId ?? 'unknown',
             ...(request.prompt ? { prompt: request.prompt } : {}), ...(instructionsSha256 ? { instructionsSha256 } : {}) } })
         delete diagnostics['providerNotStarted']
         result = await abortable(operation(signal, callId, diagnostics,callModel,admit), signal)
@@ -155,7 +161,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       tokens += inputTokens + outputTokens - input - output; cost += costMicros - reservedCost
       const observation: ModelCallObservation = {
         ...(request.prompt ? { prompt: request.prompt } : {}), ...(instructionsSha256 ? { instructionsSha256 } : {}),
-        callId, ...(attempt > 1 ? { logicalCallId } : {}), purpose,
+        callId, ...(attempt > 1 ? { logicalCallId } : {}), purpose, operation: operationKind,
         workId: work.id, tenantId: work.tenantId, agentId: work.agentId, sessionId: work.sessionId,
         ...(work.threadId !== undefined ? { threadId: work.threadId } : {}), ...(work.principalId ? { principalId: work.principalId } : {}),
         model: result?.model ?? callModel.modelId ?? 'unknown', usage: usage?.available ? usage : { available: false, inputTokens, outputTokens },

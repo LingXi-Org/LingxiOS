@@ -1,0 +1,190 @@
+{
+  "model": "zai-org/GLM-5.2",
+  "sourceSha256": "20a29bd1a211db15749f863455e1c12bf22fbc56bbf5765b7dca8cbd59d9d007",
+  "syntheticOnly": true,
+  "cases": [
+    {
+      "id": "simple-known-fact",
+      "passed": true,
+      "gap": false,
+      "missing": 0,
+      "limitations": 0,
+      "error": null,
+      "calls": 1,
+      "operations": [
+        "content-review"
+      ],
+      "responseShape": [
+        {
+          "missing": 0,
+          "limitations": [],
+          "deferred": "undefined"
+        }
+      ],
+      "elapsedMs": 2075,
+      "measured": true,
+      "status": [
+        "succeeded"
+      ],
+      "failure": [
+        null
+      ]
+    },
+    {
+      "id": "unavailable-requested-fact",
+      "passed": true,
+      "gap": true,
+      "missing": 1,
+      "limitations": 1,
+      "error": null,
+      "calls": 1,
+      "operations": [
+        "content-review"
+      ],
+      "responseShape": [
+        {
+          "missing": 1,
+          "limitations": [
+            {
+              "hasRequest": true
+            }
+          ],
+          "deferred": "undefined"
+        }
+      ],
+      "elapsedMs": 2260,
+      "measured": true,
+      "status": [
+        "succeeded"
+      ],
+      "failure": [
+        null
+      ]
+    },
+    {
+      "id": "capability-boundary-is-explanatory",
+      "passed": true,
+      "gap": false,
+      "missing": 0,
+      "limitations": 0,
+      "error": null,
+      "calls": 1,
+      "operations": [
+        "content-review"
+      ],
+      "responseShape": [
+        {
+          "missing": 0,
+          "limitations": [
+            {
+              "hasRequest": false
+            }
+          ],
+          "deferred": "undefined"
+        }
+      ],
+      "elapsedMs": 1472,
+      "measured": true,
+      "status": [
+        "succeeded"
+      ],
+      "failure": [
+        null
+      ]
+    },
+    {
+      "id": "human-reserves-publication",
+      "passed": true,
+      "gap": false,
+      "missing": 0,
+      "limitations": 0,
+      "error": null,
+      "calls": 1,
+      "operations": [
+        "content-review"
+      ],
+      "responseShape": [
+        {
+          "missing": 0,
+          "limitations": [
+            {
+              "hasRequest": false
+            }
+          ],
+          "deferred": []
+        }
+      ],
+      "elapsedMs": 1574,
+      "measured": true,
+      "status": [
+        "succeeded"
+      ],
+      "failure": [
+        null
+      ]
+    },
+    {
+      "id": "later-human-confirmation-makes-send-due",
+      "passed": true,
+      "gap": true,
+      "missing": 2,
+      "limitations": 1,
+      "error": null,
+      "calls": 1,
+      "operations": [
+        "content-review"
+      ],
+      "responseShape": [
+        {
+          "missing": 2,
+          "limitations": [
+            {
+              "hasRequest": true
+            }
+          ],
+          "deferred": []
+        }
+      ],
+      "elapsedMs": 2576,
+      "measured": true,
+      "status": [
+        "succeeded"
+      ],
+      "failure": [
+        null
+      ]
+    },
+    {
+      "id": "agent-cannot-defer-human-work",
+      "passed": true,
+      "gap": true,
+      "missing": 1,
+      "limitations": 1,
+      "error": null,
+      "calls": 1,
+      "operations": [
+        "content-review"
+      ],
+      "responseShape": [
+        {
+          "missing": 1,
+          "limitations": [
+            {
+              "hasRequest": true
+            }
+          ],
+          "deferred": []
+        }
+      ],
+      "elapsedMs": 1641,
+      "measured": true,
+      "status": [
+        "succeeded"
+      ],
+      "failure": [
+        null
+      ]
+    }
+  ],
+  "passed": true
+}
