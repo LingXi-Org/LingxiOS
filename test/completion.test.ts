@@ -185,11 +185,14 @@ it('exposes only trusted policy identity and binds nomination to the verified ca
 for (const mode of ['changed','revoked','malformed','policy-drift'] as const) it(`rejects a focused review after ${mode} while permitting honest partial delivery`,async () => {
   const scope = { id: 'requested-skill',rubric: 'Check the current requested result.' }
   let current: unknown = scope
-  const policy = { id: 'skill-policy',version: '1',resolve: async () => current as typeof scope | undefined }
+  const policy = { id: 'skill-policy',version: '1',resolve: async () => {
+    if (current instanceof Error) throw current
+    return current as typeof scope | undefined
+  } }
   const f = await focusedFixture('selective',policy)
   await f.review(scope)
   if (mode === 'changed') current = { ...scope,rubric: 'A different current criterion.' }
-  if (mode === 'revoked') current = undefined
+  if (mode === 'revoked') current = new Error('Current scope authority was revoked')
   if (mode === 'malformed') current = { ...scope,rubric: '' }
   if (mode === 'policy-drift') policy.version = '2'
   await assert.rejects(f.service.commitResult(f.work,f.message()),/evidence or artifact records/)
@@ -218,4 +221,56 @@ it('does not let a trusted nomination callback mutate the authenticated delivery
   const f = await focusedFixture('selective',{ id: 'policy',version: '1',resolve: async work => { work.id = 'another-work'; return undefined } })
   await f.service.commitResult(f.work,f.message())
   assert.equal(f.committed()?.runId,'w')
+})
+
+
+for (const mode of ['selective','required'] as const) it(`clears an old negative scoped review only after a fresh same-policy decision (${mode})`,async () => {
+  const scope = { id: 'requested-skill',rubric: 'Check the requested result.' }
+  let current: typeof scope | undefined = scope
+  const f = await focusedFixture(mode,{ id: 'policy',version: '1',resolve: async () => current })
+  const hash = candidateHash(f.candidate)
+  const saveReview = async (id: string,scoped: boolean,missing: unknown[]) => f.service.saveStep(f.work,{ id,kind: 'runtime.review',requestVersion: 1,
+    input: { workId: f.work.id,candidateHash: hash },output: JSON.stringify({ workId: f.work.id,candidateHash: hash,requestVersion: 1,missing,limitations: [],
+      ...(scoped ? { semanticReview: { id: scope.id,rubricSha256: semanticReviewScopeHash(scope) } } : {}) }),artifacts: [] })
+  // Even a previously clean generic review predating the scoped finding is not a fresh review after clear.
+  if (mode === 'required') await saveReview('old-generic',false,[])
+  await saveReview('old-scoped',true,[{ quote: 'Explain gravity',reason: 'The requested native result was not yet available.' }])
+  await assert.rejects(f.service.commitResult(f.work,f.message()),/evidence or artifact records/)
+  current = undefined // Explicit same-policy decision: the scope is no longer required.
+  if (mode === 'required') {
+    await assert.rejects(f.service.commitResult(f.work,f.message()),/evidence or artifact records/)
+    await saveReview('fresh-generic',false,[])
+  }
+  await f.service.commitResult(f.work,f.message())
+  assert.equal(f.committed()?.envelope.goalOutcome.status,'satisfied')
+})
+
+it('does not clear a generic negative review when the trusted policy returns undefined',async () => {
+  const f = await focusedFixture('selective',{ id: 'policy',version: '1',resolve: async () => undefined })
+  const hash = candidateHash(f.candidate)
+  await f.service.saveStep(f.work,{ id: 'generic-negative',kind: 'runtime.review',requestVersion: 1,
+    input: { workId: f.work.id,candidateHash: hash },output: JSON.stringify({ workId: f.work.id,candidateHash: hash,requestVersion: 1,
+      missing: [{ quote: 'Explain gravity',reason: 'A current generic omission.' }],limitations: [] }),artifacts: [] })
+  await assert.rejects(f.service.commitResult(f.work,f.message()),/evidence or artifact records/)
+})
+
+
+it('clears incomplete prepaid scoped markers only after a fresh same-policy decision',async () => {
+  for (const mode of ['selective','required'] as const) {
+    const scope = { id: 'scope',rubric: 'Check the current result.' }
+    let current: typeof scope | undefined = scope
+    const f = await focusedFixture(mode,{ id: 'policy',version: '1',resolve: async () => current })
+    const hash = candidateHash(f.candidate)
+    await f.service.saveStep(f.work,{ id: 'prepaid-review',kind: 'runtime.review',requestVersion: 1,
+      input: { workId: f.work.id,candidateHash: hash,semanticReview: { id: scope.id,rubricSha256: semanticReviewScopeHash(scope) } },artifacts: [] })
+    await assert.rejects(f.service.commitResult(f.work,f.message()),/evidence or artifact records/)
+    current = undefined
+    if (mode === 'required') {
+      await assert.rejects(f.service.commitResult(f.work,f.message()),/evidence or artifact records/)
+      await f.service.saveStep(f.work,{ id: 'fresh-generic',kind: 'runtime.review',requestVersion: 1,input: { workId: f.work.id,candidateHash: hash },
+        output: JSON.stringify({ workId: f.work.id,candidateHash: hash,requestVersion: 1,missing: [],limitations: [] }),artifacts: [] })
+    }
+    await f.service.commitResult(f.work,f.message())
+    assert.equal(f.committed()?.envelope.goalOutcome.status,'satisfied')
+  }
 })

@@ -944,22 +944,33 @@ export class ControlPlaneService {
       // disabling a fallible evaluator never disables the native checks above or below.
       const candidate = { body: message.body, requestVersion: message.envelope.requestVersion, artifacts }
       let scope: SemanticReviewScope | undefined
+      let scopeCleared = false
       try {
         const policy = this.deps.semanticReviewPolicy
         const identity = policy ? snapshotSemanticReviewPolicyIdentity({ id: policy.id, version: policy.version }) : undefined
-        if (!isDeepStrictEqual(binding?.input['semanticReviewPolicy'], identity)) gaps.push('Semantic review policy identity changed')
+        const samePolicy = isDeepStrictEqual(binding?.input['semanticReviewPolicy'], identity)
+        if (!samePolicy) gaps.push('Semantic review policy identity changed')
         const nominated = policy ? await policy.resolve(structuredClone(work), structuredClone(candidate)) : undefined
         if (nominated !== undefined) scope = snapshotSemanticReviewScope(nominated)
-        if (policy && !isDeepStrictEqual(identity, snapshotSemanticReviewPolicyIdentity({ id: policy.id, version: policy.version }))) {
-          gaps.push('Semantic review policy identity changed during nomination')
-        }
+        const unchangedPolicy = !policy || isDeepStrictEqual(identity, snapshotSemanticReviewPolicyIdentity({ id: policy.id, version: policy.version }))
+        if (!unchangedPolicy) gaps.push('Semantic review policy identity changed during nomination')
+        // Undefined is an explicit current decision, not revocation. Unavailable authority must throw.
+        scopeCleared = Boolean(policy) && samePolicy && unchangedPolicy && nominated === undefined
       } catch { gaps.push('Current semantic review policy is unavailable or invalid') }
       if (scope && reviewMode === 'disabled') gaps.push('The nominated semantic review is disabled and remains unverified')
       const reviewRequired = reviewMode === 'required' || Boolean(scope) || reviewMode === undefined
         && (requiresReview(session.request, steps, this.deps.tools ?? TASK_TOOLS, artifacts) || (await this.deps.work.children(work)).length > 0)
       const hash = candidateHash(candidate)
-      const review = steps.findLast(step => step.kind === 'runtime.review' && step.requestVersion === message.envelope.requestVersion
+      const reviews = steps.filter(step => step.kind === 'runtime.review' && step.requestVersion === message.envelope.requestVersion
         && step.input['workId'] === work.id && step.input['candidateHash'] === hash)
+      const scoped = (step: import('./steps.js').ExecutionStep) => {
+        if (step.input['semanticReview'] !== undefined) return true
+        try { return (step.output ? JSON.parse(step.output) : undefined)?.semanticReview !== undefined } catch { return false }
+      }
+      const lastScoped = scopeCleared ? reviews.findLastIndex(scoped) : -1
+      // Clearing a focused criterion does not clear generic findings or native checks.
+      // Required mode still needs a generic review after the superseded scoped review.
+      const review = reviews.findLast((step, index) => !scopeCleared || !scoped(step) && (reviewMode !== 'required' || index > lastScoped))
       if (reviewRequired || review) {
         const checked = review?.output ? JSON.parse(review.output) : undefined
         if (!checked || checked.error || (scope ? checked.semanticReview?.id !== scope.id
