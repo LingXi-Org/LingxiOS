@@ -275,7 +275,7 @@ it('rewraps only provider history without mutating canonical args or duplicating
 it('freezes policy identity, preserves singleAttempt, and removes it for internal v2', () => {
   const plain = new OpenAIChatDriver('fixture', { ...options, nativeToolPublicOutput: undefined })
   const enabled = new OpenAIChatDriver('fixture', options)
-  assert.equal(plain.configurationFingerprint, '1b443b22adfc76f57bf373c30908b49cbae78483e9dda2dcb1a25842d7a2e75c', 'opt-out retains its 3.8.10 binding')
+  assert.notEqual(plain.configurationFingerprint, '1b443b22adfc76f57bf373c30908b49cbae78483e9dda2dcb1a25842d7a2e75c', 'v3 optional commentary parsing cannot resume the older strict-commentary binding')
   assert.notEqual(enabled.configurationFingerprint, '5a2dbfd87b94d9536aa3f58af4a9b71c163f9824ab260eb04dce63ac0dbc5eb0', 'buffered identity policy cannot resume the older envelope binding')
   assert.notEqual(enabled.configurationFingerprint, plain.configurationFingerprint)
   assert.equal(enabled.singleAttempt().configurationFingerprint, enabled.configurationFingerprint)

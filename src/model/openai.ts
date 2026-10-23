@@ -264,7 +264,7 @@ export class OpenAIChatDriver implements ModelDriver {
       capabilities: jsonObjectWithTools === false ? { ...legacyCapabilities, jsonObjectWithTools: false } : legacyCapabilities,
       previewFormat: this.previewFormat,
       ...(this.publicTextProtocol?{publicTextProtocol:this.publicTextProtocol}:{}),
-      ...(this.publicTextProtocol==='purpose-json-v3'?{publicPurposeInstructionsPolicy:'v3-native-tool-phases-v1'}:{}),
+      ...(this.publicTextProtocol==='purpose-json-v3'?{publicPurposeInstructionsPolicy:'v3-native-tool-phases-v1',publicPurposeParserPolicy:'optional-commentary-v1'}:{}),
       ...(this.publicTextProtocol && jsonObjectWithTools === false ? { toolCompanionPolicy: 'unpublished-native-prose-v1' } : {}),
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),

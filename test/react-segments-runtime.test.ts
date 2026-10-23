@@ -44,7 +44,7 @@ it('all catalog arguments are checked without coercion or side effects before an
   assert.throws(()=>compileToolSchemas([{...probe,parameters:{...probe.parameters,properties:{value:{unrecognizedAssertion:true}}}}]),/unknown keyword/)
 })
 
-type Reply={answer:string|null;tool?:number;badSecond?:boolean;replace?:boolean;partial?:boolean;intermediate?:boolean}
+type Reply={answer:string|null;tool?:number;badSecond?:boolean;replace?:boolean;partial?:boolean;intermediate?:boolean;omitCommentary?:boolean}
 async function fixture(replies:Reply[],allowed=true,text='Read the synthetic record and explain the result.',continuation=false,fault?:'seal'|'second-seal'|'cancel',maxCalls?:number,fastOnly=false){
   const db=new PGlite(),home=await mkdtemp(join(tmpdir(),'react-runtime-'))
   await db.exec(await readFile(new URL('../../db/schema.sql',import.meta.url),'utf8'))
@@ -76,7 +76,7 @@ async function fixture(replies:Reply[],allowed=true,text='Read the synthetic rec
     const reply=replies[modelCalls++]??{answer:null,partial:true}
     const rows=await pool.query("SELECT input FROM lingxios.agent_steps WHERE kind='runtime.answer_segment' ORDER BY step_seq")
     const supersedes=reply.replace?rows.rows.map(row=>String((row['input'] as Record<string,unknown>)['partId'])):[]
-    const content=JSON.stringify({operation:{kind:reply.replace?'replace':'append',supersedes},commentary:'',answer:reply.answer,outcome:reply.tool===undefined&&!reply.intermediate?{status:reply.partial?'partial':'satisfied',gaps:reply.partial?['Synthetic limitation.']:[]}:null})
+    const content=JSON.stringify({operation:{kind:reply.replace?'replace':'append',supersedes},...(reply.omitCommentary?{}:{commentary:''}),answer:reply.answer,outcome:reply.tool===undefined&&!reply.intermediate?{status:reply.partial?'partial':'satisfied',gaps:reply.partial?['Synthetic limitation.']:[]}:null})
     const calls=reply.tool===undefined?undefined:[{index:0,id:`call-${modelCalls}`,function:{name:probe.name,arguments:JSON.stringify({value:reply.tool})}},...reply.badSecond?[{index:1,id:`bad-${modelCalls}`,function:{name:probe.name,arguments:'{"value":"invalid"}'}}]:[]]
     const frame=(delta:unknown,finish:string|null)=>`data: ${JSON.stringify({choices:[{delta,finish_reason:finish}],usage:{prompt_tokens:20,completion_tokens:10}})}\n\n`
     return new Response(frame({content},null)+frame(calls?{tool_calls:calls}:{},calls?'tool_calls':'stop')+'data: [DONE]\n\n')
@@ -238,5 +238,16 @@ it('fast-only continuation restores its sealed body when restart selects termina
   try{const initial=await f.run();assert.equal(f.calls,1,JSON.stringify(initial.run))
     const state=await f.restart();assert.equal(state.run.status,'succeeded',JSON.stringify(state.run));assert.equal(f.calls,2);assert.equal(state.message?.body,'Known answer.')
     assert.equal(JSON.stringify(f.requests[1]).split('Known answer.').length-1,1)
+  }finally{await f.close()}
+})
+
+it('optional commentary completes intermediate → native tool → terminal without protocol correction',async()=>{
+  const f=await fixture([{answer:'Known fact. ',intermediate:true,omitCommentary:true},{answer:'',tool:2},{answer:'Observed result.',omitCommentary:true}],true,'Read and explain.',true)
+  try{const state=await f.run();assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'Known fact. Observed result.')
+    assert.equal(f.calls,3);assert.equal(f.effects,1);assert.equal(f.auxiliary,0)
+    const events=(await f.app.readEvents(f.identity)).events
+    assert.equal(events.filter(e=>e.kind==='public.text.sealed').length,2)
+    const failures=await f.pool.query("SELECT 1 FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='model.failed'",[f.identity.runId])
+    assert.equal(failures.rows.length,0)
   }finally{await f.close()}
 })

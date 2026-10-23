@@ -142,6 +142,8 @@ export class PublicPurposeParser {
         }
         if(++this.framing>4096)throw publicPurposeError()
         if(this.offset===0&&/[\t\r\n ]/.test(character))continue
+        // v3 commentary is optional; reuse the existing answer token/string states.
+        if(this.protocol==='purpose-json-v3'&&this.stage===1&&this.offset===1&&character==='a')this.stage=6
         const token=this.tokens[this.stage]
         if(!token||character!==token[this.offset])throw publicPurposeError()
         if(++this.offset===token.length){this.stage++;this.offset=0}

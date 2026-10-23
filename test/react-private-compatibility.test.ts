@@ -148,6 +148,15 @@ it('continuation opt-in selects the unchanged private v2 driver and binding',asy
     assert.equal(binding['publicTextContinuation'],undefined)
     assert.equal(binding['provider'],f.initial.driver.withPublicTextProtocol('purpose-json-v2').configurationFingerprint)
     assert.doesNotMatch(JSON.stringify(f.bodies),/typed-message-v1|Message lifecycle capability/)
+    const messages=f.bodies[0]!['messages'] as Array<{role:string;content:string}>
+    const system=messages.filter(message=>message.role==='system').map(message=>message.content).join('\n')
+    assert.match(system,/Public output wire contract \(purpose-json-v2\)/)
+    assert.match(system,/With no native tool calls, answer must be nonempty and outcome must be an object with exactly status then gaps/)
+    assert.match(system,/status is satisfied only when the current requested result was delivered/)
+    assert.match(system,/otherwise use partial or blocked/)
+    assert.match(system,/Native authorization, receipts, resources and completion checks remain authoritative/)
+    assert.doesNotMatch(system,/purpose-json-v3|operation precedes|"operation":|answer:null|Tool-turn assistant content example/)
+
     assert.equal(f.publicAttempts,0)
   }finally{await f.close()}
 })
