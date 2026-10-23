@@ -17,6 +17,7 @@ import { captureMemoryEvidence,scheduleMemoryReflection } from '../dist/src/memo
 import { sessionKeyOf } from '../dist/src/protocol/types.js'
 import { syncConversation, ingestMessage } from '../dist/src/collaboration/conversations.js'
 import { createSharedState, readSharedState, updateSharedState } from '../dist/src/collaboration/state.js'
+import { memoryAdmissionLockRegression, memoryToolAdmissionLockRegression } from './memory-admission-lock-regression.mjs'
 
 const connectionString = process.env.LINGXIOS_TEST_DATABASE_URL
 if (!connectionString) throw new Error('LINGXIOS_TEST_DATABASE_URL must name an empty disposable PostgreSQL database')
@@ -46,6 +47,8 @@ try {
   await pool.query(await readFile(new URL('../db/migrations/015-memory-continuity.sql', import.meta.url), 'utf8'))
   await pool.query(await readFile(new URL('../db/migrations/016-skill-delivery.sql', import.meta.url), 'utf8'))
   await checkStorage(pool)
+  await memoryAdmissionLockRegression(pool)
+  await memoryToolAdmissionLockRegression(pool)
   const budgetParent = { id: 'budget-root',tenantId: 'budget',principalId: 'human',agentId: 'agent',sessionId: 'budget-root',
     kind: 'turn',lane: 'interactive',triggerRef: 'budget-test',fence: 1,homeEpoch: 1 }
   await enqueueWork(pool,budgetParent)
@@ -267,5 +270,5 @@ try {
     assert.equal(await waitLedger.hasWait(key, 1, { question }), false, 'stale request version')
     assert.equal(await waitLedger.hasWait(key, 2, { question: 'forged question' }), false)
   }
-  console.log('Real PostgreSQL stores passed: schema 7→8→9→10→11→12 + repeatable 013, atomic concurrent child admission/closing holds/terminal deduplication, cross-process LISTEN/NOTIFY and reconnect, document CAS/restore races, reflection deduplication, atomic memory forgetting, competing claims, session exclusion, concurrent intent reservation/CAS, separate-process recovery, stale fencing, cancellation, product-table isolation and native input-wait receipt validation.')
+  console.log('Real PostgreSQL stores passed: schema 7→8→9→10→11→12 + repeatable 013, atomic concurrent child admission/closing holds/terminal deduplication, cross-process LISTEN/NOTIFY and reconnect, document CAS/restore races, reflection deduplication, atomic memory forgetting, competing claims, session exclusion, concurrent intent reservation/CAS, separate-process recovery, stale fencing, cancellation, product-table isolation, native input-wait receipt validation and ordered memory admission/review locks.')
 } finally { await pool?.end() }
