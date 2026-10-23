@@ -94,6 +94,6 @@ it('native tool calls preserve a simultaneous substantive answer',async()=>{
 
 it('advertises reader capability independently of unchanged database schema',async()=>{
   const {releaseVersions}=await import('../src/versions.js')
-  assert.equal(Reflect.get(releaseVersions,'publicText'),2)
+  assert.equal(Reflect.get(releaseVersions,'publicText'),3)
   assert.equal(releaseVersions.schema,14)
 })

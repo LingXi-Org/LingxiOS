@@ -195,7 +195,7 @@ export class ControlPlaneService {
 
   async saveStep(proof: LeaseProof, step: import('./steps.js').ExecutionStep, signal?: AbortSignal): Promise<void> {
     const work = await this.requireLease(proof, { rejectCancelled: true })
-    if (step?.kind === 'runtime.action_trace') throw new ControlPlaneError(400, 'action trace steps are reserved for native dispatch')
+    if (step?.kind === 'runtime.action_trace' || step?.kind === 'runtime.answer_segment') throw new ControlPlaneError(400, 'native trace and sealed answer steps are reserved')
     if (!step || typeof step.id !== 'string' || !step.id || step.id.length > 512
       || !Number.isSafeInteger(step.requestVersion) || step.requestVersion < 1 || typeof step.kind !== 'string'
       || !step.input || typeof step.input !== 'object' || Array.isArray(step.input)
@@ -914,7 +914,7 @@ export class ControlPlaneService {
   /** Third argument is server-only; never exposed by HostPort or HTTP handlers. */
   async commitResult(proof: LeaseProof, message: AssistantMessage, internal?: { memoryDeletionConfirmation: true }): Promise<void> {
     if (internal && (message.body !== MEMORY_DELETION_CONFIRMATION || message.envelope.goalOutcome.status !== 'partial'
-      || message.envelope.artifacts.length || message.envelope.assessment || message.publicTextPartId)) {
+      || message.envelope.artifacts.length || message.envelope.assessment || message.publicTextPartId || message.publicTextSources)) {
       throw new ControlPlaneError(409, 'invalid receipt-only confirmation')
     }
     if (!await this.deps.work.getLeased(proof.id, proof.fence, hashToken(proof.leaseToken))) {

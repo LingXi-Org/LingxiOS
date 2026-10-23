@@ -1,6 +1,6 @@
 {
   "name": "@lyyzka/lingxios",
-  "version": "3.8.6",
+  "version": "3.8.7",
   "description": "Durable agent execution for PostgreSQL with fenced workers, native tools, verified outcomes, and sandboxed Python.",
   "type": "module",
   "license": "MIT",
@@ -71,6 +71,10 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "@langchain/core": "1.3.0",
+    "@langchain/langgraph": "1.5.2",
+    "ajv": "8.17.1",
+    "ajv-formats": "3.0.1",
     "mammoth": "1.12.2",
     "pdfjs-dist": "6.3.289"
   }

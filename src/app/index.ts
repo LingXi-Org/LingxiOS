@@ -1,5 +1,6 @@
 import { readRunTrace } from './run-trace.js'
 import { publicTextPublication, readPublicTextAttempts, type PublicTextAttempt } from './public-text.js'
+import { verifySealedAnswerSources } from './answer-sources.js'
 import { DEFAULT_MODEL_BUDGET } from '../model/execution.js'
 import { readTerminalFeedback, terminalFeedback } from './terminal.js'
 import { classifyToolFailure } from '../tools/failure.js'
@@ -556,6 +557,12 @@ export async function createLingxiOS(options: LingxiOSOptions) {
             }
             if (components.length) message = { ...message, envelope: { ...message.envelope, presentations: components } }
           }
+          const producerBinding=(await client.query(`SELECT input FROM lingxios.agent_steps
+            WHERE work_id=$1 AND kind='runtime.binding' AND completed_at IS NOT NULL ORDER BY step_seq LIMIT 1`,[work.id])).rows[0]?.['input'] as Record<string,unknown>|undefined
+          if(producerBinding?.['publicTextProtocol']==='purpose-json-v3'||message.publicTextSources!==undefined){
+            if(producerBinding?.['publicTextProtocol']!=='purpose-json-v3'||message.publicTextSources===undefined)throw new Error('v3 completion requires its bound sealed source collection')
+            await verifySealedAnswerSources(client,work,message)
+          }
           if (message.publicTextPartId !== undefined) {
             if (typeof message.publicTextPartId !== 'string' || !message.publicTextPartId.length || message.publicTextPartId.length > 1000) {
               throw new Error('invalid public text source identity')
@@ -634,6 +641,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
           [work.id,(work.fence-1)*RUN_SEQUENCE_SPAN,work.tenantId,work.agentId,
             JSON.stringify({ resultId,requestVersion: message.envelope.requestVersion,
               ...message.publicTextPartId ? { publicTextPartId: message.publicTextPartId } : {},
+              ...message.publicTextSources ? { publicTextSources:message.publicTextSources } : {},
               candidateHash: candidateHash({ body: message.body, requestVersion: message.envelope.requestVersion, artifacts: message.envelope.artifacts }) }),
             integration.delivery ? JSON.stringify(work) : null])
         })

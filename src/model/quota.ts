@@ -4,6 +4,7 @@ import { ResourceQuota, type ResourcePriority } from '../resource-quota.js'
 export function limitModel(source: ModelDriver, quota: ResourceQuota, background = new Set<AbortController>()): ModelDriver {
   return new Proxy(source, { get(target, property) {
     if (property === 'deferredAdmission') return true
+    if (property === 'withPublicTextProtocol' && target.withPublicTextProtocol) return (protocol:import('./outcome-declaration.js').PublicTextProtocol) => limitModel(target.withPublicTextProtocol!(protocol),quota,background)
     if (property === 'singleAttempt') return () => limitModel(target.singleAttempt?.() ?? target, quota, background)
     const value = Reflect.get(target, property, target) as unknown
     if (['run', 'structured', 'compact'].includes(String(property))) {

@@ -359,6 +359,8 @@ export interface HeartbeatResult {
  * same attempt before delivering it.
  */
 export interface AssistantMessage {
+  /** Ordered sealed answer provenance, committed with the complete body and outbox. */
+  publicTextSources?: import('./answer-segments.js').PublicTextSources
   /** Exact public source part of this verified candidate; absent when no part was published. */
   publicTextPartId?: string
   envelope: import('../outcome/envelope.js').ResponseEnvelope

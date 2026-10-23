@@ -2,6 +2,9 @@ import type { PublicTextProtocol } from '../model/outcome-declaration.js'
 import type { PublicTextEndReason, PublicTextIdentity, PublicTextSafetyInput, PublicTextSafetyDecision } from '../protocol/public-text.js'
 import type { RunEvent } from '../protocol/types.js'
 import { ModelDriverError } from '../errors.js'
+import { createHash } from 'node:crypto'
+import { snapshotPublicTextOperation, type PublicTextOperation } from '../protocol/answer-segments.js'
+import { AIMessageChunk } from '@langchain/core/messages'
 
 /** Persistence failure never retries the provider or exposes an uncommitted buffer. */
 export class PublicTextPublicationError extends ModelDriverError {
@@ -34,6 +37,7 @@ const lowSurrogate=(code:number)=>code>=0xDC00&&code<=0xDFFF
 export class PublicTextWriter {
   private text=''
   private received=''
+  private receivedMessage:AIMessageChunk|undefined
   private receivedBytes=0
   private approvedThrough=0
   private approvedBytes=0
@@ -54,6 +58,7 @@ export class PublicTextWriter {
 
   /** Only successfully appended deltas can be associated with a final candidate. */
   get partId():string|undefined{return this.chunks?this.identity.partId:undefined}
+  get chunkCount(){return this.chunks}
 
   private approval(text:string,isFinal:boolean):number {
     let decision:PublicTextSafetyDecision
@@ -82,7 +87,10 @@ export class PublicTextWriter {
     if(this.closed||this.finished)throw new PublicTextPublicationError()
     this.receivedBytes+=Buffer.byteLength(delta)
     if(this.receivedBytes>MAX_RECEIVED_BYTES){await this.suspend();return}
-    this.received+=delta
+    const chunk=new AIMessageChunk({id:this.identity.partId,content:delta})
+    this.receivedMessage=this.receivedMessage?this.receivedMessage.concat(chunk):chunk
+    if(typeof this.receivedMessage.content!=='string')throw new PublicTextPublicationError()
+    this.received=this.receivedMessage.content
     // Run the cumulative policy once at the first delta and then at bounded
     // coalescing boundaries, not once per provider token.
     if(!this.assessments||this.receivedBytes-this.assessedBytes>=4096)await this.assessBuffer()
@@ -139,12 +147,12 @@ export class PublicTextWriter {
       if(approved)await this.publish(approved)
       await this.flush()
     }
-    this.received='';this.finished=true
+    this.received='';this.receivedMessage=undefined;this.finished=true
   }
   private clearHeldTimer(){if(this.heldTimer)clearTimeout(this.heldTimer);this.heldTimer=undefined}
   private async suspend():Promise<void>{
     if(this.suspended||this.closed)return
-    this.suspended=true;this.received='';this.text='';this.clearHeldTimer()
+    this.suspended=true;this.received='';this.receivedMessage=undefined;this.text='';this.clearHeldTimer()
     if(this.timer)clearTimeout(this.timer);this.timer=undefined
     await this.close('interrupted')
   }
@@ -177,36 +185,54 @@ export class PublicTextWriter {
   async end(reason:PublicTextEndReason):Promise<void>{
     this.clearHeldTimer()
     if(this.timer){clearTimeout(this.timer);this.timer=undefined}
-    if(this.signal.aborted){this.text='';this.received='';await this.tail.catch(()=>{});this.closed=true;return}
+    if(this.signal.aborted){this.text='';this.received='';this.receivedMessage=undefined;await this.tail.catch(()=>{});this.closed=true;return}
     if(this.closed)return
     if(reason==='completed'||reason==='tool')await this.finish()
     else{this.text='';this.received=''}
     await this.close(reason)
   }
-  dispose(){this.closed=true;this.text='';this.received='';this.clearHeldTimer();if(this.timer)clearTimeout(this.timer);this.timer=undefined}
+  dispose(){this.closed=true;this.text='';this.received='';this.receivedMessage=undefined;this.clearHeldTimer();if(this.timer)clearTimeout(this.timer);this.timer=undefined}
 }
 
 /** One attempt, two ordered public purposes. Legacy drivers keep one unknown-purpose part. */
 export class PublicTextAttemptWriter {
   private readonly writers=new Map<'legacy'|'commentary'|'answer',PublicTextWriter>()
   private answerStarted=false
+  private operation:PublicTextOperation|undefined
+  private sealed=false
   constructor(private readonly identity:PublicTextIdentity,
     private readonly emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>,private readonly signal:AbortSignal,
     private readonly assess:((input:Readonly<PublicTextSafetyInput>)=>PublicTextSafetyDecision)|undefined,
     private readonly protocol:PublicTextProtocol|undefined){}
   get partId(){return this.writers.get(this.protocol?'answer':'legacy')?.partId}
+  get answerRevisionId(){return this.identity.partId+':answer'}
+  get segmentIdentity():PublicTextIdentity|undefined {
+    if(this.protocol!=='purpose-json-v3'||!this.operation)return undefined
+    const partId=this.identity.partId+':answer',segmentId=this.identity.segmentId??partId
+    return {...this.identity,version:3,purpose:'answer',partIndex:1,partId,segmentId,
+      operation:this.operation.kind,supersedes:[...this.operation.supersedes]}
+  }
+  async begin(operation:PublicTextOperation,segmentId?:string){
+    if(this.protocol!=='purpose-json-v3'||this.operation)throw new PublicTextPublicationError()
+    this.operation=snapshotPublicTextOperation(operation)
+    if(segmentId)this.identity.segmentId=segmentId
+    this.signal.throwIfAborted()
+    await this.emit({kind:'public.text.operation',stage:'started',visibility:'user',data:{...this.segmentIdentity!}})
+  }
   async push(text:string,metadata?:{purpose:import('../protocol/public-text.js').PublicTextPurpose}){
     const key=this.protocol?metadata?.purpose:'legacy'
     if(!key||!['legacy','commentary','answer'].includes(key)||!this.protocol&&metadata
       ||key==='commentary'&&this.answerStarted)throw new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',finishReasons:[]})
+    if(this.protocol==='purpose-json-v3'&&key==='answer'&&!this.operation)throw new PublicTextPublicationError()
     if(key==='answer'&&!this.answerStarted){
       this.answerStarted=true
       await this.writers.get('commentary')?.end('completed')
     }
     let writer=this.writers.get(key)
     if(!writer){
-      writer=new PublicTextWriter(key==='legacy'?this.identity:{...this.identity,version:2,purpose:key,
-        partIndex:key==='answer'?1:0,partId:this.identity.partId+':'+key},this.emit,this.signal,this.assess)
+      const {messageId:_message,segmentId:_segment,operation:_operation,supersedes:_supersedes,...legacy}=this.identity
+      writer=new PublicTextWriter(key==='legacy'?this.identity:key==='answer'&&this.protocol==='purpose-json-v3'?this.segmentIdentity!:
+        {...legacy,version:2,purpose:key,partIndex:key==='answer'?1:0,partId:this.identity.partId+':'+key},this.emit,this.signal,this.assess)
       this.writers.set(key,writer)
     }
     await writer.push(text)
@@ -216,5 +242,14 @@ export class PublicTextAttemptWriter {
     await this.writers.get(this.protocol?'answer':'legacy')?.finish(text)
   }
   async end(reason:PublicTextEndReason){for(const writer of this.writers.values())await writer.end(reason)}
+  async seal(text:string){
+    const writer=this.writers.get('answer'),identity=this.segmentIdentity
+    if(!identity||!writer?.partId||this.sealed)throw new PublicTextPublicationError()
+    this.signal.throwIfAborted()
+    const bodyHash=createHash('sha256').update(text).digest('hex')
+    await this.emit({kind:'public.text.sealed',stage:'completed',visibility:'user',data:{...identity,chunkCount:writer.chunkCount,bodyHash}})
+    this.sealed=true
+    return {identity,text,bodyHash}
+  }
   dispose(){for(const writer of this.writers.values())writer.dispose()}
 }

@@ -1,6 +1,7 @@
 import type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
 export type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
 import type { PublicTextPurpose } from '../protocol/public-text.js'
+import type { PublicTextOperation } from '../protocol/answer-segments.js'
 /**
  * Model driver port. The runtime speaks only this interface; concrete
  * providers (OpenAI-compatible, Anthropic, test fakes) live behind it.
@@ -22,6 +23,8 @@ export interface ModelTurnResult {
   finalCandidate?: string
   /** Explicit purpose-json-v2 final declaration; not an independent verification. */
   outcomeDeclaration?: OutcomeDeclaration
+  answerOperation?: PublicTextOperation
+  answerIsNull?: boolean
   /** Items to append to session history (assistant text and/or tool calls). */
   output: ModelItem[]
   /** Full assistant text of this turn ('' when the turn is a tool call). */
@@ -50,6 +53,10 @@ export interface ModelTurnRequest {
   onTextDelta?: (((delta: string, metadata?: { purpose: PublicTextPurpose }) => void) | ((delta: string, metadata?: { purpose: PublicTextPurpose }) => Promise<void>)) | undefined
   /** Runtime-owned retry boundary; clears any draft from the preceding provider attempt. */
   onAttempt?: (((callId: string) => void) | ((callId: string) => Promise<void>)) | undefined
+  /** v3 operation is validated before any public answer delta. */
+  onTextOperation?: ((operation: PublicTextOperation) => void | Promise<void>) | undefined
+  /** Server-owned active source IDs; null terminal answers still require full runtime validation. */
+  answerContext?: { messageId: string; segmentIds: readonly string[] } | undefined
 }
 
 export interface StructuredCallRequest {
@@ -101,6 +108,8 @@ export interface ModelDriver {
   readonly maxThinkingTokens?: number
   /** Runtime owns retries so each outbound request reserves and settles its own budget. */
   singleAttempt?(): ModelDriver
+  /** Trusted pre-generation selection for work without public streaming authorization. */
+  withPublicTextProtocol?(protocol: PublicTextProtocol): ModelDriver
   nextCallId?(): string
   readonly modelId?: string
   /** Hash of non-secret provider parameters needed to identify a replay configuration. */
