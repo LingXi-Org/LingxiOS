@@ -167,7 +167,7 @@ it('reports every processor model call to the product ledger with durable work s
   assert.equal(completed?.status, 'completed')
   assert.deepEqual(observations.map(({ latencyMs: _latencyMs, elapsedMs: _elapsedMs, ...value }) => value), [{
     instructionsSha256: textSha256('i'),
-    attempt: 1, callId: 'ledger-work:3:model:1', purpose: 'structured', workId: 'ledger-work', tenantId: 'tenant',
+    attempt: 1, callId: 'ledger-work:3:model:1', purpose: 'structured', operation: 'structured', workId: 'ledger-work', tenantId: 'tenant',
     agentId: 'agent', sessionId: 'room', threadId: 'thread', principalId: 'human', model: 'model-v1',
     usage: { available: true, inputTokens: 11, outputTokens: 7 }, status: 'succeeded',
     cost: { amountMicros: 0, usage: 'measured', pricing: modelPricing(DEFAULT_MODEL_BUDGET) },
@@ -328,7 +328,7 @@ for (const assessmentStatus of ['partial', 'satisfied'] as const) it(`commits on
   }()
   await new AgentRuntime(host, model, { execute: async () => { throw new Error('unexpected kernel') } }, { policy }).runWork(work)
   assert.equal(turns, 1)
-  assert.equal(reviews, 2)
+  assert.equal(reviews, 1, 'one joint review retains the pending peer verification gap')
   assert.equal(committed?.body, '@b Please independently verify the calculation.')
   assert.equal(committed?.envelope.goalOutcome.status, 'partial')
   assert.match(JSON.stringify(committed?.envelope.goalOutcome.gaps), /Peer verification is still pending/)
