@@ -145,7 +145,7 @@ it('assembles the public app through HTTP model and Python, persisting results a
     await assert.rejects(executeRequest(app, worker, { id: identity.runId, ...identity, principalId: 'user', text: 'Calculate 2 + 2 using Python.' }), /already exists/)
     assert.equal(requests.length, 2)
     assert.equal((await app.readMessage(identity))?.body, '4')
-    assert.equal(contentChecks, 1)
+    assert.equal(contentChecks, 0)
     assert.ok(requestChecks > 0, 'the assembled app must reauthorize persisted request sources')
     const traces = (await db.query<{ data: Record<string, unknown>; expires_at: string }>(
       "SELECT data,expires_at FROM lingxios.agent_run_events WHERE run_id=$1 AND kind LIKE 'model.%' AND data ? 'input' OR run_id=$1 AND kind LIKE 'model.%' AND data ? 'output'", [identity.runId])).rows
@@ -242,7 +242,9 @@ it('assembles the public app through HTTP model and Python, persisting results a
     const lateIdentity = { ...identity, runId: 'late-request', sessionId: 'late-session' }
     await app.enqueue({ id: lateIdentity.runId, ...lateIdentity, principalId: 'user', text: 'Answer this request.' })
     reviseBeforeCommit = true
-    assert.equal(await worker.runNext(), true)
+    // This case explicitly tests evaluator semantics; ordinary tool/artifact runs above use the direct default.
+    const reviewedWorker = createWorker({ ...options,semanticReview: 'required',controlPlane: app })
+    try { assert.equal(await reviewedWorker.runNext(), true) } finally { await reviewedWorker.stop() }
     assert.equal(reviseBeforeCommit, false)
     assert.equal((await app.readMessage(lateIdentity))?.envelope?.goalOutcome.status, 'partial')
     assert.equal((await app.readMessage(lateIdentity))?.body, '4')

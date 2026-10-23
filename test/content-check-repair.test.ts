@@ -175,3 +175,21 @@ it('checks the repaired input against the context budget before making another p
   assert.equal(calls.length, 1)
   assert.equal('error' in result && result.error, 'Content check input exceeds the model context budget')
 })
+
+
+it('retains the exact request association and human blocker for a declared limitation', async () => {
+  const limitation = { quote: 'Publication awaits your confirmation.',requestQuote: 'Prepare a draft.',reason: 'The draft is unavailable.',
+    blockedBy: 'Do not publish without my confirmation.' }
+  const { model } = fixture([{ missing: [],limitations: [limitation] }])
+  const result = await checkCandidateContent(model,request,body,[],32000,new AbortController().signal)
+  assert.deepEqual(result.limitations,[limitation])
+})
+
+it('rejects invalid priority rather than silently downgrading a required finding', async () => {
+  const invalid = { missing: [{ quote: 'Prepare a draft.',reason: 'Draft missing.',priority: 'cosmetic' }],limitations: [] }
+  const { model,calls } = fixture([invalid,valid])
+  const result = await checkCandidateContent(model,request,body,[],32000,new AbortController().signal)
+  assert.equal(calls.length,2)
+  assert.deepEqual((calls[1]!.input as Record<string,unknown>)['validationFailures'],[{ path: 'missing[0].priority',constraint: 'required_or_optional' }])
+  assert.deepEqual(result.missing,[])
+})

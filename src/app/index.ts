@@ -5,7 +5,7 @@ import { readTerminalFeedback, terminalFeedback } from './terminal.js'
 import { classifyToolFailure } from '../tools/failure.js'
 import { snapshotMemories } from '../memory/context.js'
 import { abortable, scopedSignal } from '../deadline.js'
-import type { VerificationRecord } from '../outcome/verification.js'
+import type { SemanticReviewPolicyIdentity, SemanticReviewScope, VerificationRecord } from '../outcome/verification.js'
 import { flushOutbox, drainOutboxes } from '../control-plane/outbox.js'
 import { Wakeup, listenWakeups } from '../control-plane/wakeup.js'
 import { createRealtime, type RealtimeOptions } from './realtime.js'
@@ -104,6 +104,10 @@ export interface LingxiOSOptions {
   contextProvider?: ContextProvider
   /** Native acceptance checks, using live business records rather than model assertions. */
   verifyRun?: (context: RunVerificationContext) => Promise<VerificationRecord[]>
+  /** Trusted current-candidate nomination. Returning guidance never grants or activates a skill. */
+  semanticReviewPolicy?: SemanticReviewPolicyIdentity & {
+    resolve(context: SemanticReviewContext): Promise<SemanticReviewScope | undefined>
+  }
   /** Trusted current-candidate checks. A model cannot resolve its own activation.
    * Unsupported/failed must explain non-delivery honestly and commit a nonsatisfied outcome. */
   verifySkillDelivery?: (context: RunVerificationContext) => Promise<SkillDeliveryDecision[]>
@@ -161,6 +165,15 @@ const resultReadScope = `work.id=$1 AND work.tenant_id=$2 AND work.agent_id=$3 A
   AND (work.conversation IS NOT NULL OR (work.principal_id IS NOT DISTINCT FROM $5 AND work.thread_id IS NOT DISTINCT FROM $6))`
 const resultReadParams = (identity: MessageIdentity) =>
   [identity.runId, identity.tenantId, identity.agentId, identity.sessionId, identity.principalId ?? null, identity.threadId ?? null]
+
+export interface SemanticReviewContext extends RunVerificationContext {
+  request: import('../context/request.js').RequestSnapshot
+  executionSteps: readonly import('../control-plane/steps.js').ExecutionStep[]
+  /** Registered skills whose declared actions are currently authorized; loading still requires its loader action. */
+  availableSkills: readonly import('../skills/definition.js').SkillIndex[]
+  /** Currently authorized catalog actions, after grants and execution mode restrictions. */
+  availableActions: readonly string[]
+}
 
 export interface RunVerificationContext {
   /** Exact current-request authoring intents, never inferred from reference loads or receipts. */
@@ -438,10 +451,36 @@ export async function createLingxiOS(options: LingxiOSOptions) {
   }
 
   const publicText = publicTextPublication(options.database, options.realtime?.allowPublicText)
+  const semanticReviewPolicy = options.semanticReviewPolicy
   const service = new ControlPlaneService({
     ...(options.responsePolicy ? { responsePolicy: options.responsePolicy } : {}),
     authorizeWork: async work => { await authorizeConversationWork(options.database, work) },
     ...memory ? { memory } : {},
+    ...(semanticReviewPolicy ? { semanticReviewPolicy: {
+      get id() { return semanticReviewPolicy.id }, get version() { return semanticReviewPolicy.version },
+      resolve: async (work: Omit<WorkItem, 'leaseToken'>, candidate: import('../outcome/verification.js').Candidate) => {
+        const deadlineAt = new Date(Date.now() + 10_000).toISOString(), scope = scopedSignal([shutdown.signal], 10_000), signal = scope.signal
+        let active = true
+        const database: SqlQueryable = { query: (sql, params) => {
+          signal.throwIfAborted(); if (!active) throw new Error('semantic review nomination ended')
+          return options.database.query(sql, params)
+        } }
+        try {
+          const [request, executionSteps, activations, grants] = await abortable(Promise.all([
+            requestSnapshot(database, work.id, candidate.requestVersion), new PgStepStore(options.database).list(work.id, candidate.requestVersion),
+            readSkillActivations(database, work, candidate.requestVersion), integration.capabilityResolver.resolve(work, { database }),
+          ]), signal)
+          const authorized = grantedTools(integration.tools, grants).filter(tool => permitsTool(work, tool))
+          const availableActions = [...new Set(authorized.map(tool => tool.action))]
+          const availableSkills = skills.filter(skill => skill.actions.every(action => availableActions.includes(action))).map(skillIndex)
+          const unavailableSkillActivationIds = activations.filter(activation => !availableSkills.some(skill => skill.name === activation.skill.name
+            && skill.version === activation.skill.version && skill.hash === activation.skill.hash && skill.delivery?.checker === activation.checker)).map(activation => activation.id)
+          return await abortable(semanticReviewPolicy.resolve({ work: structuredClone(work), candidate: structuredClone(candidate), request: structuredClone(request),
+            executionSteps: structuredClone(executionSteps), skillActivations: structuredClone(activations), unavailableSkillActivationIds,
+            availableSkills, availableActions, requestVersion: candidate.requestVersion, deadlineAt, signal, database }), signal)
+        } finally { active = false; scope.dispose() }
+      },
+    } } : {}),
     ...(integration?.tools ? { tools: integration.tools } : {}),
     steps: new PgStepStore(options.database),
     ...(workspace ? { workspace } : {}),

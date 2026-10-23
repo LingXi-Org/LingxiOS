@@ -167,6 +167,7 @@ it('restores prior artifact records for current verification and keeps uncertain
   assert.deepEqual((await service.loadContext(resumed)).priorArtifacts, [artifact])
   await assert.rejects(service.loadContext(first), /lease lost/)
   const host: HostPort = { ...durableProtocol(),
+    saveStep: (work,step) => service.saveStep(work,step), verifyCandidate: (work,candidate) => service.verifyCandidate(work,candidate),
     claimWork: async () => null, heartbeat: work => service.heartbeat(work), loadContext: work => service.loadContext(work),
     executeAction: (work, action) => service.executeAction(work, action), emitEvent: (work, event) => service.recordEvent(work, event),
     loadSession: (work, key) => service.getSession(work, key), saveSession: async (work, session) => { session.revision = (await service.saveSession(work, session)).revision },
@@ -355,6 +356,7 @@ for (const actionName of ['research.read', 'knowledge.read_source']) it(`promote
   await service.enqueue({ id: 'research', tenantId: 't', agentId: 'a', sessionId: 's', principalId: 'u', kind: 'turn', lane: 'interactive', triggerRef: 'm', meta: { text: 'Read the paper and cite its finding.' } })
   const work = (await service.claim('worker'))!
   const host: HostPort = { ...durableProtocol(),
+    saveStep: (work,step) => service.saveStep(work,step), verifyCandidate: (work,candidate) => service.verifyCandidate(work,candidate),
     claimWork: async () => null, heartbeat: work => service.heartbeat(work), loadContext: work => service.loadContext(work),
     executeAction: (work, action) => service.executeAction(work, action), emitEvent: (work, event) => service.recordEvent(work, event),
     loadSession: (work, key) => service.getSession(work, key), saveSession: async (work, session) => { session.revision = (await service.saveSession(work, session)).revision },
