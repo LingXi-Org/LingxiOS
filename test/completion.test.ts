@@ -1,14 +1,14 @@
 import { MemoryModelBudgetStore } from '../src/control-plane/memory-store.js'
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
-import { ControlPlaneService } from '../src/control-plane/service.js'
+import { ControlPlaneService, type ControlPlaneDeps } from '../src/control-plane/service.js'
 import { MemoryActionLedger, MemoryEventStore, MemorySessionStore, MemoryWorkStore } from '../src/control-plane/memory-store.js'
 import { snapshotEvidence } from '../src/context/evidence.js'
 import { createResponseEnvelope } from '../src/outcome/envelope.js'
 import type { GoalAssessment } from '../src/outcome/assessment.js'
 import type { AssistantMessage, SessionRecord } from '../src/protocol/types.js'
 import { MemoryStepStore } from '../src/control-plane/steps.js'
-import { candidateHash } from '../src/outcome/verification.js'
+import { candidateHash, snapshotSemanticReviewScope, semanticReviewScopeHash, snapshotSemanticReviewPolicyIdentity } from '../src/outcome/verification.js'
 import { businessActionDeliveryGap, requiresReview } from '../src/outcome/completion.js'
 
 it('uses explicit action delivery as a hard receipt obligation and only uses wording as a conservative review trigger', () => {
@@ -88,12 +88,12 @@ it('requires settled actions and a reviewed committed response, and binds delega
 })
 
 
-function semanticFixture() {
+function semanticFixture(semanticReviewPolicy?: ControlPlaneDeps['semanticReviewPolicy']) {
   const workStore = new MemoryWorkStore(),steps = new MemoryStepStore(),actions = new MemoryActionLedger()
   let committed: AssistantMessage | undefined
   const sessions = new MemorySessionStore()
-  const service = new ControlPlaneService({ modelBudgets: new MemoryModelBudgetStore(),steps,work: workStore,actions,sessions,events: new MemoryEventStore(),
-    contextProvider: { loadContext: async () => { throw new Error('unexpected') } },capabilityResolver: { resolve: async () => [] },
+  const service = new ControlPlaneService({ ...(semanticReviewPolicy ? { semanticReviewPolicy } : {}), modelBudgets: new MemoryModelBudgetStore(),steps,work: workStore,actions,sessions,events: new MemoryEventStore(),
+    contextProvider: { loadContext: async () => ({ persona: { name: 'A',role: '',instructions: '' },capabilities: [],messages: [] }) },capabilityResolver: { resolve: async () => [] },
     actionExecutor: { prepare: async () => {},execute: async () => { throw new Error('unexpected') } },
     delivery: { onEvent: async () => {},deliverMessage: async (_work,message) => { committed = message } } })
   return { service,steps,actions,committed: () => committed }
@@ -136,4 +136,86 @@ it('rejects forged or mutated semantic review bindings and keeps native action o
   await assert.rejects(f.service.commitResult(work,{ version: 2,runId: 'w',agentId: 'a',sessionId: 's',body,
     envelope: createResponseEnvelope(body,{ status: 'satisfied',verification: 'not_run',requestVersion: 1 },evidence) }),/evidence or artifact records/)
   assert.equal(f.committed(),undefined)
+})
+
+
+// Focused semantic review: trusted nomination, exact rubric identity, no grants or new effects.
+it('bounds and snapshots focused review contracts', () => {
+  const scope = { id: 'skill.answer.v1',rubric: 'Check the requested current result.' }
+  assert.deepEqual(snapshotSemanticReviewScope(scope),scope)
+  assert.equal(semanticReviewScopeHash(scope),semanticReviewScopeHash({ ...scope }))
+  assert.notEqual(semanticReviewScopeHash(scope),semanticReviewScopeHash({ ...scope,rubric: 'Changed criterion.' }))
+  for (const invalid of [{ ...scope,id: '../unsafe' },{ ...scope,id: 'x'.repeat(129) },{ ...scope,rubric: '' },
+    { ...scope,rubric: 'x'.repeat(8001) },{ ...scope,extra: true }]) assert.throws(() => snapshotSemanticReviewScope(invalid),/semantic review/)
+  assert.deepEqual(snapshotSemanticReviewPolicyIdentity({ id: 'skill-policy',version: '1' }),{ id: 'skill-policy',version: '1' })
+  assert.throws(() => snapshotSemanticReviewPolicyIdentity({ id: 'policy',version: '' }),/semantic review/)
+})
+
+async function focusedFixture(mode: 'selective' | 'disabled' | 'required',policy: NonNullable<ControlPlaneDeps['semanticReviewPolicy']>) {
+  const f = semanticFixture(policy),text = 'Explain gravity and provide an example.'
+  await f.service.enqueue({ id: 'w',tenantId: 't',principalId: 'u',agentId: 'a',sessionId: 's',triggerRef: 'm',kind: 'turn',lane: 'interactive',meta: { text } })
+  const work = (await f.service.claim('worker'))!,evidence = snapshotEvidence('w:evidence:1',[])
+  await f.service.saveSession(work,{ key: '["t","a","s",null]',tenantId: 't',agentId: 'a',sessionId: 's',history: [],appliedWorkIds: ['w'],revision: 0,compactionEpoch: 0,
+    request: { version: 1,workId: 'w',tenantId: 't',sessionId: 's',authorId: 'u',sourceRef: 'm',originalText: text,revisions: [],attachments: [],evidence } })
+  await f.service.saveStep(work,{ id: 'runtime:binding',kind: 'runtime.binding',requestVersion: 1,
+    input: { ...bindingInput('disabled'),semanticReview: mode,semanticReviewPolicy: { id: policy.id,version: policy.version } },output: '{}',artifacts: [] })
+  const body = 'Gravity attracts masses; a falling ball is an example.',candidate = { body,requestVersion: 1,artifacts: [] }
+  const message = (status: 'satisfied' | 'partial' = 'satisfied'): AssistantMessage => ({ version: 2,runId: 'w',agentId: 'a',sessionId: 's',body,
+    envelope: createResponseEnvelope(body,{ status,verification: 'not_run',requestVersion: 1,...(status === 'partial' ? { gaps: ['Scoped result remains unverified.'] } : {}) },evidence) })
+  const review = async (scope: { id: string; rubric: string }) => { const hash = candidateHash(candidate)
+    await f.service.saveStep(work,{ id: 'review-focused',kind: 'runtime.review',requestVersion: 1,input: { workId: work.id,candidateHash: hash },
+      output: JSON.stringify({ workId: work.id,requestVersion: 1,candidateHash: hash,missing: [],limitations: [],
+        semanticReview: { id: scope.id,rubricSha256: semanticReviewScopeHash(scope) } }),artifacts: [] }) }
+  return { ...f,work,candidate,message,review }
+}
+
+it('exposes only trusted policy identity and binds nomination to the verified candidate',async () => {
+  const scope = { id: 'requested-skill',rubric: 'Check this requested skill result.' }
+  const f = await focusedFixture('selective',{ id: 'skill-policy',version: '1',resolve: async (_work,candidate) => { assert.equal(candidate.requestVersion,1); return scope } })
+  assert.deepEqual((await f.service.loadContext(f.work)).semanticReviewPolicy,{ id: 'skill-policy',version: '1' })
+  const checked = await f.service.verifyCandidate(f.work,f.candidate)
+  assert.deepEqual(checked.semanticReview,scope)
+  assert.equal(checked.candidateHash,candidateHash(f.candidate))
+  await assert.rejects(f.service.commitResult(f.work,f.message()),/evidence or artifact records/)
+  await f.review(scope)
+  await f.service.commitResult(f.work,f.message())
+  assert.equal(f.committed()?.body,f.candidate.body)
+})
+
+for (const mode of ['changed','revoked','malformed','policy-drift'] as const) it(`rejects a focused review after ${mode} while permitting honest partial delivery`,async () => {
+  const scope = { id: 'requested-skill',rubric: 'Check the current requested result.' }
+  let current: unknown = scope
+  const policy = { id: 'skill-policy',version: '1',resolve: async () => current as typeof scope | undefined }
+  const f = await focusedFixture('selective',policy)
+  await f.review(scope)
+  if (mode === 'changed') current = { ...scope,rubric: 'A different current criterion.' }
+  if (mode === 'revoked') current = undefined
+  if (mode === 'malformed') current = { ...scope,rubric: '' }
+  if (mode === 'policy-drift') policy.version = '2'
+  await assert.rejects(f.service.commitResult(f.work,f.message()),/evidence or artifact records/)
+  await f.service.commitResult(f.work,f.message('partial'))
+  assert.equal(f.committed()?.envelope.goalOutcome.status,'partial')
+})
+
+it('keeps unnominated selective results direct and scoped disabled results partial',async () => {
+  const unscoped = await focusedFixture('selective',{ id: 'policy',version: '1',resolve: async () => undefined })
+  await unscoped.service.commitResult(unscoped.work,unscoped.message())
+  assert.equal(unscoped.committed()?.envelope.goalOutcome.status,'satisfied')
+  const disabled = await focusedFixture('disabled',{ id: 'policy',version: '1',resolve: async () => ({ id: 'scope',rubric: 'Current criterion.' }) })
+  await assert.rejects(disabled.service.commitResult(disabled.work,disabled.message()),/evidence or artifact records/)
+  await disabled.service.commitResult(disabled.work,disabled.message('partial'))
+  assert.equal(disabled.committed()?.envelope.goalOutcome.status,'partial')
+})
+
+
+it('rejects policy identity changes during a resolver callback',async () => {
+  const policy = { id: 'policy',version: '1',resolve: async () => { policy.version = '2'; return { id: 'scope',rubric: 'A current criterion.' } } }
+  const f = await focusedFixture('selective',policy)
+  await assert.rejects(f.service.verifyCandidate(f.work,f.candidate),/policy identity changed/)
+})
+
+it('does not let a trusted nomination callback mutate the authenticated delivery identity',async () => {
+  const f = await focusedFixture('selective',{ id: 'policy',version: '1',resolve: async work => { work.id = 'another-work'; return undefined } })
+  await f.service.commitResult(f.work,f.message())
+  assert.equal(f.committed()?.runId,'w')
 })

@@ -42,7 +42,7 @@ import { requestItems, snapshotRequest } from '../context/request.js'
 import type { GoalOutcome } from '../protocol/outcome.js'
 import { evidenceItems, snapshotEvidence } from '../context/evidence.js'
 import { createResponseEnvelope, type ResponseEnvelope } from '../outcome/envelope.js'
-import { candidateHash } from '../outcome/verification.js'
+import { candidateHash, semanticReviewScopeHash, snapshotSemanticReviewScope, snapshotSemanticReviewPolicyIdentity, type SemanticReviewScope } from '../outcome/verification.js'
 import { checkCandidateContent } from '../outcome/content-check.js'
 import { parseFinalCandidate, type GoalAssessment } from '../outcome/assessment.js'
 import type { KernelArtifact, HostActionResult } from '../protocol/types.js'
@@ -109,7 +109,7 @@ export interface AgentRuntimeOptions {
   /** Trusted host allowance, 0–3 (default 0), for content acceptance only; root budgets still apply. */
   additionalContentCorrections?: number
   /** Explicit trusted evaluator opt-in. Ordinary execution uses the direct model/tool loop. */
-  semanticReview?: 'disabled' | 'required'
+  semanticReview?: 'disabled' | 'selective' | 'required'
 }
 
 export type { ModelCallObservation, ModelCallObserver, RootModelBudgetOptions } from '../model/execution.js'
@@ -151,7 +151,7 @@ export class AgentRuntime {
   private readonly modelTrace: Required<Pick<ModelTracePolicy, 'sampleRate' | 'retentionDays'>> & Pick<ModelTracePolicy, 'redact'>
   private readonly rootModelBudget: Required<RootModelBudgetOptions>
   private readonly additionalContentCorrections: number
-  private readonly semanticReview: 'disabled' | 'required'
+  private readonly semanticReview: 'disabled' | 'selective' | 'required'
   private readonly processors = new Map<string, WorkProcessor | 'conversation'>()
   private readonly eventSeqByRun = new Map<string, number>()
   private readonly eventTails = new Map<string, Promise<void>>()
@@ -207,8 +207,8 @@ export class AgentRuntime {
     if (!Number.isSafeInteger(this.additionalContentCorrections) || this.additionalContentCorrections < 0 || this.additionalContentCorrections > 3) {
       throw new Error('additionalContentCorrections must be a safe integer between 0 and 3')
     }
-    this.semanticReview = options.semanticReview ?? 'disabled'
-    if (this.semanticReview !== 'disabled' && this.semanticReview !== 'required') throw new Error('semanticReview must be disabled or required')
+    this.semanticReview = options.semanticReview ?? 'selective'
+    if (this.semanticReview !== 'disabled' && this.semanticReview !== 'selective' && this.semanticReview !== 'required') throw new Error('semanticReview must be disabled, selective or required')
     this.fastModel = options.fastModel
     this.fallbackModel = options.fallbackModel
     this.metrics = options.metrics
@@ -435,6 +435,7 @@ export class AgentRuntime {
       session.request.revisions.push(steer)
       delete session.request.contract
     }
+    const semanticReviewPolicy = context.semanticReviewPolicy === undefined ? undefined : snapshotSemanticReviewPolicyIdentity(context.semanticReviewPolicy)
     const priorBinding = context.executionSteps?.find(step => step.kind === 'runtime.binding')
     {
       // The new default must never silently reinterpret a previously unbound execution.
@@ -442,7 +443,8 @@ export class AgentRuntime {
       if (!priorBinding && (context.executionCheckpoint || context.executionSteps?.some(step => step.kind === 'runtime.checkpoint'))) {
         throw new Error('unbound execution must resume with the original pinned worker configuration')
       }
-      const binding = { runtime: releaseVersions.runtime, semanticReview: this.semanticReview, harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
+      const binding = { runtime: releaseVersions.runtime, semanticReview: this.semanticReview,
+        ...(semanticReviewPolicy ? { semanticReviewPolicy } : {}), harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
         ...(this.additionalContentCorrections ? { additionalContentCorrections: this.additionalContentCorrections } : {}),
         ...(fastModel ? { fastProvider: fastModel.configurationFingerprint ?? null } : {}) }
@@ -537,6 +539,7 @@ export class AgentRuntime {
       // Dynamic context stays outside conversational history; memory snapshots
       // are recorded separately with the model call for traceability.
       const liveContext = hop === 0 ? context : await this.hostFor(work).loadContext(work)
+      if (canonicalJson(liveContext.semanticReviewPolicy ?? null) !== canonicalJson(semanticReviewPolicy ?? null)) throw new Error('semantic review policy changed; restore the pinned worker configuration')
       if (liveContext.memory?.admission) this.memoryAdmissionRuns.set(runId,liveContext.memory.admissionRequestVersion ?? 0)
       if (liveContext.responseProfile === 'fast' && !fastModel) throw new Error('automatic response routing requires a fast model configuration')
       const model = liveContext.responseProfile === 'fast' ? fastModel! : deepModel
@@ -852,6 +855,8 @@ export class AgentRuntime {
         if (!violation) violation = this.policy.validateCompletion?.(turn.text, assessment ?? { status: 'satisfied', checks: [], gaps: [] }, liveContext) ?? null
         if (!violation) await rememberCandidate(turn.text, liveContext, assessment?.gaps)
         let contentCheckError: string | undefined
+        let reviewScope: SemanticReviewScope | undefined
+        let invalidReviewScope = false
         let resourceGaps: string[] = []
         if (liveContext.pendingApproval?.approved === false) resourceGaps.push('The human rejected the required action; the original requested change was not completed')
         let fileObservations: import('../outcome/verification.js').VerificationRecord[] = []
@@ -860,9 +865,15 @@ export class AgentRuntime {
           const candidate = { body: turn.text.trim(), artifacts, requestVersion: (session.request?.revisions.length ?? 0) + 1 }
           const checked = await this.hostFor(work).verifyCandidate(work, candidate)
           // Never turn a stale observation into a repair target or current proof.
-          fileObservations = checked.requestVersion === candidate.requestVersion && checked.candidateHash === candidateHash(candidate)
-            ? checked.records : [{ checker: 'resource', status: 'inconclusive', evidence: { reason: 'Candidate verification identity does not match the current candidate and request version' } }]
-          needsVerification ||= fileObservations.length > 0
+          const currentVerification = checked.requestVersion === candidate.requestVersion && checked.candidateHash === candidateHash(candidate)
+          fileObservations = currentVerification ? [...checked.records]
+            : [{ checker: 'resource', status: 'inconclusive', evidence: { reason: 'Candidate verification identity does not match the current candidate and request version' } }]
+          if (currentVerification && checked.semanticReview !== undefined) {
+            try { reviewScope = snapshotSemanticReviewScope(checked.semanticReview) }
+            catch { invalidReviewScope = true; fileObservations.push({ checker: 'semantic-review', status: 'inconclusive', evidence: { reason: 'Trusted semantic review scope is invalid' } }) }
+          }
+          if (reviewScope && this.semanticReview === 'disabled') resourceGaps.push('A required focused semantic review is disabled; the selected workflow result remains unverified')
+          needsVerification ||= fileObservations.length > 0 || reviewScope !== undefined
           const failed = fileObservations.filter(record => record.status === 'failed')
           resourceGaps.push(...fileObservations.filter(record => record.status !== 'passed').map(record => `${record.checker}: ${record.status}; ${record.evidence['reason'] ?? 'content was not verified'}`))
           if (failed.length && budget.consume('content_acceptance', JSON.stringify(failed))) {
@@ -901,18 +912,43 @@ export class AgentRuntime {
           if (signals.lifecycle.signal.aborted) throw new RunCancelledError('lifecycle')
           if (signals.hasSteer()) continue
         }
-        if (!violation && this.semanticReview === 'required' && session.request) {
+        let previousScopeReview: ExecutionStep | undefined
+        if (reviewScope && this.semanticReview === 'selective') {
+          const scopeHash = semanticReviewScopeHash(reviewScope)
+          previousScopeReview = liveContext.executionSteps?.findLast(step => step.kind === 'runtime.review'
+            && step.requestVersion === (session.request?.revisions.length ?? 0) + 1 && step.input['workId'] === work.id
+            && (step.input['semanticReview'] as { id?: string; rubricSha256?: string } | undefined)?.id === reviewScope.id
+            && (step.input['semanticReview'] as { rubricSha256?: string } | undefined)?.rubricSha256 === scopeHash)
+          if (previousScopeReview) {
+            let stillCurrent = false
+            try {
+              const previous = JSON.parse(previousScopeReview.output ?? '{}') as { error?: unknown; candidateHash?: string; requestVersion?: number; workId?: string;
+                missing?: Array<{ priority?: string; blockedBy?: string }>; limitations?: unknown[] }
+              stillCurrent = !previous.error && previous.workId === work.id && previous.requestVersion === (session.request?.revisions.length ?? 0) + 1
+                && previous.candidateHash === candidateHash({ body: turn.text.trim(), requestVersion: previous.requestVersion, artifacts })
+                && Array.isArray(previous.missing) && previous.missing.every(item => item.priority === 'optional' && !item.blockedBy)
+                && Array.isArray(previous.limitations) && previous.limitations.length === 0
+            } catch { /* A broken or different previous review cannot certify this candidate. */ }
+            if (!stillCurrent) {
+              resourceGaps.push(`Previously unresolved workflow scope ${reviewScope.id}: a prior scope review does not verify this candidate; complete the native workflow or retain its limitation`)
+              acceptanceGaps = [...resourceGaps]
+              await rememberCandidate(turn.text, liveContext, [...(assessment?.gaps ?? []), ...acceptanceGaps])
+            }
+          }
+        }
+        if (!violation && !invalidReviewScope && !previousScopeReview && (this.semanticReview === 'required' || this.semanticReview === 'selective' && reviewScope) && session.request) {
           const check = await checkCandidateContent(deepModel, session.request, turn.text.trim(), artifacts,
             this.compaction.contextWindowTokens, signals.generationSignal(), resourceGaps, fileObservations,
             { steps: (liveContext.executionSteps ?? []).filter(step => !step.kind.startsWith('runtime.')).map(step => ({ id: step.id, requestVersion: step.requestVersion, kind: step.kind, output: step.output })),
-              dependencies: liveContext.dependencies ?? [], conversation: modelItems })
+              dependencies: liveContext.dependencies ?? [], conversation: modelItems },
+            reviewScope ? { scope: reviewScope, focused: this.semanticReview === 'selective' } : undefined)
           await signals.refresh()
           if (signals.leaseLost()) throw signals.leaseLost()!
           if (signals.lifecycle.signal.aborted) throw new RunCancelledError('lifecycle')
           if (signals.hasSteer()) continue
           await this.event(work, runId, { kind: 'response.content_checked', stage: 'completed', visibility: 'internal', data: check })
           await this.hostFor(work).saveStep(work, { id: `review:${randomUUID()}`, kind: 'runtime.review', requestVersion: check.requestVersion,
-            input: { workId: work.id, candidateHash: check.candidateHash }, output: JSON.stringify(check), artifacts: [] })
+            input: { workId: work.id, candidateHash: check.candidateHash, ...('semanticReview' in check ? { semanticReview: check.semanticReview } : {}) }, output: JSON.stringify(check), artifacts: [] })
           contentCheckError = 'error' in check ? check.error : undefined
           // Optional semantic suggestions cannot trigger a generation or weaken native checks.
           // Legacy findings without a priority remain required; human blockers remain current gaps.

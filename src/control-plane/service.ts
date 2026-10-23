@@ -2,7 +2,7 @@ import { executionTraceMetadata } from '../protocol/run-trace.js'
 import { userInputWait } from '../protocol/input-wait.js'
 import { abortable } from '../deadline.js'
 import { responseProfile, type ResponsePolicy } from '../runtime/response-policy.js'
-import { candidateHash, type Candidate, type CandidateVerification } from '../outcome/verification.js'
+import { candidateHash, snapshotSemanticReviewScope, semanticReviewScopeHash, snapshotSemanticReviewPolicyIdentity, type SemanticReviewScope, type SemanticReviewPolicyIdentity, type Candidate, type CandidateVerification } from '../outcome/verification.js'
 import { grantedTools, TASK_TOOLS, parseTaskArgs, type ToolDefinition } from '../tools/catalog.js'
 import { readRequestAttachment } from '../context/request.js'
 import { readEvidence } from '../context/evidence.js'
@@ -70,6 +70,10 @@ export interface ControlPlaneDeps {
   }
   modelBudget?: Required<import('../model/execution.js').RootModelBudgetOptions>
   verifyCandidate?: (work: Omit<WorkItem, 'leaseToken'>, candidate: Candidate, signal?: AbortSignal) => Promise<CandidateVerification>
+  /** Trusted live nomination; workers and model output cannot nominate review scopes. */
+  semanticReviewPolicy?: SemanticReviewPolicyIdentity & {
+    resolve(work: Omit<WorkItem, 'leaseToken'>, candidate: Candidate): Promise<SemanticReviewScope | undefined>
+  }
   tools?: readonly ToolDefinition[]
   steps: import('./steps.js').StepStore
   work: WorkStore
@@ -141,9 +145,29 @@ export class ControlPlaneService {
     const facts = snapshotArtifacts([...(await this.deps.steps.list(work.id)).flatMap(step => step.artifacts),
       ...await this.deps.actions.artifacts(work.id)])
     if (candidate.artifacts.some(artifact => !facts.some(fact => isDeepStrictEqual(fact, artifact)))) throw new ControlPlaneError(409, 'candidate artifact has no execution record')
-    if (!this.deps.verifyCandidate) return { requestVersion: candidate.requestVersion, candidateHash: candidateHash(candidate),
-      records: [{ checker: 'availability', status: 'inconclusive', evidence: { reason: 'No authoritative checker is configured' } }] }
-    return this.deps.verifyCandidate(work, candidate, signal)
+    const checked = this.deps.verifyCandidate ? await this.deps.verifyCandidate(work, candidate, signal)
+      : { requestVersion: candidate.requestVersion, candidateHash: candidateHash(candidate),
+        records: [{ checker: 'availability', status: 'inconclusive' as const, evidence: { reason: 'No authoritative checker is configured' } }] }
+    // Only the configured trusted policy may nominate; never accept a scope from a verifier result.
+    const { semanticReview: _ignored, ...native } = checked
+    let scope: SemanticReviewScope | undefined
+    if (this.deps.semanticReviewPolicy) {
+      const identity = snapshotSemanticReviewPolicyIdentity({ id: this.deps.semanticReviewPolicy.id, version: this.deps.semanticReviewPolicy.version })
+      if (native.requestVersion !== candidate.requestVersion || native.candidateHash !== candidateHash(candidate)) {
+        throw new ControlPlaneError(409, 'candidate verification identity changed before semantic nomination')
+      }
+      const nominated = await this.deps.semanticReviewPolicy.resolve(structuredClone(work), structuredClone(candidate))
+      if (nominated !== undefined) scope = snapshotSemanticReviewScope(nominated)
+      if (!isDeepStrictEqual(identity, snapshotSemanticReviewPolicyIdentity({ id: this.deps.semanticReviewPolicy.id, version: this.deps.semanticReviewPolicy.version }))) {
+        throw new Error('semantic review policy identity changed during nomination')
+      }
+    }
+    signal?.throwIfAborted()
+    const current = await this.heartbeat(proof)
+    if (!current.ok || current.cancelRequested || candidate.requestVersion !== (current.steer?.length ?? 0) + 1) {
+      throw new ControlPlaneError(409, 'candidate request changed during verification')
+    }
+    return { ...native, ...(scope ? { semanticReview: scope } : {}) }
   }
 
   async loadWorkspace(proof: LeaseProof) {
@@ -183,11 +207,14 @@ export class ControlPlaneService {
     }
     if (step.kind === 'runtime.binding') {
       const input = step.input
+      if (input['semanticReviewPolicy'] !== undefined) {
+        try { snapshotSemanticReviewPolicyIdentity(input['semanticReviewPolicy']) } catch { throw new ControlPlaneError(400, 'invalid runtime behavior binding') }
+      }
       const nullableString = (value: unknown) => value === null || typeof value === 'string' && value.length <= 2000
       if (step.id !== 'runtime:binding' || typeof input['runtime'] !== 'string' || !input['runtime']
         || typeof input['prompt'] !== 'string' || !input['prompt']
         || !nullableString(input['harness']) || !nullableString(input['model']) || !nullableString(input['provider'])
-        || input['semanticReview'] !== undefined && input['semanticReview'] !== 'disabled' && input['semanticReview'] !== 'required'
+        || input['semanticReview'] !== undefined && input['semanticReview'] !== 'disabled' && input['semanticReview'] !== 'required' && input['semanticReview'] !== 'selective'
         || input['additionalContentCorrections'] !== undefined && (!Number.isSafeInteger(input['additionalContentCorrections'])
           || Number(input['additionalContentCorrections']) < 0 || Number(input['additionalContentCorrections']) > 3)
         || input['fastProvider'] !== undefined && !nullableString(input['fastProvider'])
@@ -511,7 +538,11 @@ export class ControlPlaneService {
     }
     if (typeof work.meta?.['text'] === 'string' && !grants.some(grant => grant.name === 'task')) grants.push({ name: 'task', methods: TASK_TOOLS.map(tool => tool.action.split('.')[1]!) })
     await this.requireLease(proof)
+    delete (context as Partial<TurnContext>).semanticReviewPolicy
+    const policy = this.deps.semanticReviewPolicy
+      ? snapshotSemanticReviewPolicyIdentity({ id: this.deps.semanticReviewPolicy.id, version: this.deps.semanticReviewPolicy.version }) : undefined
     return { work: { ...work, leaseToken: proof.leaseToken }, ...context,
+      ...(policy ? { semanticReviewPolicy: policy } : {}),
       snapshotVersion: { fence: work.fence, requestVersion, sessionRevision: snapshot.session?.revision ?? 0 },
       ...(includeSession ? { session: snapshot.session } : {}),
       executionSteps: steps, ...(checkpoint ? { executionCheckpoint: checkpoint.input as unknown as import('../runtime/corrections.js').ProgressCheckpoint } : {}), grants, dependencies, tools: grantedTools(this.deps.tools ?? TASK_TOOLS, grants).filter(tool => permitsTool(work, tool)), priorArtifacts: [...priorArtifacts.values()] }
@@ -908,17 +939,32 @@ export class ControlPlaneService {
       const binding = steps.find(step => step.kind === 'runtime.binding')
       const reviewMode = binding?.input['semanticReview']
       if (binding && (binding.id !== 'runtime:binding' || binding.requestVersion > message.envelope.requestVersion)
-        || reviewMode !== undefined && reviewMode !== 'disabled' && reviewMode !== 'required') throw new Error('invalid runtime behavior binding')
+        || reviewMode !== undefined && reviewMode !== 'disabled' && reviewMode !== 'required' && reviewMode !== 'selective') throw new Error('invalid runtime behavior binding')
       // Preserve legacy acceptance rules for old workers. New workers pin the explicit mode;
       // disabling a fallible evaluator never disables the native checks above or below.
-      const reviewRequired = reviewMode === 'required' || reviewMode === undefined
+      const candidate = { body: message.body, requestVersion: message.envelope.requestVersion, artifacts }
+      let scope: SemanticReviewScope | undefined
+      try {
+        const policy = this.deps.semanticReviewPolicy
+        const identity = policy ? snapshotSemanticReviewPolicyIdentity({ id: policy.id, version: policy.version }) : undefined
+        if (!isDeepStrictEqual(binding?.input['semanticReviewPolicy'], identity)) gaps.push('Semantic review policy identity changed')
+        const nominated = policy ? await policy.resolve(structuredClone(work), structuredClone(candidate)) : undefined
+        if (nominated !== undefined) scope = snapshotSemanticReviewScope(nominated)
+        if (policy && !isDeepStrictEqual(identity, snapshotSemanticReviewPolicyIdentity({ id: policy.id, version: policy.version }))) {
+          gaps.push('Semantic review policy identity changed during nomination')
+        }
+      } catch { gaps.push('Current semantic review policy is unavailable or invalid') }
+      if (scope && reviewMode === 'disabled') gaps.push('The nominated semantic review is disabled and remains unverified')
+      const reviewRequired = reviewMode === 'required' || Boolean(scope) || reviewMode === undefined
         && (requiresReview(session.request, steps, this.deps.tools ?? TASK_TOOLS, artifacts) || (await this.deps.work.children(work)).length > 0)
-      const hash = candidateHash({ body: message.body, requestVersion: message.envelope.requestVersion, artifacts })
+      const hash = candidateHash(candidate)
       const review = steps.findLast(step => step.kind === 'runtime.review' && step.requestVersion === message.envelope.requestVersion
         && step.input['workId'] === work.id && step.input['candidateHash'] === hash)
       if (reviewRequired || review) {
         const checked = review?.output ? JSON.parse(review.output) : undefined
-        if (!checked || checked.error || checked.workId !== work.id || checked.candidateHash !== hash
+        if (!checked || checked.error || (scope ? checked.semanticReview?.id !== scope.id
+          || checked.semanticReview?.rubricSha256 !== semanticReviewScopeHash(scope) : checked.semanticReview !== undefined)
+          || checked.workId !== work.id || checked.candidateHash !== hash
           || checked.requestVersion !== message.envelope.requestVersion || !Array.isArray(checked.missing)
           || checked.missing.some((item: { priority?: string; blockedBy?: string }) => !item || item.priority !== 'optional' || item.blockedBy)
           || checked.limitations !== undefined && (!Array.isArray(checked.limitations)

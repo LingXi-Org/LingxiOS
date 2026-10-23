@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { compileContext, compileAuxiliaryPrompt, COMPACTION_PROMPT, textSha256, type ContextBlock } from '../src/context/compiler.js'
-import { buildPromptContext } from '../src/prompts/provider.js'
+import { buildPromptContext, PROMPT_CONTRACT_VERSION } from '../src/prompts/provider.js'
 import { DefaultRuntimePolicy } from '../src/runtime/policy.js'
 import { DEFAULT_MODEL_BUDGET, executionModel, type ModelCallObservation } from '../src/model/execution.js'
 import { OpenAIChatDriver } from '../src/model/openai.js'
@@ -175,4 +175,20 @@ it('does not charge local prompt manifests against the provider context window',
   await model.structured({ instructions: prompt.instructions, prompt: prompt.manifest, input: {} })
   assert.throws(() => model.structured({ instructions: prompt.instructions, prompt: prompt.manifest, input: { prompt: 'required data'.repeat(2000) } }), /context budget/)
   assert.equal(calls, 1)
+})
+
+
+// Direct execution has no implicit evaluator. The governing instructions must
+// make the same-generation requirement check explicit, without inventing a wire contract.
+it('pins the direct execution delivery instructions and their compiled identity', () => {
+  const expected = 'Answer simple text requests directly in the exact requested format. Do not wrap them in assessment JSON or execute code merely to print the answer. Keep private reasoning and internal execution metadata out of user-facing text. For complex tasks, in the same generation check every deliverable, constraint, action and acceptance condition against the original request, ordered revisions and actual tool receipts before returning the result. Complete feasible authorized work with available tools before the final reply. Native runtime checks validate recorded actions, resources and artifacts; do not assume a model will review or rewrite your answer. Where the existing response contract supports status, preserve partial or blocked for known unmet requirements; otherwise state those gaps plainly without claiming completion.'
+  const compiled = buildPromptContext(context,policy,0)
+  assert.equal(PROMPT_CONTRACT_VERSION,'prompt-v3.3')
+  assert.equal(compiled.sourceVersions['promptContract'],PROMPT_CONTRACT_VERSION)
+  const section = compiled.manifest!.sections.find(section => section.source === 'platform:delivery')!
+  assert.equal(section.sha256,textSha256(expected))
+  assert.equal(section.bytes,Buffer.byteLength(expected))
+  assert.ok(compiled.systemInstructions.includes(expected))
+  assert.doesNotMatch(compiled.systemInstructions,/runtime independently reviews complex candidates/)
+  assert.doesNotMatch(compiled.systemInstructions,/Record a derived checklist for multi-step or multi-deliverable work/)
 })

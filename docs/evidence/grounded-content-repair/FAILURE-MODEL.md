@@ -24,3 +24,16 @@ Validation: owning content-check, conversation-content-repair, runtime and outco
 The commit path must read the immutable Worker behavior binding rather than independently reintroducing the retired request-wording heuristic. Explicit disabled mode permits direct commits only after the existing action, resource, artifact, request-version, native-obligation and assessment checks. Required mode still requires a matching current candidate review. Legacy bindings retain legacy semantic acceptance rules; new Workers reject their execution rather than reinterpret them. Binding records must have the fixed runtime identity and full configuration shape, be inserted for the current request version, and remain immutable.
 
 Before changing this gate, synthetic completion tests failed for direct disabled commits, optional suggestions, required declared limitations and forged binding shapes. After the gate change, all eight completion tests pass. The full HTTP/model/Python artifact integration test exercises direct local and remote workers (two model generations, zero content reviews), and separately creates an explicitly reviewed Worker for revision-semantic coverage.
+
+## Governing prompt
+
+The platform instructions must not promise an independent evaluator when the default uses direct execution. Before changing instructions, the compiled delivery-section snapshot/version test and three actual direct-generation instruction tests failed. The new prompt contract is `prompt-v3.3`: check original requirements, revisions and actual receipts in the same generation, complete feasible authorized tool work before final delivery, preserve known partial/blocked outcomes only through the existing response contract, and keep private reasoning internal. This introduces no model call or response field.
+
+## Trusted selective workflow review
+
+- Default mode is explicitly pinned `selective`. No trusted nomination means zero judges; generic native gaps must never resurrect semantic review.
+- A trusted control-plane resolver receives only current-request steps plus the actual registered/authorized catalog, request and candidate. It may nominate a bounded scope and rubric; no selection grants permission, activates a skill or resolves delivery.
+- An explicit creation request with a loaded but unactivated workflow and a promise-only answer receives one focused review, one existing bounded repair chance, then truthful partial if the same scope remains. A reference-only explanation remains satisfiable without authoring activation. Ordinary answers receive no nomination and no judge.
+- Scope/rubric/request changes, revocation, malformed nomination, disabled review, stale identity, and a positive review reused for a changed body must fail closed. Native action/artifact checks remain independent.
+- Persisted review/checkpoint state prevents a worker restart or unrelated observation from buying another review or rewrite. Existing required generic review semantics retain their original bounds.
+- Tests were added before implementation: four nomination-path tests and three once-per-scope/recovery tests failed, then passed after scoped runtime changes. The app integration test exercises the actual resolver, action ledger and final commit path with zero authoring activations.
