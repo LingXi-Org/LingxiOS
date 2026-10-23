@@ -9,6 +9,7 @@ import type { ModelDriver } from '../src/model/driver.js'
 import type { AssistantMessage, SessionRecord, TurnContext, WorkCompletion } from '../src/protocol/types.js'
 import type { ExecutionStep } from '../src/control-plane/steps.js'
 import { durableProtocol } from './protocol-fixture.js'
+import { OpenAIChatDriver } from '../src/model/openai.js'
 
 // Failure model: docs/evidence/conversation-delivery-repair/FAILURE-MODEL.md.
 const original = 'Create a complete interactive comparison.'
@@ -105,6 +106,34 @@ it('only a trusted product hook defers repair and cannot skip resource checks',a
 const recoveryRequest = 'Explain how a circle\'s area changes when its radius doubles, with concrete examples.'
 const recoveryAnswer = 'A circle has area πr². A radius of 1 gives area π, and a radius of 2 gives area 4π. Doubling the radius quadruples the area because both dimensions scale by two.'
 const promise = 'I will prepare the explanation and examples.'
+it('combines real public protocol recovery, joint review and bounded content completion',async () => {
+  const f = fixture(recoveryRequest); let turns = 0,reviews = 0,settled = 0
+  const record = f.host.recordModelUsage
+  f.host.recordModelUsage = async (...args) => { await record(...args); settled++ }
+  const model = new OpenAIChatDriver('synthetic-combined', { apiKey: 'synthetic',publicTextProtocol: 'purpose-json-v1',
+    maxAttempts: 1,recovery: { maxAttempts: 1,totalTimeoutMs: 10_000 },fetchImpl: async (_url,init) => {
+      const request = JSON.parse(String(init?.body))
+      if (!request.stream) {
+        reviews++
+        assert.match(JSON.stringify(request.messages),/SAME response/,'content and scope use the joint review contract')
+        const value = { missing: turns === 3 ? [{ quote: recoveryRequest,reason: 'Explanation and examples are missing.' }] : [],limitations: [],deferred: [] }
+        return Response.json({ choices: [{ finish_reason: 'stop',message: { content: JSON.stringify(value) } }],usage: { prompt_tokens: 100,completion_tokens: 20 } })
+      }
+      turns++
+      if (turns === 2 || turns === 3) assert.match(JSON.stringify(request.messages),/purpose-json-v1/)
+      if (turns === 4) assert.match(JSON.stringify(request.messages),/fix the omissions/)
+      const content = JSON.stringify({ commentary: '',answer: turns <= 2 ? '' : turns === 3 ? promise : recoveryAnswer })
+      return new Response('data: '+JSON.stringify({ choices: [{ delta: { content },finish_reason: 'stop' }],usage: { prompt_tokens: 100,completion_tokens: 20 } })+'\n\ndata: [DONE]\n\n')
+    } })
+  await recoveryRuntime(f,model,3,{ maxModelCalls: 8,maxTokens: 200_000,wallClockMs: 30_000 }).runWork(f.work)
+  assert.deepEqual({ turns,reviews,settled },{ turns: 4,reviews: 2,settled: 6 })
+  assert.equal(f.result().committed?.body,recoveryAnswer)
+  assert.equal(f.result().committed?.envelope.goalOutcome.status,'satisfied')
+  // Successful work uses commitResult's atomic completion path; this fixture's
+  // completeWork callback only records non-result terminal paths.
+  assert.equal(f.result().completion,undefined)
+  assert.equal(f.steps.find(step => step.kind === 'runtime.binding')?.input['additionalContentCorrections'],3)
+})
 function recoveryRuntime(f: ReturnType<typeof fixture>,model: ModelDriver,extra?: number,rootModelBudget: RootModelBudgetOptions = {}) {
   const options: AgentRuntimeOptions = { rootModelBudget,...(extra === undefined ? {} : { additionalContentCorrections: extra }) }
   return new AgentRuntime(f.host,model,kernel,options)
