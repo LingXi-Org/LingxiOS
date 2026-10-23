@@ -937,6 +937,13 @@ export class AgentRuntime {
           }
         }
         if (!violation && !invalidReviewScope && !previousScopeReview && (this.semanticReview === 'required' || this.semanticReview === 'selective' && reviewScope) && session.request) {
+          // Reserve the selected scope before spending on a judge. A lost lease or
+          // interruption cannot erase an admitted call and buy another on recovery.
+          const reviewStep: ExecutionStep = { id: `review:${randomUUID()}`, kind: 'runtime.review',
+            requestVersion: session.request.revisions.length + 1, input: { workId: work.id,
+              candidateHash: candidateHash({ body: turn.text.trim(), requestVersion: session.request.revisions.length + 1, artifacts }),
+              ...(reviewScope ? { semanticReview: { id: reviewScope.id, rubricSha256: semanticReviewScopeHash(reviewScope) } } : {}) }, artifacts: [] }
+          if (this.semanticReview === 'selective') await this.hostFor(work).saveStep(work, reviewStep)
           const check = await checkCandidateContent(deepModel, session.request, turn.text.trim(), artifacts,
             this.compaction.contextWindowTokens, signals.generationSignal(), resourceGaps, fileObservations,
             { steps: (liveContext.executionSteps ?? []).filter(step => !step.kind.startsWith('runtime.')).map(step => ({ id: step.id, requestVersion: step.requestVersion, kind: step.kind, output: step.output })),
@@ -947,8 +954,7 @@ export class AgentRuntime {
           if (signals.lifecycle.signal.aborted) throw new RunCancelledError('lifecycle')
           if (signals.hasSteer()) continue
           await this.event(work, runId, { kind: 'response.content_checked', stage: 'completed', visibility: 'internal', data: check })
-          await this.hostFor(work).saveStep(work, { id: `review:${randomUUID()}`, kind: 'runtime.review', requestVersion: check.requestVersion,
-            input: { workId: work.id, candidateHash: check.candidateHash, ...('semanticReview' in check ? { semanticReview: check.semanticReview } : {}) }, output: JSON.stringify(check), artifacts: [] })
+          await this.hostFor(work).saveStep(work, { ...reviewStep, output: JSON.stringify(check) })
           contentCheckError = 'error' in check ? check.error : undefined
           // Optional semantic suggestions cannot trigger a generation or weaken native checks.
           // Legacy findings without a priority remain required; human blockers remain current gaps.

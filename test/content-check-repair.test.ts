@@ -193,3 +193,12 @@ it('rejects invalid priority rather than silently downgrading a required finding
   assert.deepEqual((calls[1]!.input as Record<string,unknown>)['validationFailures'],[{ path: 'missing[0].priority',constraint: 'required_or_optional' }])
   assert.deepEqual(result.missing,[])
 })
+
+
+it('keeps a focused workflow review to one paid call when returned findings are invalid', async () => {
+  const { model,calls } = fixture([invalidQuote,valid])
+  const result = await checkCandidateContent(model,request,body,[],32000,new AbortController().signal,[],[],[],
+    { scope: { id: 'selected-workflow.v1',rubric: 'Only check the selected currently requested workflow result.' },focused: true })
+  assert.equal(calls.length,1)
+  assert.equal('error' in result,true)
+})

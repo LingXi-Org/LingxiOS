@@ -507,7 +507,7 @@ for (const missing of [false,true]) it(`runs one focused review only for a trust
   await new AgentRuntime(f.host,model,kernel).runWork(f.work)
   assert.deepEqual({ turns,reviews },{ turns: missing ? 2 : 1,reviews: 1 })
   assert.equal(f.result().committed?.envelope.goalOutcome.status,'satisfied')
-  const review = JSON.parse(f.steps.find(step => step.kind === 'runtime.review')!.output!)
+  const review = JSON.parse(f.steps.findLast(step => step.kind === 'runtime.review' && step.output !== undefined)!.output!)
   assert.equal(review.semanticReview.id,selectedScope.id)
   assert.match(review.semanticReview.rubricSha256,/^[a-f0-9]{64}$/)
 })
@@ -539,7 +539,7 @@ it('fails closed on malformed trusted review scope without a model router or eva
 for (const recover of [false,true]) it(`retains a previously unresolved selected scope without another judge or rewrite (recover=${recover})`,async () => {
   const f = fixture(); let turns = 0,reviews = 0
   const pause = new AbortController(),save = f.host.saveStep
-  if (recover) f.host.saveStep = async (work,step) => { await save(work,step); if (step.kind === 'runtime.review') pause.abort() }
+  if (recover) f.host.saveStep = async (work,step) => { await save(work,step); if (step.kind === 'runtime.review' && step.output !== undefined) pause.abort() }
   f.host.verifyCandidate = async (_work,candidate) => ({ candidateHash: candidateHash(candidate),requestVersion: candidate.requestVersion,records: [],semanticReview: selectedScope })
   const model: ModelDriver = { compact: async () => { throw new Error('unexpected compaction') },
     structured: async () => { reviews++; return { model: 'synthetic',usage,value: { missing: [{ quote: original,reason: 'The selected workflow has not produced the required result.' }] } } },
@@ -563,6 +563,23 @@ it('does not reuse a previous positive scope review for a different candidate bo
     run: async () => ({ text: ++turns === 1 ? 'A reference explanation.' : 'A changed candidate.',output: [],usage }) }
   await new AgentRuntime(f.host,model,kernel).runWork(f.work)
   assert.equal(f.result().committed?.envelope.goalOutcome.status,'satisfied')
+  f.work.fence++
+  await new AgentRuntime(f.host,model,kernel).runWork(f.work)
+  assert.deepEqual({ turns,reviews },{ turns: 2,reviews: 1 })
+  assert.equal(f.result().committed?.envelope.goalOutcome.status,'partial')
+})
+
+
+it('reserves a selected scope before the paid review so interruption cannot purchase another judge',async () => {
+  const f = fixture(),pause = new AbortController(); let turns = 0,reviews = 0
+  f.host.verifyCandidate = async (_work,candidate) => ({ candidateHash: candidateHash(candidate),requestVersion: candidate.requestVersion,records: [],semanticReview: selectedScope })
+  const model: ModelDriver = { compact: async () => { throw new Error('unexpected compaction') },
+    structured: async () => { reviews++; pause.abort(); return { model: 'synthetic',usage,value: { missing: [{ quote: original,reason: 'The workflow has not delivered.' }] } } },
+    run: async () => { turns++; return { text: 'The selected workflow remains unavailable.',output: [],usage } } }
+  await new AgentRuntime(f.host,model,kernel).runWork(f.work,pause.signal)
+  assert.equal(f.result().committed,undefined)
+  assert.equal(reviews,1)
+  assert.ok(f.steps.some(step => step.kind === 'runtime.review' && step.output === undefined),'scope admission must precede the paid call')
   f.work.fence++
   await new AgentRuntime(f.host,model,kernel).runWork(f.work)
   assert.deepEqual({ turns,reviews },{ turns: 2,reviews: 1 })
