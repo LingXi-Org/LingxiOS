@@ -16,6 +16,14 @@ native tool transactions keep their existing order; no unlocked discovery or
 new retry policy is introduced. The review model request occurs after the
 prepare transaction commits, so database locks never span provider I/O.
 
+The locked work is also revalidated with `clock_timestamp()` after the scope
+wait and current authorization. A lease can expire without a row update, and
+PostgreSQL `NOW()` remains fixed at transaction start. Without this second
+check, both preparation and recording could accept an expired worker. This
+validity gap also existed in the earlier order; it is not a claim that moving
+the lock introduced every expired-review case. The second check takes no new
+lock and preserves the complete identity, fence, status and cancellation gate.
+
 This is a bounded fix for an independently reproduced review/admission cycle.
 It is not proof of the peer in an older deadlock without PostgreSQL DETAIL, nor
 a claim that every memory maintenance lock is globally ordered. In particular,
@@ -51,6 +59,12 @@ The final cases cover:
   admission alternative failed this exact test with `40P01`.
 - Stale fence, changed request/review hash, forgotten source and cancellation
   still reject at the real review entry point.
+- Both preparation and recording waiting behind a separate legitimate review
+  on the same scope reject a naturally expired lease, with no durable review.
+  The test observes actual PostgreSQL blocking and database-clock expiry; it
+  never changes a work row during the wait or substitutes serialization failure
+  for the lease check. Before the guard, preparation returned a hash and
+  recording persisted one review despite the expired lease.
 
 The existing memory admission and governance suites additionally retain
 provider-boundary forgetting, request-revision changes, root/provider/user

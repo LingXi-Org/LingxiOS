@@ -18,7 +18,7 @@ import { sessionKeyOf } from '../dist/src/protocol/types.js'
 import { syncConversation, ingestMessage } from '../dist/src/collaboration/conversations.js'
 import { createSharedState, readSharedState, updateSharedState } from '../dist/src/collaboration/state.js'
 import { memoryForgetLockRegression } from './memory-forget-lock-regression.mjs'
-import { memoryAdmissionLockRegression, memoryToolAdmissionLockRegression } from './memory-admission-lock-regression.mjs'
+import { memoryAdmissionLockRegression, memoryToolAdmissionLockRegression, memoryReviewLeaseWaitRegression } from './memory-admission-lock-regression.mjs'
 
 const connectionString = process.env.LINGXIOS_TEST_DATABASE_URL
 if (!connectionString) throw new Error('LINGXIOS_TEST_DATABASE_URL must name an empty disposable PostgreSQL database')
@@ -50,6 +50,7 @@ try {
   await checkStorage(pool)
   await memoryAdmissionLockRegression(pool)
   await memoryToolAdmissionLockRegression(pool)
+  await memoryReviewLeaseWaitRegression(pool)
   await memoryForgetLockRegression(pool)
   const budgetParent = { id: 'budget-root',tenantId: 'budget',principalId: 'human',agentId: 'agent',sessionId: 'budget-root',
     kind: 'turn',lane: 'interactive',triggerRef: 'budget-test',fence: 1,homeEpoch: 1 }

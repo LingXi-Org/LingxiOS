@@ -73,6 +73,75 @@ export async function memoryToolAdmissionLockRegression(pool) {
 }
 const scopeLock = sql => sql.includes('FROM lingxios.agent_memory_scopes') && sql.includes('FOR UPDATE')
 
+/** The peer holds its own live work and the shared scope through real review. */
+export async function memoryReviewLeaseWaitRegression(pool, entries = ['prepare','record']) {
+  for (const entry of entries) {
+    const tenantId=`memory-review-lease-${entry}`,scope={tenantId,scopeType:'user',scopeId:'human'}
+    const options={resolveScopes:async()=>[scope]},store=new PgWorkStore(pool,{leaseTtlMs:60_000})
+    const memory=createMemoryRuntime(pool,options),works=[]
+    const actionFor=work=>({runId:work.id,cellId:'lease-review',callIndex:0,idempotencyKey:JSON.stringify([work.id,'lease-review',0]),
+      action:'memory.apply',args:{scopeType:'user',scopeId:'human',changes:[{action:'create',content:{
+        path:'synthetic.md',title:'Synthetic',description:'Fixture preference',body:'Use diagrams.',layer:'reference',
+      }}]}})
+    for (const role of ['holder','target']) {
+      const id=`${tenantId}-${role}`,sessionId=id+'-session'
+      await store.enqueue({id,tenantId,agentId:'agent',principalId:'human',sessionId,kind:'turn',lane:'interactive',triggerRef:'synthetic'})
+      const work=await store.claim(id+'-worker')
+      assert.equal(work?.id,id);works.push(work)
+      const request={version:1,workId:id,tenantId,sessionId,authorId:'human',sourceRef:'synthetic',
+        originalText:'Remember my explicit synthetic preference.',revisions:[],attachments:[],evidence:{}}
+      await pool.query(`INSERT INTO lingxios.agent_os_sessions(session_key,tenant_id,agent_id,session_id,request_snapshot)
+        VALUES($1,$2,'agent',$3,$4::jsonb)`,[sessionKeyOf(work),tenantId,sessionId,JSON.stringify(request)])
+    }
+    const [holder,target]=works,action=actionFor(target),prepared=await memory.prepareReview(target,action)
+    const held=gate(),resume=gate(),targetConnected=gate(),databaseErrors=[]
+    let holderPid,targetPid,paused=false,holding,reviewing
+    const wrapped=isHolder=>({query:(sql,params)=>pool.query(sql,params),async connect(){
+      const client=await pool.connect(),pid=(await client.query('SELECT pg_backend_pid() AS pid')).rows[0].pid
+      if(isHolder)holderPid=pid;else{targetPid=pid;targetConnected.resolve()}
+      return{async query(sql,params){
+        try{
+          const result=await client.query(sql,params)
+          if(isHolder&&scopeLock(sql)&&!paused){paused=true;held.resolve();await resume.promise}
+          return result
+        }catch(error){databaseErrors.push(error.code);throw error}
+      },release:()=>client.release()}
+    }})
+    try{
+      holding=createMemoryRuntime(wrapped(true),options).prepareReview(holder,actionFor(holder));void holding.catch(()=>{})
+      await Promise.race([held.promise,delay(5000).then(()=>{throw Error('review peer did not acquire its real scope lock')})])
+      // Set the deadline before starting the target transaction. No work row is
+      // changed while it waits: this must exercise natural expiry, not 40001.
+      await pool.query("UPDATE lingxios.agent_work_items SET lease_expires_at=clock_timestamp()+INTERVAL '2 seconds' WHERE id=$1",[target.id])
+      const runtime=createMemoryRuntime(wrapped(false),options)
+      reviewing=entry==='prepare'?runtime.prepareReview(target,action)
+        :runtime.recordReview(target,action,prepared.hash,{approved:true,explicit:true,confidence:1})
+      void reviewing.catch(()=>{});await targetConnected.promise
+      const deadline=Date.now()+5000
+      while(!(await pool.query('SELECT pg_blocking_pids($1) AS pids',[targetPid])).rows[0].pids.includes(holderPid)){
+        assert.ok(Date.now()<deadline,'target review must really wait on the peer scope');await delay(10)
+      }
+      while(!(await pool.query('SELECT clock_timestamp()>=lease_expires_at AS expired FROM lingxios.agent_work_items WHERE id=$1',[target.id])).rows[0].expired){
+        assert.ok(Date.now()<deadline,'target lease must expire naturally while blocked');await delay(20)
+      }
+      resume.resolve()
+      const [peer,result]=await Promise.allSettled([holding,reviewing])
+      const reviews=(await pool.query('SELECT 1 FROM lingxios.agent_memory_reviews WHERE work_id=$1',[target.id])).rowCount
+      assert.equal(peer.status,'fulfilled')
+      assert.equal(databaseErrors.includes('40P01'),false)
+      assert.equal(databaseErrors.includes('40001'),false,'a row mutation must not replace the natural-expiry check')
+      console.log(`memory review lease wait: ${entry} ${result.status}; durable reviews=${reviews}`)
+      assert.equal(result.status,'rejected','review must reject a lease that expired during its real scope wait')
+      assert.match(result.reason.message,/current worker lease/)
+      assert.equal(reviews,0,'expired review must not be recorded')
+    }finally{
+      resume.resolve();await Promise.allSettled([holding,reviewing].filter(Boolean))
+      await pool.query("UPDATE lingxios.agent_work_items SET status='cancelled' WHERE tenant_id=$1",[tenantId])
+      await pool.query('DELETE FROM lingxios.agent_os_session_leases WHERE work_id=ANY($1::text[])',[works.map(work=>work.id)])
+    }
+  }
+}
+
 /** Two real entry points, two real transactions; barriers never acquire locks. */
 export async function memoryAdmissionLockRegression(pool, boundaries = ['model', 'context']) {
   for (const boundary of boundaries) for (const mutation of ['none','revoked']) {
