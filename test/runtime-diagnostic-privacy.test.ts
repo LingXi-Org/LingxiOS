@@ -17,7 +17,7 @@ import { durableProtocol } from './protocol-fixture.js'
 // Actual runtime/event serializer/logger; local synthetic content only.
 const unexpected = async (): Promise<never> => { throw new Error('unexpected fixture operation') }
 const modes = ['memory-success','memory-failed','memory-unknown','memory-throw','driver-generic-memory','driver-generic-no-memory',
-  'driver-diagnostics','completed-diagnostics','provider-finish-reason','heartbeat'] as const
+  'driver-diagnostics','recovered-protocol-diagnostics','completed-diagnostics','provider-finish-reason','heartbeat'] as const
 for (const mode of modes) it(`keeps diagnostic copies content-free while preserving protected recovery (${mode})`, async () => {
   const marker = `SYNTHETIC_${randomUUID().replaceAll('-','')}`
   const contains = (value: unknown) => JSON.stringify(value)?.includes(marker) ?? false
@@ -28,7 +28,7 @@ for (const mode of modes) it(`keeps diagnostic copies content-free while preserv
     layer: 'core' as const,kind: 'preference',origin: 'explicit' as const,locked: true,version: 1,status: 'active' as const,sources: [],validUntil: null,updatedAt: '2026-10-20T00:00:00Z' }
   const events: RunEvent[] = [], serialized: unknown[] = [], logs: string[] = [], inputs: unknown[] = [], outputs: unknown[] = []
   const observations: ModelCallObservation[] = [], completions: WorkCompletion[] = []
-  let calls = 0, heartbeats = 0
+  let calls = 0, heartbeats = 0, commits = 0
   const protocol = durableProtocol(observation => observations.push(observation))
   const store = new PgEventStore({ connect: unexpected,query: async (_sql,params) => {
     serialized.push(params?.[7]); return { rows: [{ run_id: mode }],rowCount: 1 }
@@ -47,7 +47,7 @@ for (const mode of modes) it(`keeps diagnostic copies content-free while preserv
       if (mode === 'memory-failed' || mode === 'memory-unknown') return { ok: false,executionState: mode === 'memory-unknown' ? 'unknown' : 'no_effect',error: marker,code: 'synthetic_failure' }
       return { ok: true,executionState: 'succeeded',value: { document: { ...document,body: undefined },body: marker,offset: 0,nextOffset: null } }
     },emitEvent: async (_w,event) => { events.push(event); await store.append({ ...event,tenantId: 't',agentId: 'a',recordedAt: new Date().toISOString() }) },
-    commitResult: async () => {},completeWork: async (_w,value) => { completions.push(value) },yieldWork: async () => {},
+    commitResult: async () => { commits++ },completeWork: async (_w,value) => { completions.push(value) },yieldWork: async () => {},
   }
   const diagnostics = { kind: 'provider' as const,category: 'authorization' as const,status: 401,finishReasons: ['length',marker],
     usage: { available: true,inputTokens: 20,outputTokens: 10 },privateNested: { body: marker } }
@@ -55,6 +55,12 @@ for (const mode of modes) it(`keeps diagnostic copies content-free while preserv
     calls++; inputs.push(request.items)
     if (mode.startsWith('driver-generic')) throw new Error(marker,{ cause: new Error(marker) })
     if (mode === 'driver-diagnostics') throw new ModelDriverError(marker,diagnostics,{ cause: new Error(marker) })
+    if (mode === 'recovered-protocol-diagnostics' && calls === 1) {
+      const protocolDiagnostics = { kind: 'protocol' as const,category: 'protocol' as const,protocolCode: 'tool_identity_invalid' as const,
+        finishReasons: ['tool_calls',marker],usage: { available: true,inputTokens: 20,outputTokens: 10 },
+        message: marker,rawPayload: { body: marker },cause: { message: marker } }
+      throw new ModelDriverError(marker,protocolDiagnostics,{ cause: new Error(marker) })
+    }
     if (tool && calls === 1) return { text: '',output: [{ type: 'function_call',callId: 'call',name: 'memory__read',arguments: '{}' }],usage: { available: true,inputTokens: 20,outputTokens: 10 } }
     return { text: 'Hello.',output: [],usage: { available: true,inputTokens: 20,outputTokens: 10 },
       ...(mode === 'completed-diagnostics' ? { diagnostics: { finishReasons: ['stop'],providerDurationMs: 10,privateNested: { body: marker } } } : {}) }
@@ -85,6 +91,16 @@ for (const mode of modes) it(`keeps diagnostic copies content-free while preserv
     const safe = events.find(event => event.kind === 'run.failed')?.data['modelDiagnostics'] as Record<string,unknown>
     assert.equal(safe['status'],401); assert.equal(safe['category'],'authorization')
     assert.ok((safe['finishReasons'] as unknown[]).includes('length'))
+    assert.deepEqual(events.find(event => event.kind === 'model.failed')?.data['modelDiagnostics'],safe)
+  }
+  if (mode === 'recovered-protocol-diagnostics') {
+    assert.equal(calls,2,'a bounded protocol correction still recovers once')
+    assert.equal(events.some(event => event.kind === 'run.failed'),false,'recovered failures have no terminal failure event')
+    assert.equal(commits,1,'the recovered answer reaches the normal final commit')
+    const failed=events.find(event => event.kind === 'model.failed')
+    assert.equal(failed?.visibility,'internal')
+    assert.deepEqual(failed?.data['modelDiagnostics'],{kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid',
+      finishReasons:['tool_calls','unknown'],usage:{available:true,inputTokens:20,outputTokens:10}})
   }
   if (mode === 'completed-diagnostics') {
     const safe = events.find(event => event.kind === 'model.completed')?.data['diagnostics'] as Record<string,unknown>
