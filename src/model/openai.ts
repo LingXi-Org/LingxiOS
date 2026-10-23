@@ -36,6 +36,8 @@ export type ReasoningEffort = 'low' | 'high' | 'max'
 
 export interface OpenAIDriverOptions {
   publicTextProtocol?: PublicTextProtocol
+  /** Opt-in v3 message completion distinct from terminal execution completion. */
+  publicTextContinuation?: 'typed-message-v1' | undefined
   /** Explicit single-call v3 wire binding; never inferred from provider prose. */
   nativeToolPublicOutput?: 'envelope-v1' | undefined
   recovery?: Partial<ModelRecoveryPolicy>
@@ -193,12 +195,13 @@ export class OpenAIChatDriver implements ModelDriver {
   readonly recovery: ModelRecoveryPolicy
   readonly previewFormat = 'user-text' as const
   readonly publicTextProtocol: PublicTextProtocol | undefined
+  readonly publicTextContinuation: 'typed-message-v1' | undefined
   readonly profile: ModelProfile
   countTokens(text: string): number { return this.options.countTokens?.(text) ?? Buffer.byteLength(text) }
   readonly maxThinkingTokens: number
   readonly protocolTokens: number
   withPublicTextProtocol(publicTextProtocol:PublicTextProtocol):ModelDriver { return new OpenAIChatDriver(this.modelId,{...this.options,publicTextProtocol,
-    ...(publicTextProtocol === 'purpose-json-v3' ? {} : { nativeToolPublicOutput: undefined })}) }
+    ...(publicTextProtocol === 'purpose-json-v3' ? {} : { nativeToolPublicOutput: undefined, publicTextContinuation: undefined })}) }
   singleAttempt(): ModelDriver { return new OpenAIChatDriver(this.modelId, { ...this.options, maxAttempts: 1 }) }
   readonly configurationFingerprint: string
   readonly contextWindowTokens: number
@@ -216,6 +219,9 @@ export class OpenAIChatDriver implements ModelDriver {
     this.recovery = recoveryPolicy(options.recovery)
     if(options.publicTextProtocol!==undefined&&!['purpose-json-v1','purpose-json-v2','purpose-json-v3'].includes(options.publicTextProtocol))throw new Error('invalid public text protocol')
     this.publicTextProtocol=options.publicTextProtocol
+    if(options.publicTextContinuation!==undefined && (options.publicTextContinuation!=='typed-message-v1'
+      || this.publicTextProtocol!=='purpose-json-v3' || options.nativeToolPublicOutput!==undefined))throw new Error('public text continuation requires v3 and original native tool schemas')
+    this.publicTextContinuation=options.publicTextContinuation
     this.baseUrl = (options.baseUrl ?? DEFAULT_MODEL.baseUrl).replace(/\/+$/, '')
     this.circuitKey = createHash('sha256').update(JSON.stringify([this.baseUrl, modelId, options.apiKey])).digest('hex')
     for (const key of ['reasoningEffort', 'compactionReasoningEffort'] as const) {
@@ -245,7 +251,7 @@ export class OpenAIChatDriver implements ModelDriver {
       || this.publicTextProtocol !== 'purpose-json-v3' || this.profile.jsonObjectWithTools !== false || this.profile.parallelTools !== false)) {
       throw new Error('native tool public output requires explicit v3, no combined JSON mode, and single native calls')
     }
-    this.protocolTokens=this.publicTextProtocol?this.countTokens(publicPurposeInstructions(this.publicTextProtocol,this.profile)):0
+    this.protocolTokens=this.publicTextProtocol?this.countTokens(publicPurposeInstructions(this.publicTextProtocol,this.profile,this.publicTextContinuation)):0
     // Default and explicit support share the same capability representation;
     // only an opt-out adds that capability field. Parsing policy is separately
     // versioned below and intentionally changes replay identity when revised.
@@ -262,6 +268,7 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(this.publicTextProtocol && jsonObjectWithTools === false ? { toolCompanionPolicy: 'unpublished-native-prose-v1' } : {}),
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
+      ...(this.publicTextContinuation ? { publicTextContinuation: this.publicTextContinuation } : {}),
       ...(options.nativeToolPublicOutput ? { nativeToolPublicOutput: options.nativeToolPublicOutput,
         nativeToolIdentityPolicy: 'bounded-unambiguous-prefix-v1' } : {}),
     })).digest('hex')
@@ -475,7 +482,7 @@ export class OpenAIChatDriver implements ModelDriver {
   }
   private generationInstructions(instructions: string, nativeEnvelope: boolean): string {
     return instructions + (nativeEnvelope ? '\n\n' + NATIVE_TOOL_PUBLIC_OUTPUT_INSTRUCTIONS
-      : this.publicTextProtocol ? '\n\n' + publicPurposeInstructions(this.publicTextProtocol, this.profile) : '')
+      : this.publicTextProtocol ? '\n\n' + publicPurposeInstructions(this.publicTextProtocol, this.profile, this.publicTextContinuation) : '')
   }
   /** Actual provider wire estimate only for agent generation. Auxiliary methods
    * use their existing independent payloads and never enter this binding. */
@@ -581,6 +588,7 @@ export class OpenAIChatDriver implements ModelDriver {
     const output: ModelItem[] = []
     let text = accumulator.text
     let outcomeDeclaration:OutcomeDeclaration|undefined
+    let publicTextPhase:ModelTurnResult['publicTextPhase']
     if (nativeEnvelope && accumulator.toolCalls.size) {
       if (!nativeOutput && !contentObserved && !companionHasJsonFraming(accumulator.text)
         && completeCompanionTurn({ text: '', calls: accumulator.toolCalls, finishReasons: accumulator.finishReasons },
@@ -613,7 +621,10 @@ export class OpenAIChatDriver implements ModelDriver {
         }
         if(this.publicTextProtocol==='purpose-json-v2'||this.publicTextProtocol==='purpose-json-v3'){
           if(accumulator.toolCalls.size){if(accumulator.text.length&&purposeParser.outcome!==null)throw publicPurposeError()}
-          else {if(purposeParser.outcome===null)throw new ModelDriverError('terminal response requires an outcome declaration', {
+          else if(purposeParser.outcome===null && this.publicTextContinuation==='typed-message-v1') {
+            if(!text.trim() || purposeParser.answerIsNull || !purposeParser.operation)throw publicPurposeError('public_text_answer_required')
+            publicTextPhase='intermediate'
+          } else {if(purposeParser.outcome===null)throw new ModelDriverError('terminal response requires an outcome declaration', {
             ...diagnostics, kind:'protocol', category:'protocol', protocolCode:'terminal_outcome_required',
           });if(!purposeParser.outcome)throw publicPurposeError();outcomeDeclaration=purposeParser.outcome}
         }
@@ -653,7 +664,7 @@ export class OpenAIChatDriver implements ModelDriver {
         ...diagnostics, kind: 'protocol', protocolCode: 'response_empty',
       })
     }
-    const result: ModelTurnResult = { output, text, usage: diagnostics.usage, ...(outcomeDeclaration ? { outcomeDeclaration } : {}) }
+    const result: ModelTurnResult = { output, text, usage: diagnostics.usage, ...(publicTextPhase ? {publicTextPhase} : {}), ...(outcomeDeclaration ? { outcomeDeclaration } : {}) }
     if(this.publicTextProtocol==='purpose-json-v3'&&purposeParser?.operation){result.answerOperation=purposeParser.operation;result.answerIsNull=purposeParser.answerIsNull}
     if (nativeOutput?.operation) { result.answerOperation = nativeOutput.operation; result.answerIsNull = false }
     if (accumulator.model !== undefined) result.model = accumulator.model

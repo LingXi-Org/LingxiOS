@@ -22,7 +22,7 @@ import { sessionKeyOf, type SessionRecord } from '../src/protocol/types.js'
 import { snapshotRequest } from '../src/context/request.js'
 import { nullLogger } from '../src/logging.js'
 
-async function fixture(ask: boolean, initialProtocol: PublicTextProtocol = 'purpose-json-v3') {
+async function fixture(ask: boolean, initialProtocol: PublicTextProtocol = 'purpose-json-v3',continuation=false) {
   const db = new PGlite(), home = await mkdtemp(join(tmpdir(), 'react-private-'))
   await db.exec(await readFile('db/schema.sql', 'utf8'))
   let tail = Promise.resolve(), calls = 0, publicAttempts = 0, deliveries = 0
@@ -65,7 +65,7 @@ async function fixture(ask: boolean, initialProtocol: PublicTextProtocol = 'purp
     sessionId: String(childRow['session_id']), principalId: String(childRow['principal_id']) }
   const bodies: Record<string, unknown>[] = []
   const makeDriver = (publicTextProtocol: PublicTextProtocol) => new OpenAIChatDriver('private-fixture-provider', {
-    apiKey: 'synthetic-only', publicTextProtocol, maxAttempts: 1, capabilities: { jsonObjectWithTools: false },
+    apiKey: 'synthetic-only', publicTextProtocol,...(continuation&&publicTextProtocol==='purpose-json-v3'?{publicTextContinuation:'typed-message-v1' as const}:{}), maxAttempts: 1, capabilities: { jsonObjectWithTools: false },
     fetchImpl: async (_url, init) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>; bodies.push(body); calls++
       assert.equal(body['stream'], true, 'private compatibility does not introduce a judge')
@@ -138,4 +138,16 @@ it('native private child with an old v2 binding rejects new selection policy bef
     assert.equal(state.message, null)
     assert.equal(f.deliveries, 0)
   } finally { await f.close() }
+})
+
+it('continuation opt-in selects the unchanged private v2 driver and binding',async()=>{
+  const f=await fixture(false,'purpose-json-v3',true)
+  try{assert.equal(await f.initial.worker.runNext(),true)
+    assert.equal((await f.app.readRunState(f.childIdentity))?.run.status,'succeeded');assert.equal(f.calls,1)
+    const binding=(await f.pool.query("SELECT input FROM lingxios.agent_steps WHERE work_id=$1 AND kind='runtime.binding'",[f.childId])).rows[0]!['input'] as Record<string,unknown>
+    assert.equal(binding['publicTextContinuation'],undefined)
+    assert.equal(binding['provider'],f.initial.driver.withPublicTextProtocol('purpose-json-v2').configurationFingerprint)
+    assert.doesNotMatch(JSON.stringify(f.bodies),/typed-message-v1|Message lifecycle capability/)
+    assert.equal(f.publicAttempts,0)
+  }finally{await f.close()}
 })

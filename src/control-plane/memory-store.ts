@@ -443,7 +443,8 @@ export class MemoryEventStore implements EventStore {
       this.byRun.set(event.runId, run)
     }
     if (run.has(event.seq)) return false
-    run.set(event.seq, structuredClone(event))
+    const {publicTextRecovery:_recovery,...publicEvent}=event
+    run.set(event.seq, structuredClone(publicEvent))
     return true
   }
 

@@ -424,7 +424,7 @@ export class AgentRuntime {
       if(source.publicTextProtocol!=='purpose-json-v3'||work.conversation?.internal!==true)return source
       if(!source.withPublicTextProtocol)throw new Error('v3 driver must support explicit private-work protocol selection')
       const selected=source.withPublicTextProtocol('purpose-json-v2')
-      if(selected.publicTextProtocol!=='purpose-json-v2')throw new Error('invalid private-work protocol selection')
+      if(selected.publicTextProtocol!=='purpose-json-v2'||selected.publicTextContinuation!==undefined)throw new Error('invalid private-work protocol selection')
       return selected
     }
     if(this.model.publicTextProtocol==='purpose-json-v3'&&work.conversation?.internal===true){
@@ -467,6 +467,8 @@ export class AgentRuntime {
       const binding = { runtime: releaseVersions.runtime, ...(this.model.publicTextProtocol==='purpose-json-v3'?{publicTextSelection:'public-v3-internal-v2-v1'}:{}), semanticReview: this.semanticReview,
         ...(semanticReviewPolicy ? { semanticReviewPolicy } : {}), harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
+        ...(deepModel.publicTextContinuation?{publicTextContinuation:deepModel.publicTextContinuation}:{}),
+        ...(fastModel?.publicTextContinuation?{fastPublicTextContinuation:fastModel.publicTextContinuation}:{}),
         ...(deepModel.publicTextProtocol==='purpose-json-v2'||deepModel.publicTextProtocol==='purpose-json-v3'?{publicTextProtocol:deepModel.publicTextProtocol}:{}),
         ...(fastModel?.publicTextProtocol==='purpose-json-v2'||fastModel?.publicTextProtocol==='purpose-json-v3'?{fastPublicTextProtocol:fastModel.publicTextProtocol}:{}),
         ...(this.additionalContentCorrections ? { additionalContentCorrections: this.additionalContentCorrections } : {}),
@@ -485,6 +487,7 @@ export class AgentRuntime {
     let finalPublicTextPartId: string | undefined
     let finalPublicTextSources: PublicTextSources | undefined
     let answerSegments = new AnswerSegmentSet(runId,(session.request?.revisions.length ?? 0)+1,work.fence,context.executionSteps)
+    if((deepModel.publicTextContinuation==='typed-message-v1'||fastModel?.publicTextContinuation==='typed-message-v1')&&answerSegments.restoreMessageHistory(session,work.id))await host.saveSession(work,session)
     let pendingReplacement = false
     let lastGood: { text: string; envelope: ResponseEnvelope; publicTextPartId?: string; publicTextSources?: PublicTextSources } | undefined
     let terminalError: Error | undefined
@@ -880,12 +883,14 @@ export class AgentRuntime {
       if (!preview && model.previewFormat === 'candidate-json') parser.push(turn.text)
       if (!calls.length && model.previewFormat === 'candidate-json' && parser.complete && turn.finalCandidate === undefined) turn = { ...turn, finalCandidate: turn.text }
 
+      const intermediate=turn.publicTextPhase==='intermediate'
       let declaration: OutcomeDeclaration | undefined
-      if (model.publicTextProtocol === 'purpose-json-v2' || react || turn.outcomeDeclaration !== undefined) {
+      if (model.publicTextProtocol === 'purpose-json-v2' || react || turn.outcomeDeclaration !== undefined || turn.publicTextPhase!==undefined) {
         try {
           if ((!react && model.publicTextProtocol !== 'purpose-json-v2') || turn.finalCandidate !== undefined) throw new Error('outcome declaration requires an explicit outcome protocol')
+          if(turn.publicTextPhase!==undefined && (!intermediate || !react || model.publicTextContinuation!=='typed-message-v1' || calls.length || !turn.text.trim() || !turn.answerOperation || turn.answerIsNull===true || turn.outcomeDeclaration!==undefined))throw new Error('invalid intermediate public message')
           if (calls.length) { if (turn.outcomeDeclaration !== undefined) throw new Error('tool turns cannot declare a terminal outcome') }
-          else declaration = snapshotOutcomeDeclaration(turn.outcomeDeclaration)
+          else if(!intermediate) declaration = snapshotOutcomeDeclaration(turn.outcomeDeclaration)
         } catch {
           // Custom drivers have the same fail-closed boundary as the wire driver.
           // No returned tool call executes while its declaration is invalid.
@@ -911,7 +916,7 @@ export class AgentRuntime {
               || canonicalJson(turn.answerOperation)!==canonicalJson({kind:publication.segmentIdentity.operation,supersedes:publication.segmentIdentity.supersedes})) throw new Error('answer operation changed after publication')
             await publication.finish(turn.text)
             await publication.end(calls.length ? 'tool' : 'completed')
-            const record=await publication.seal(turn.text)
+            const record=await publication.seal(turn.text,intermediate?{version:1,phase:'intermediate',memorySources:derivedSources}:undefined)
             answerSegments.seal(record)
             pendingReplacement ||= record.identity.operation==='replace'
           } else {
@@ -922,7 +927,7 @@ export class AgentRuntime {
           if (answerSegments.hasBody) {
             const assembled=answerSegments.assemble()
             if (calls.length) await rememberCandidate(assembled.body,liveContext)
-            else turn={...turn,text:assembled.body}
+            else if(!intermediate) turn={...turn,text:assembled.body}
           }
         } catch (error) {
           if (error instanceof LeaseLostError || error instanceof RunCancelledError || signals.lifecycle.signal.aborted || isPublicTextPublicationFailure(error)) throw error
@@ -934,6 +939,15 @@ export class AgentRuntime {
           protocolCorrection={role:'user',content:'The complete response was rejected before tool dispatch. Correct the answer operation and the complete tool batch against the exposed schemas. Preserve sealed sources and recorded effects; do not retry unknown writes. '+errorMessage(error)}
           continue
         }
+      }
+
+      if(intermediate){
+        // The existing seal transaction is the recovery authority. A lost ACK
+        // before session save is reconciled from that exact record on restart.
+        if(!answerSegments.restoreMessageHistory(session,work.id))throw new Error('intermediate message has no new sealed source')
+        await host.saveSession(work,session)
+        protocolCorrection=null
+        continue // next loop refreshes cancellation, permissions and global budget
       }
 
       let assessment: GoalAssessment | undefined

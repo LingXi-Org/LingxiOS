@@ -1,3 +1,4 @@
+import {snapshotPublicTextRecovery} from '../protocol/public-text-recovery.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
 import { abortable } from '../deadline.js'
@@ -37,6 +38,8 @@ export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undef
     async append(event:StoredRunEvent,proof:StoreLeaseProof|undefined,work:Omit<WorkItem,'leaseToken'>|undefined,
       append:(database:SqlQueryable)=>Promise<boolean>){
       const data=publicTextPayload(event)
+      const recovery=event.publicTextRecovery? snapshotPublicTextRecovery(event.publicTextRecovery):undefined
+      if(recovery&&(event.kind!=='public.text.sealed'||data?.version!==3))throw new Error('recovery metadata requires a v3 seal')
       if(!data||!proof||!work||!policy)throw new Error('public text publication is not enabled')
       return bounded(pool,async context=>{
         const {database}=context
@@ -74,7 +77,7 @@ export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undef
           // The event and recovery record share the same authorized lease transaction.
           await database.query(`INSERT INTO lingxios.agent_steps(work_id,step_id,request_version,kind,input_hash,input,output,artifacts,completed_at)
             VALUES($1,$2,$3,'runtime.answer_segment',$4,$5::jsonb,$6::jsonb,'[]'::jsonb,NOW())`,
-          [work.id,stepId,data.requestVersion,createHash('sha256').update(JSON.stringify(input)).digest('hex'),JSON.stringify(input),JSON.stringify(JSON.stringify({text}))])
+          [work.id,stepId,data.requestVersion,createHash('sha256').update(JSON.stringify(input)).digest('hex'),JSON.stringify(input),JSON.stringify(JSON.stringify({text,...(recovery?{recovery}:{})}))])
           return true
         }
         if(prior?.['kind']==='public.text.ended'||prior?.['kind']==='public.text.sealed')throw new Error('public text part is already closed')

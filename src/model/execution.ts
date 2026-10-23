@@ -212,7 +212,7 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
       || approvedFallback.inputCostMicrosPerMillion !== limits.inputCostMicrosPerMillion
       || approvedFallback.outputCostMicrosPerMillion !== limits.outputCostMicrosPerMillion) throw new Error('fallback route requires matching approved pricing and current authorization')
     const primary = modelProfile(model), profile = secondary?.profile
-    if (!profile || secondary!.previewFormat !== model.previewFormat || secondary!.publicTextProtocol !== model.publicTextProtocol
+    if (!profile || secondary!.previewFormat !== model.previewFormat || secondary!.publicTextProtocol !== model.publicTextProtocol || secondary!.publicTextContinuation !== model.publicTextContinuation
       || ['toolCalls','jsonObject','parallelTools'].some(key => primary[key as 'toolCalls'] && !profile[key as 'toolCalls'])) {
       throw new Error('fallback route lacks compatible verified model capabilities')
     }
@@ -242,6 +242,7 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
   return {
     ...(model.previewFormat ? { previewFormat: model.previewFormat } : {}),
     ...(model.publicTextProtocol ? { publicTextProtocol: model.publicTextProtocol } : {}),
+    ...(model.publicTextContinuation ? { publicTextContinuation: model.publicTextContinuation } : {}),
     nextCallId,
     ...(model.modelId === undefined ? {} : { modelId: model.modelId }),
     ...(model.configurationFingerprint === undefined ? {} : { configurationFingerprint: model.configurationFingerprint }),

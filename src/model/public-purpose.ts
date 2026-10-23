@@ -29,10 +29,10 @@ Use the ordinary native tool_calls channel for tools, never encode tools into te
 
 export function publicPurposeInstructions(protocol: PublicTextProtocol = 'purpose-json-v1', profile?: {
   parallelTools?: boolean; jsonObjectWithTools?: boolean
-}): string {
-  if(protocol==='purpose-json-v3')return PUBLIC_PURPOSE_V3_INSTRUCTIONS
+}, continuation?: 'typed-message-v1'): string {
+  if(protocol==='purpose-json-v3')return (continuation ? PUBLIC_PURPOSE_V3_MESSAGE_INSTRUCTIONS : PUBLIC_PURPOSE_V3_INSTRUCTIONS)
     + (profile?.parallelTools === false ? '\nThis profile permits at most ONE native tool call per model turn. Choose the next necessary action; wait for its result before requesting another. Do not add a second progress-report call alongside the needed action; the existing tool lifecycle reports progress.' : '')
-    + (profile?.jsonObjectWithTools === false ? '\nThis profile disables provider JSON response mode while native tools are exposed. That is not permission to send plain text: assistant content still uses the complete purpose-json-v3 object above. Untyped tool companion text is withheld, so put useful known content in answer within this SAME turn, never in an extra introductory call.' : '')
+    + (profile?.jsonObjectWithTools === false ? continuation ? '\nThis profile disables provider JSON response mode while tools are exposed. Assistant content must still use the complete typed v3 object. Untyped companion prose is withheld; native tools keep their original exposed business parameters.' : '\nThis profile disables provider JSON response mode while native tools are exposed. That is not permission to send plain text: assistant content still uses the complete purpose-json-v3 object above. Untyped tool companion text is withheld, so put useful known content in answer within this SAME turn, never in an extra introductory call.' : '')
   return protocol === 'purpose-json-v2' ? PUBLIC_PURPOSE_V2_INSTRUCTIONS : PUBLIC_PURPOSE_INSTRUCTIONS
 }
 
@@ -55,6 +55,12 @@ The same assistant message separately carries native tool_calls, for example [{"
 After all requested work and references are already present in the active sealed answer, finish without replaying that body:
 {"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":null,"outcome":{"status":"satisfied","gaps":[]}}
 Otherwise append only the missing substantive result or truthful limitation with its correct outcome. A simple question that needs no tool uses the ordinary terminal answer object in one generation; these examples do not require extra tools, a separate review, or repeated drafts.`
+
+/** Same parser/schema, with item completion distinct from the terminal declaration. */
+export const PUBLIC_PURPOSE_V3_MESSAGE_INSTRUCTIONS = PUBLIC_PURPOSE_V3_INSTRUCTIONS
+  .replace('When the request already supplies useful facts AND a needed tool remains, put the known explanation in answer in the SAME tool-calling turn.',
+    'When useful facts are already supplied and work remains, preserve that explanation in the typed answer, either with the next native tool call or as an intermediate message.')
+  + '\nMessage lifecycle capability (typed-message-v1): A complete object with nonempty substantive answer and outcome:null may end an intermediate public message without tool_calls. It seals that answer item and continues the SAME execution; it does not declare completion. Use this only for actual useful content, never an empty message or status preface. No introductory call is required. A simple completed answer still declares its terminal outcome in one generation. Only an explicit outcome object ends execution and invokes full delivery validation. A null answer is permitted only with that terminal declaration and existing sealed sources.'
 
 export function publicPurposeError(protocolCode:'public_text_invalid'|'public_text_incomplete'|'public_text_answer_required'='public_text_invalid'):ModelDriverError {
   return new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',protocolCode,finishReasons:[]})

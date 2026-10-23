@@ -242,14 +242,14 @@ export class PublicTextAttemptWriter {
     await this.writers.get(this.protocol?'answer':'legacy')?.finish(text)
   }
   async end(reason:PublicTextEndReason){for(const writer of this.writers.values())await writer.end(reason)}
-  async seal(text:string){
+  async seal(text:string,publicTextRecovery?:import('../protocol/public-text-recovery.js').PublicTextRecovery){
     const writer=this.writers.get('answer'),identity=this.segmentIdentity
     if(!identity||!writer?.partId||this.sealed)throw new PublicTextPublicationError()
     this.signal.throwIfAborted()
     const bodyHash=createHash('sha256').update(text).digest('hex')
-    await this.emit({kind:'public.text.sealed',stage:'completed',visibility:'user',data:{...identity,chunkCount:writer.chunkCount,bodyHash}})
+    await this.emit({kind:'public.text.sealed',stage:'completed',visibility:'user',data:{...identity,chunkCount:writer.chunkCount,bodyHash},...(publicTextRecovery?{publicTextRecovery}:{})})
     this.sealed=true
-    return {identity,text,bodyHash}
+    return {identity,text,bodyHash,...(publicTextRecovery?{recovery:publicTextRecovery}:{})}
   }
   dispose(){for(const writer of this.writers.values())writer.dispose()}
 }

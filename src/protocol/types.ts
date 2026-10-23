@@ -221,6 +221,8 @@ export interface RunEvent {
   /** `user` events may be surfaced to end users; `internal` never are. */
   visibility: 'user' | 'internal'
   data: Record<string, unknown>
+  /** Host-only seal metadata, excluded from public event storage and fan-out. */
+  publicTextRecovery?: import('./public-text-recovery.js').PublicTextRecovery
 }
 
 // ---------------------------------------------------------------------------

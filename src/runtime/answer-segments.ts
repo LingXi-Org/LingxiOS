@@ -1,3 +1,6 @@
+import {snapshotPublicTextRecovery,type PublicTextRecovery} from '../protocol/public-text-recovery.js'
+import type {ModelItem,SessionRecord} from '../protocol/types.js'
+import {appendRequestHistory} from '../context/request-history.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
 import { AIMessage, RemoveMessage, type BaseMessage } from '@langchain/core/messages'
@@ -6,7 +9,7 @@ import { answerMessageId, assemblePublicTextSources, snapshotPublicTextOperation
 import type { PublicTextIdentity } from '../protocol/public-text.js'
 import type { ExecutionStep } from '../control-plane/steps.js'
 
-export interface SealedAnswerSegment { identity:PublicTextIdentity; text:string; bodyHash:string }
+export interface SealedAnswerSegment { identity:PublicTextIdentity; text:string; bodyHash:string; recovery?:PublicTextRecovery }
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex')
 
 /** Trusted adapter over LangGraph's public ID reducer. Sealed revisions remain immutable. */
@@ -18,10 +21,28 @@ export class AnswerSegmentSet {
     this.messageId=answerMessageId(runId,requestVersion)
     for(const step of steps){
       if(step.kind!=='runtime.answer_segment'||step.requestVersion!==requestVersion||!step.output)continue
-      const {text}=JSON.parse(step.output) as {text:unknown}
+      const {text,recovery}=JSON.parse(step.output) as {text:unknown;recovery?:PublicTextRecovery}
       if(typeof text!=='string')throw new Error('invalid sealed answer recovery')
-      this.seal({identity:step.input as unknown as PublicTextIdentity,text,bodyHash:String(step.input['bodyHash'])})
+      this.seal({identity:step.input as unknown as PublicTextIdentity,text,bodyHash:String(step.input['bodyHash']),...(recovery?{recovery:snapshotPublicTextRecovery(recovery)}:{})})
     }
+  }
+  /** Seal is durable before session save. Restore only acknowledged typed messages,
+   * with original memory dependencies; the ordinary live projection filters them.
+   * The session cursor survives compaction, so archived messages are not reinserted. */
+  restoreMessageHistory(session:SessionRecord,workId:string):boolean {
+    if(!session.request || session.request.workId!==workId || session.request.revisions.length+1!==this.requestVersion)throw new Error('sealed history request identity mismatch')
+    const previous=session.request.publicTextHistory
+    const partIds=previous?.requestVersion===this.requestVersion?[...previous.partIds]:[]
+    if(partIds.length>128 || new Set(partIds).size!==partIds.length || partIds.some(id=>!this.revisions.get(id)?.recovery))throw new Error('invalid sealed history cursor')
+    let changed=false
+    for(const record of this.revisions.values()){
+      if(!record.recovery||partIds.includes(record.identity.partId))continue
+      const item:ModelItem={role:'assistant',content:record.text,memorySources:record.recovery.memorySources}
+      appendRequestHistory(session,workId,item)
+      partIds.push(record.identity.partId);changed=true
+    }
+    if(changed)session.request.publicTextHistory={requestVersion:this.requestVersion,partIds}
+    return changed
   }
   get records():readonly SealedAnswerSegment[]{
     return this.active.map(item=>this.revisions.get(String(item.additional_kwargs['partId']))!)
@@ -41,7 +62,7 @@ export class AnswerSegmentSet {
     if(source.purpose!=='answer')throw new Error('invalid sealed answer purpose')
     const identity:PublicTextIdentity={version:source.version,purpose:'answer',messageId:source.messageId!,segmentId:source.segmentId!,partId:source.partId,
       requestVersion:source.requestVersion,fence:source.fence,attemptId:source.attemptId,partIndex:source.partIndex,operation:source.operation!,supersedes:[...source.supersedes??[]]}
-    record={identity,text,bodyHash}
+    record={identity,text,bodyHash,...(record.recovery?{recovery:snapshotPublicTextRecovery(record.recovery)}:{})}
     if(identity.version!==3||identity.purpose!=='answer'||identity.messageId!==this.messageId||identity.requestVersion!==this.requestVersion
       ||identity.fence>this.fence||!Number.isSafeInteger(identity.fence)||identity.fence<1||!text||text.length>200_000||sha(text)!==bodyHash)throw new Error('invalid sealed answer source')
     const prior=this.revisions.get(identity.partId)

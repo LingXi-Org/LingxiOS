@@ -873,6 +873,7 @@ export class ControlPlaneService {
     ) {
       throw new ControlPlaneError(400, 'invalid run event envelope')
     }
+    if(event.publicTextRecovery!==undefined && event.kind!=='public.text.sealed')throw new ControlPlaneError(400,'recovery metadata requires a public seal')
     if (event.kind === 'response.committed') throw new ControlPlaneError(400, 'response.committed is reserved for the result transaction')
     // Attempt-range fencing: an event must land inside its own attempt's
     // sequence range so retried attempts can never shadow one another.
@@ -899,7 +900,8 @@ export class ControlPlaneService {
     }
     this.deps.metrics?.counter('agentos_events_recorded_total', 'Run events recorded').inc({ kind: event.kind })
     try {
-      await this.deps.delivery.onEvent(work, event)
+      const {publicTextRecovery:_recovery,...publicEvent}=event
+      await this.deps.delivery.onEvent(work, publicEvent)
     } catch (error) {
       // Delivery is best-effort fan-out; the durable ledger already has the
       // event, so a delivery hiccup must not fail the worker's call.
@@ -1117,6 +1119,11 @@ export class ControlPlaneService {
     ) {
       throw new ControlPlaneError(400, 'invalid session record for this work lease')
     }
+    const publicHistory=session.request?.publicTextHistory
+    if(publicHistory && (!Number.isSafeInteger(publicHistory.requestVersion) || publicHistory.requestVersion<1
+      || publicHistory.requestVersion>session.request!.revisions.length+1 || !Array.isArray(publicHistory.partIds)
+      || publicHistory.partIds.length>128 || new Set(publicHistory.partIds).size!==publicHistory.partIds.length
+      || publicHistory.partIds.some(id=>typeof id!=='string'||!id||id.length>1000)))throw new ControlPlaneError(400,'invalid public message history cursor')
     if (session.request?.contract) {
       const contract = session.request.contract
       try {
