@@ -14,15 +14,17 @@ const event = (delta: unknown, finish_reason: string | null = null) =>
   `data: ${JSON.stringify({ choices: [{ delta, finish_reason }] })}\n\n`
 const nativeCall = { index: 0, id: 'fixture-call', function: { name: lookup.name, arguments: '{"key":"alpha"}' } }
 
-it('preserves the legacy default fingerprint while distinguishing the combined-tool opt-out', () => {
-  // Existing replay identity must survive adding a capability whose default
-  // preserves the old wire request. Keep the pre-capability snapshot fixed.
+it('pins the nullable-delta policy while keeping default and explicit combined-tool support equivalent', () => {
+  // Capability defaults remain equivalent, but the nullable-delta policy must
+  // not masquerade as the previous provider behavior in a frozen binding.
   const options = { apiKey: 'synthetic-only' }
   const defaultModel = new OpenAIChatDriver('fixture', options)
   const explicitDefault = new OpenAIChatDriver('fixture', { ...options, capabilities: { jsonObjectWithTools: true } })
   const optedOut = new OpenAIChatDriver('fixture', { ...options, capabilities: { jsonObjectWithTools: false } })
-  assert.equal(defaultModel.configurationFingerprint, 'c69171f62097093e89728df6c837f1088c7c258ef3e1c60d0cfdd053461c24ea')
+  assert.equal(defaultModel.configurationFingerprint, '887057b8d1330db739531a5539bae51bfa6fa3c4ec6cf43e79a1241d1b52d4cb')
+  assert.notEqual(defaultModel.configurationFingerprint, 'c69171f62097093e89728df6c837f1088c7c258ef3e1c60d0cfdd053461c24ea')
   assert.equal(explicitDefault.configurationFingerprint, defaultModel.configurationFingerprint)
+  assert.equal(defaultModel.singleAttempt().configurationFingerprint, defaultModel.configurationFingerprint)
   assert.notEqual(optedOut.configurationFingerprint, defaultModel.configurationFingerprint)
   assert.equal(optedOut.singleAttempt().configurationFingerprint, optedOut.configurationFingerprint)
 })
