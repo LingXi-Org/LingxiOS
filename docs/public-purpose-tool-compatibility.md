@@ -45,8 +45,9 @@ Requests exposing no tools still request JSON object mode. Structured and
 compaction calls retain their JSON format. The driver still requires the
 independent `jsonObject` and `toolCalls` capabilities where applicable. There is
 no provider-name heuristic, fallback to raw text, new retry, or extra model call.
-The capability participates in the configuration fingerprint and survives
-`singleAttempt()` wrappers.
+The opt-out participates in the configuration fingerprint and survives
+`singleAttempt()` wrappers. Omitted or explicit `true` preserves the pre-capability
+fingerprint because it retains the existing wire request.
 
 ## Regression boundaries
 

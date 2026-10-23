@@ -14,6 +14,19 @@ const event = (delta: unknown, finish_reason: string | null = null) =>
   `data: ${JSON.stringify({ choices: [{ delta, finish_reason }] })}\n\n`
 const nativeCall = { index: 0, id: 'fixture-call', function: { name: lookup.name, arguments: '{"key":"alpha"}' } }
 
+it('preserves the legacy default fingerprint while distinguishing the combined-tool opt-out', () => {
+  // Existing replay identity must survive adding a capability whose default
+  // preserves the old wire request. Keep the pre-capability snapshot fixed.
+  const options = { apiKey: 'synthetic-only' }
+  const defaultModel = new OpenAIChatDriver('fixture', options)
+  const explicitDefault = new OpenAIChatDriver('fixture', { ...options, capabilities: { jsonObjectWithTools: true } })
+  const optedOut = new OpenAIChatDriver('fixture', { ...options, capabilities: { jsonObjectWithTools: false } })
+  assert.equal(defaultModel.configurationFingerprint, 'c69171f62097093e89728df6c837f1088c7c258ef3e1c60d0cfdd053461c24ea')
+  assert.equal(explicitDefault.configurationFingerprint, defaultModel.configurationFingerprint)
+  assert.notEqual(optedOut.configurationFingerprint, defaultModel.configurationFingerprint)
+  assert.equal(optedOut.singleAttempt().configurationFingerprint, optedOut.configurationFingerprint)
+})
+
 it('opts out of combined JSON mode and native tools without dropping the public purpose contract', async () => {
   const bodies: Record<string, unknown>[] = []
   const capabilities = { parallelTools: false, jsonObjectWithTools: false }

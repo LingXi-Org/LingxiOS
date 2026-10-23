@@ -232,11 +232,14 @@ export class OpenAIChatDriver implements ModelDriver {
     for (const key of ['toolCalls', 'jsonObject', 'jsonObjectWithTools', 'parallelTools'] as const) {
       if (typeof this.profile[key] !== 'boolean') throw new Error(`invalid model capability ${key}`)
     }
+    // The supported default preserves the old request, so retain its replay
+    // identity. Only an opt-out adds a new field to the fingerprint payload.
+    const { jsonObjectWithTools, ...legacyCapabilities } = this.profile
     this.configurationFingerprint = createHash('sha256').update(JSON.stringify({
       wire: 'openai-chat-completions-v1', model: modelId, baseUrl: this.baseUrl,
       reasoningEffort: options.reasoningEffort ?? null, maxOutputTokens: this.maxOutputTokens,
       contextWindowTokens: this.contextWindowTokens, maxThinkingTokens: this.maxThinkingTokens, compactionThinking: false, tool: 'ipython-v1',
-      capabilities: this.profile,
+      capabilities: jsonObjectWithTools === false ? { ...legacyCapabilities, jsonObjectWithTools: false } : legacyCapabilities,
       previewFormat: this.previewFormat,
       ...(this.publicTextProtocol?{publicTextProtocol:this.publicTextProtocol}:{}),
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
