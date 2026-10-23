@@ -10,12 +10,15 @@ import { boundedToolOutput } from '../runtime/tool.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { ToolDefinition } from '../tools/catalog.js'
 import type { GoalOutcome } from '../protocol/outcome.js'
+import { appendRequestHistory, historyBoundary, isCurrentHistory } from '../context/request-history.js'
 
 /** Durable terminal receipts recover a wait without rerunning Python or any business action. */
 export async function recoverWait(database: SqlPool, service: ControlPlaneService, work: WorkItem, signal?: AbortSignal, tools: readonly Pick<ToolDefinition, 'action' | 'effect'>[] = []): Promise<boolean> {
   signal?.throwIfAborted()
   const session = await service.getSession(work, sessionKeyOf(work))
   if (!session?.request || session.request.workId !== work.id) return false
+  const eligible = (item: typeof session.history[number]) => isCurrentHistory(item, work.id)
+    || !item.historySource && historyBoundary(session)?.workId === work.id
   const current = await service.heartbeat(work)
   if (!current.ok || current.cancelRequested || !isDeepStrictEqual(current.steer ?? [], session.request.revisions)) return false
   const requestVersion = session.request.revisions.length + 1
@@ -29,16 +32,16 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
   }
   // Only the most recent model batch can still be waiting. Older child waits
   // may already have resumed within the same request version.
-  const lastCallIndex = session.history.findLastIndex(item => 'type' in item && item.type === 'function_call')
+  const lastCallIndex = session.history.findLastIndex(item => eligible(item) && 'type' in item && item.type === 'function_call')
   if (lastCallIndex < 0) return false
   let batchStart = lastCallIndex
   while (batchStart > 0) {
     const prior = session.history[batchStart - 1]!
-    if ('type' in prior ? prior.type === 'function_call_output' : prior.role !== 'assistant') break
+    if (!eligible(prior) || ('type' in prior ? prior.type === 'function_call_output' : prior.role !== 'assistant')) break
     batchStart--
   }
   const calls = session.history.slice(batchStart, lastCallIndex + 1)
-    .filter((item): item is Extract<typeof item, { type: 'function_call' }> => 'type' in item && item.type === 'function_call')
+    .filter((item): item is Extract<typeof item, { type: 'function_call' }> => eligible(item) && 'type' in item && item.type === 'function_call')
   const cells = calls.map(call => call.stepId ?? call.callId)
   // Each cell has its own 100-action budget. Bound every cell's scan while
   // retaining model order across the entire batch (including a late wait).
@@ -110,18 +113,20 @@ export async function recoverWait(database: SqlPool, service: ControlPlaneServic
   const steps = new PgStepStore(database)
   for (const call of calls) {
     const callIndex = session.history.lastIndexOf(call)
-    if (session.history.slice(callIndex + 1).some(item => 'type' in item && item.type === 'function_call_output' && item.callId === call.callId)) continue
+    if (session.history.slice(callIndex + 1).some(item => eligible(item) && 'type' in item && item.type === 'function_call_output' && item.callId === call.callId)) continue
     const cellId = call.stepId ?? call.callId
     const recovered = receipts.filter(receipt => receipt.action.cellId === cellId)
     // Pure Python can complete without any host-action receipt. Its saved output
     // (including local artifacts) must survive closing the unstarted remainder.
     const step = call.name === 'ipython' && !recovered.length ? await steps.get(work.id, cellId, requestVersion) : null
     if (step?.kind === 'ipython' && step.output !== undefined) {
-      session.history.push({ type: 'function_call_output', callId: call.callId, output: step.output })
+      call.historySource = { workId: work.id, requestVersion }
+      appendRequestHistory(session, work.id, { type: 'function_call_output', callId: call.callId, output: step.output })
       continue
     }
     if (recovered.length) {
-      session.history.push({ type: 'function_call_output', callId: call.callId, output: boundedToolOutput({
+      call.historySource = { workId: work.id, requestVersion }
+      appendRequestHistory(session, work.id, { type: 'function_call_output', callId: call.callId, output: boundedToolOutput({
         recovered: true, localExecutionOutput: 'not_recovered',
         ...(goalOutcome.status === 'awaiting_approval' ? { approvalPending: goalOutcome.approvalId } : {}),
         receipts: recovered.map(receipt => ({ action: receipt.action.action, idempotencyKey: receipt.action.idempotencyKey, result: receipt.result })),

@@ -78,7 +78,8 @@ it('restores completed local Python output and artifacts before closing unstarte
       (id,tenant_id,agent_id,session_id,principal_id,kind,lane,trigger_ref,status,fence,lease_token_hash,lease_expires_at)
       VALUES ('local-python','t','a','s','u','turn','interactive','m','leased',2,'test-token',NOW()+INTERVAL '5 minutes')`)
     const calls = ['local', 'ask', 'later'].map(callId => ({ type: 'function_call' as const, name: 'ipython', callId,
-      stepId: `step-${callId}`, arguments: JSON.stringify({ code: callId === 'local' ? 'print(42)' : callId }) }))
+      stepId: `step-${callId}`, arguments: JSON.stringify({ code: callId === 'local' ? 'print(42)' : callId }),
+      historySource: { workId: work.id, requestVersion: 1 } }))
     const session = { history: [...calls], request: { workId: work.id, revisions: [] } } as unknown as SessionRecord
     const artifact = { id: 'answer', path: 'answer.txt', name: 'answer.txt', mime: 'text/plain', size: 2,
       sha256: 'a'.repeat(64) }

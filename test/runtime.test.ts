@@ -16,6 +16,7 @@ import { ApprovalPendingError, ModelDriverError } from '../src/errors.js'
 import type { ModelCallObservation } from '../src/runtime/runtime.js'
 import { modelPricing, DEFAULT_MODEL_BUDGET } from '../src/model/execution.js'
 import { DefaultRuntimePolicy } from '../src/runtime/policy.js'
+import { projectRequestHistory } from '../src/context/request-history.js'
 
 // The reviewer must see the same prior conversation as generation, but never
 // receive the candidate itself as independent historical evidence.
@@ -483,7 +484,8 @@ it('preserves history across prompt upgrades and exposes assigned action receipt
   }
   const model: ModelDriver = {
     run: async (request) => {
-      assert.deepEqual(request.items[0], { role: 'user', content: 'Preserve this requirement' })
+      assert.match(JSON.stringify(request.items[0]), /Preserve this requirement/)
+      assert.equal(JSON.parse((request.items[0] as { content: string }).content).trust, 'observation')
       assert.match(request.instructions, /Runtime authorization/)
       assert.doesNotMatch(request.instructions, /Stale prompt v5/)
       calls++
@@ -491,7 +493,7 @@ it('preserves history across prompt upgrades and exposes assigned action receipt
         ? [{ role: 'assistant', content: 'Saving.' }, { type: 'function_call', callId: 'c', name: 'ipython', arguments: '{"code":"result = host.files.save()"}' }]
         : [{ role: 'assistant', content: 'Saved.' }]
       if (calls === 2) {
-        assert.deepEqual(request.items.slice(0, checkpoint!.history.length), checkpoint!.history)
+        assert.deepEqual(request.items.slice(0, checkpoint!.history.length), projectRequestHistory(checkpoint!.history, context.work.id))
         const receipt = request.items.find(item => 'type' in item && item.type === 'function_call_output')!
         assert.ok('type' in receipt && receipt.type === 'function_call_output')
         assert.deepEqual(JSON.parse(receipt.output).receipts, [{ action: 'files.save', idempotencyKey: '[\"w\",\"hop-1\",0]', result: { ok: true, value: { id: 'document' } } }])
@@ -501,7 +503,7 @@ it('preserves history across prompt upgrades and exposes assigned action receipt
   }
   const kernels: KernelExecutor = { execute: async (_work, _run, _cell, _code, _signal, options) => {
     assert.match(_cell, /^step:/)
-    assert.deepEqual(checkpoint?.history.at(-1), { type: 'function_call', callId: 'c', stepId: _cell, name: 'ipython', arguments: '{"code":"result = host.files.save()"}' })
+    assert.deepEqual(checkpoint?.history.at(-1), { type: 'function_call', callId: 'c', stepId: _cell, name: 'ipython', arguments: '{"code":"result = host.files.save()"}', historySource: { workId: 'w', requestVersion: 1 } })
     const action = { runId: 'w', cellId: 'hop-1', callIndex: 0, action: 'files.save', args: {}, idempotencyKey: '[\"w\",\"hop-1\",0]' }
     await options?.onHostAction?.({ stage: 'started', action })
     await options?.onHostAction?.({ stage: 'completed', action, result: { ok: true, value: { id: 'document' } } })
@@ -510,7 +512,7 @@ it('preserves history across prompt upgrades and exposes assigned action receipt
   await new AgentRuntime(host, model, kernels).runWork(context.work)
   assert.deepEqual(completion, { status: 'completed', goalOutcome: { status: 'partial', verification: 'inconclusive', requestVersion: 1, gaps: ['Durable business action reconciliation was unavailable'] } })
   assert.equal(calls, 2)
-  session.history.push({ type: 'function_call', callId: 'interrupted', name: 'ipython', arguments: '{"code":"host.files.save()"}' })
+  session.history.push({ type: 'function_call', callId: 'interrupted', name: 'ipython', arguments: '{"code":"host.files.save()"}', historySource: { workId: 'w', requestVersion: 1 } })
   await new AgentRuntime(host, model, kernels).runWork({ ...context.work, fence: 2 })
   assert.equal(calls, 2)
   assert.equal(completion?.status, 'failed')
@@ -829,8 +831,8 @@ for (const effect of ['uncertain', 'idempotent', 'read', 'unknown'] as const) fo
   const result: HostActionResult = { ok: true, executionState: 'succeeded', directive: { type: 'defer', reason, data: reason === 'user' ? { question: 'Which city?' } : { taskRef: 'child' } } }
   const receipts = [{ action: 'chat.ask', idempotencyKey: '["native-wait","ask",0]', result }]
   const session: SessionRecord = { key: '["t","a","s",null]', tenantId: 't', agentId: 'a', sessionId: 's', appliedWorkIds: [work.id], revision: 1, compactionEpoch: 0,
-    history: [{ type: 'function_call', name, callId: 'ask', arguments: '{}' },
-      { type: 'function_call', name: 'chat__write', callId: 'write', arguments: '{}' }],
+    history: [{ type: 'function_call', name, callId: 'ask', arguments: '{}', historySource: { workId: work.id, requestVersion: 1 } },
+      { type: 'function_call', name: 'chat__write', callId: 'write', arguments: '{}', historySource: { workId: work.id, requestVersion: 1 } }],
     request: { version: 1, workId: work.id, tenantId: 't', sessionId: 's', authorId: 'u', sourceRef: 'm', originalText: 'Ask for my city', revisions: [], attachments: [], evidence: snapshotEvidence('wait', []) } }
   let waited: unknown, completed: unknown, modelCalls = 0, toolCalls = 0
   const host: HostPort = { ...durableProtocol(), claimWork: async () => null, heartbeat: async () => ({ ok: true }),

@@ -415,7 +415,8 @@ export class MemorySessionStore implements SessionStore {
     if (!stored) return null
     const request = workId ? this.requests.get(workId) ?? stored.request : stored.request
     const { request: _activeRequest, ...base } = stored
-    return structuredClone({ ...base, ...(request ? { request } : {}) })
+    return structuredClone({ ...base, ...(request ? { request } : {}),
+      historyBoundary: stored.request ? { workId: stored.request.workId, requestVersion: stored.request.revisions.length + 1 } : null })
   }
 
   async save(session: SessionRecord): Promise<SaveSessionResult> {
