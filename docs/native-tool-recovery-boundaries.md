@@ -13,9 +13,11 @@ Two independent defects are reproducible from source and synthetic input:
   an entire catalog name immediately. The old driver rejects two otherwise
   valid interleaved streams before any public output. Arguments now remain in
   the existing accumulator, bounded to 16 MiB, until a catalog identity is
-  available. Then the exact accumulated bytes feed the existing parser once.
-  An already bound identity cannot change, including a short catalog name that
-  is a prefix of another name. Unknown or incomplete identities never publish.
+  uniquely available. Then the exact accumulated bytes feed the existing parser
+  once. A complete short name that also prefixes another catalog name remains
+  pending: a unique longer name streams normally, while the legitimate short
+  name flushes only after a valid tool-turn boundary. An already uniquely bound
+  identity cannot change. Unknown or incomplete identities never publish.
 - Protocol correction copied the generic public-purpose schema into a user
   message even when the driver selected the native envelope. Correction now
   references the driver's actual contract instead of copying a second schema.
@@ -49,3 +51,12 @@ Offline result: build and 145/145 focused tests passed (zero failures/skips):
 native-tool-public-output parser/driver/Worker, protocol-recovery driver/Worker,
 native-tool-companion and react-wire-boundaries. Version 3.8.11 is an unpublished
 development candidate; version metadata alone does not confer qualification.
+
+The subsequent ambiguous-name correction adds successful short-name terminal
+flush and long-name early-stream cases, plus negative identity/finish/channel
+and publication-callback boundaries. Its focused driver/error regressions pass
+59/59, and the actual Worker valid/cancelled checks pass 2/2. The terminal flush
+reuses the existing stream error handler so safety rejection, cancellation and
+usage retain the same classification. A pending nonempty call ID cannot change,
+even before argument bytes arrive. Neither frozen development package was used
+for a provider call by this task.

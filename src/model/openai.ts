@@ -263,7 +263,7 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
       ...(options.nativeToolPublicOutput ? { nativeToolPublicOutput: options.nativeToolPublicOutput,
-        nativeToolIdentityPolicy: 'bounded-interleaved-prefix-v1' } : {}),
+        nativeToolIdentityPolicy: 'bounded-unambiguous-prefix-v1' } : {}),
     })).digest('hex')
   }
 
@@ -442,17 +442,19 @@ export class OpenAIChatDriver implements ModelDriver {
           if (onToolDelta) await onToolDelta(index, entry, typeof toolCall.function?.arguments === 'string' ? toolCall.function.arguments : '')
         }
       }
-    } catch (error) {
-      const usage = this.usageOf(accumulator)
-      if (!usage.available && !(error instanceof ModelDriverError)) throw error
-      const diagnostics = error instanceof ModelDriverError ? error.diagnostics
-        : { kind: 'provider' as const, category: modelFailure(error).category, finishReasons: accumulator.finishReasons }
-      throw new ModelDriverError(error instanceof ModelDriverError ? error.message : 'model stream failed',
-        { ...diagnostics, category: diagnostics.category ?? modelFailure(error).category,
-          finishReasons: diagnostics.finishReasons.length ? diagnostics.finishReasons : accumulator.finishReasons,
-          ...(diagnostics.usage?.available ? { usage: diagnostics.usage } : usage.available ? { usage } : {}) }, { cause: error })
-    }
+    } catch (error) { this.throwStreamFailure(error, accumulator) }
     return accumulator
+  }
+
+  private throwStreamFailure(error: unknown, accumulator: StreamAccumulator): never {
+    const usage = this.usageOf(accumulator)
+    if (!usage.available && !(error instanceof ModelDriverError)) throw error
+    const diagnostics = error instanceof ModelDriverError ? error.diagnostics
+      : { kind: 'provider' as const, category: modelFailure(error).category, finishReasons: accumulator.finishReasons }
+    throw new ModelDriverError(error instanceof ModelDriverError ? error.message : 'model stream failed',
+      { ...diagnostics, category: diagnostics.category ?? modelFailure(error).category,
+        finishReasons: diagnostics.finishReasons.length ? diagnostics.finishReasons : accumulator.finishReasons,
+        ...(diagnostics.usage?.available ? { usage: diagnostics.usage } : usage.available ? { usage } : {}) }, { cause: error })
   }
 
   private usageOf(accumulator: Pick<StreamAccumulator, 'usage'>): ModelUsage {
@@ -508,8 +510,42 @@ export class OpenAIChatDriver implements ModelDriver {
     let operationPublished=false
     let nativeOutput: NativeToolPublicOutput | undefined
     let nativeIdentity: { id: string; name: string } | undefined
+    let nativeCallId: string | undefined
+    let nativeCallObserved = false
     let contentObserved = false
     const companion = purposeParser && tools.length && this.profile.jsonObjectWithTools === false ? new ToolCompanionBoundary() : undefined
+    const acceptNativeDelta = async (index: number, call: { id: string; name: string; arguments: string }, delta: string, finalIdentity = false) => {
+      request.signal?.throwIfAborted()
+      nativeCallObserved = true
+      if (index !== 0 || contentObserved || call.id.trim() !== call.id
+        || nativeCallId && nativeCallId !== call.id
+        || nativeIdentity && (nativeIdentity.id !== call.id || nativeIdentity.name !== call.name)) throw publicPurposeError()
+      if (call.id) nativeCallId ??= call.id
+      let publicDelta = delta
+      if (!nativeIdentity) {
+        // A catalog name may itself prefix another name. Keep original bytes
+        // private until the identity is unique, or a valid turn confirms it.
+        const candidates = tools.filter(tool => tool.function.name.startsWith(call.name))
+        if (Buffer.byteLength(call.arguments) > 16 * 1024 * 1024 || !candidates.length) throw publicPurposeError()
+        if (!call.id || !candidates.some(tool => tool.function.name === call.name) || !call.arguments
+          || !finalIdentity && candidates.length > 1) return
+        nativeIdentity = { id: call.id, name: call.name }
+        nativeOutput = new NativeToolPublicOutput()
+        publicDelta = call.arguments
+      }
+      if (!publicDelta) return
+      const outputParser = nativeOutput!
+      const parts = outputParser.push(publicDelta)
+      if (outputParser.operation && !operationPublished) {
+        await request.onTextOperation?.(outputParser.operation); operationPublished = true
+        request.signal?.throwIfAborted()
+      }
+      for (const part of parts) {
+        request.signal?.throwIfAborted()
+        await request.onTextDelta?.(part.text, { purpose: part.purpose })
+        request.signal?.throwIfAborted()
+      }
+    }
     const response = await this.request({
       model: this.modelId,
       messages: toWireMessages(this.generationInstructions(request.instructions, nativeEnvelope), request.items, nativeEnvelope),
@@ -522,7 +558,7 @@ export class OpenAIChatDriver implements ModelDriver {
       request.signal?.throwIfAborted()
       if (companion) { const framed = companion.push(chunk); if (framed === null) return; chunk = framed }
       contentObserved = true
-      if (nativeOutput) throw publicPurposeError()
+      if (nativeCallObserved) throw publicPurposeError()
       const parts=purposeParser.push(chunk)
       if(purposeParser.operation&&!operationPublished){await request.onTextOperation?.(purposeParser.operation);operationPublished=true}
       for(const part of parts){
@@ -530,32 +566,7 @@ export class OpenAIChatDriver implements ModelDriver {
         await request.onTextDelta?.(part.text,{purpose:part.purpose})
         request.signal?.throwIfAborted()
       }
-    }:request.onTextDelta, nativeEnvelope ? async (index, call, delta) => {
-      request.signal?.throwIfAborted()
-      if (index !== 0 || contentObserved || nativeIdentity && (nativeIdentity.id !== call.id || nativeIdentity.name !== call.name)) throw publicPurposeError()
-      let publicDelta = delta
-      if (!nativeIdentity) {
-        // Names and arguments may arrive interleaved. Retain the accumulator's
-        // original bytes, but publish nothing until an exposed identity exists.
-        if (Buffer.byteLength(call.arguments) > 16 * 1024 * 1024 || call.id.trim() !== call.id
-          || !tools.some(tool => tool.function.name.startsWith(call.name))) throw publicPurposeError()
-        if (!call.id || !tools.some(tool => tool.function.name === call.name) || !call.arguments) return
-        nativeIdentity = { id: call.id, name: call.name }
-        nativeOutput = new NativeToolPublicOutput()
-        publicDelta = call.arguments
-      }
-      if (!publicDelta) return
-      const outputParser = nativeOutput!
-      const parts = outputParser.push(publicDelta)
-      if (outputParser.operation && !operationPublished) {
-        await request.onTextOperation?.(outputParser.operation); operationPublished = true
-      }
-      for (const part of parts) {
-        request.signal?.throwIfAborted()
-        await request.onTextDelta?.(part.text, { purpose: part.purpose })
-        request.signal?.throwIfAborted()
-      }
-    } : undefined)
+    }:request.onTextDelta, nativeEnvelope ? acceptNativeDelta : undefined)
     const diagnostics = { finishReasons: accumulator.finishReasons, usage: this.usageOf(accumulator) }
     if (request.signal?.aborted) throw new ModelDriverError('model request cancelled', {
       ...diagnostics, kind: 'provider', category: 'cancelled',
@@ -571,6 +582,12 @@ export class OpenAIChatDriver implements ModelDriver {
     let text = accumulator.text
     let outcomeDeclaration:OutcomeDeclaration|undefined
     if (nativeEnvelope && accumulator.toolCalls.size) {
+      if (!nativeOutput && !contentObserved && !companionHasJsonFraming(accumulator.text)
+        && completeCompanionTurn({ text: '', calls: accumulator.toolCalls, finishReasons: accumulator.finishReasons },
+          tools.map(tool => tool.function.name), false)) {
+        try { await acceptNativeDelta(0, accumulator.toolCalls.get(0)!, '', true) }
+        catch (error) { this.throwStreamFailure(error, accumulator) }
+      }
       if (!nativeOutput || contentObserved || companionHasJsonFraming(accumulator.text)) {
         throw new ModelDriverError('invalid native public output envelope', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: 'public_text_invalid' })
       }

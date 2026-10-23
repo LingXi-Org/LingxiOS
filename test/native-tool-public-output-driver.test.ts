@@ -4,6 +4,7 @@ import { OpenAIChatDriver } from '../src/model/openai.js'
 import { inputTokens } from '../src/model/profile.js'
 import type { ToolDefinition } from '../src/tools/catalog.js'
 import { modelProtocolCorrection } from '../src/runtime/protocol-correction.js'
+import { PublicTextSafetyError, isPublicTextSafetyFailure } from '../src/runtime/public-text.js'
 
 const tool: ToolDefinition = { name: 'fixture', action: 'fixture', effect: 'read', approval: false,
   description: 'Synthetic fixture.', parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'], additionalProperties: false } }
@@ -39,11 +40,88 @@ for (const completion of ['with-arguments', 'identity-only'] as const) it(`buffe
   assert.deepEqual(result.output[1], { type: 'function_call', callId: 'call-id', name: 'fixture', arguments: args })
 })
 
-it('does not switch an already bound short catalog name to a longer catalog name', async () => {
+for (const selected of ['fixture', 'fixture_long']) it(`resolves an ambiguous catalog prefix as ${selected} without premature publication`, async () => {
   const prefix = '{"public_output":{"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":"Known '
+  const wire = envelope('Known answer.')
+  let settled = false, finishSent = false, seen = '', release!: () => void
+  const published = new Promise<void>(resolve => { release = resolve })
+  const model = new OpenAIChatDriver('fixture', { ...options, fetchImpl: async () => new Response(new ReadableStream({ async start(controller) {
+    const send = (delta: unknown, finish: string | null = null) => controller.enqueue(new TextEncoder().encode(frame(delta, finish)))
+    send({ tool_calls: [call(prefix)] })
+    await new Promise(resolve => setTimeout(resolve, 10)); assert.equal(seen, '')
+    if (selected === 'fixture_long') {
+      settled = true
+      send({ tool_calls: [{ index: 0, function: { name: '_long', arguments: '' } }] })
+      await published
+      assert.equal(finishSent, false, 'unique long identity still streams before business arguments complete')
+    }
+    send({ tool_calls: [{ index: 0, function: { name: '', arguments: wire.slice(prefix.length) } }] })
+    if (selected === 'fixture') { await new Promise(resolve => setTimeout(resolve, 10)); assert.equal(seen, '') }
+    finishSent = true; send({}, 'tool_calls'); controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n')); controller.close()
+  } })) })
+  const result = await model.run({ ...request, tools: [tool, { ...tool, name: 'fixture_long' }], signal: AbortSignal.timeout(1500),
+    onTextDelta: text => { assert.ok(selected === 'fixture' ? finishSent : settled); seen += text; release() } })
+  assert.equal(seen, 'Known answer.')
+  assert.deepEqual(result.output[1], { type: 'function_call', callId: 'call-id', name: selected, arguments: args })
+})
+
+it('rejects a name change after the complete unique catalog identity was published', async () => {
+  const prefix = '{"public_output":{"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":"Known '
+  const model = new OpenAIChatDriver('fixture', { ...options, fetchImpl: async () => new Response(frame({ tool_calls: [call(prefix)] })
+    + frame({ tool_calls: [{ index: 0, function: { name: '_unknown', arguments: 'answer.","outcome":null},"arguments":' + args + '}' } }] }, 'tool_calls')) })
+  await assert.rejects(model.run(request))
+})
+
+for (const [name, suffix] of Object.entries({
+  noFinish: 'data: [DONE]\n\n',
+  wrongFinish: frame({}, 'stop'),
+  lateId: frame({ tool_calls: [{ index: 0, id: 'changed' }] }, 'tool_calls'),
+  secondCall: frame({ tool_calls: [call(envelope(null), 1, 'fixture_long', 'second')] }, 'tool_calls'),
+  typedConflict: frame({ content: publicWire('Conflicting typed content.') }, 'tool_calls'),
+})) it(`does not flush ambiguous identity after ${name}`, async () => {
+  const seen: string[] = []
+  const model = new OpenAIChatDriver('fixture', { ...options, fetchImpl: async () => new Response(frame({ tool_calls: [call(envelope('Known answer.'))] }) + suffix) })
+  await assert.rejects(model.run({ ...request, tools: [tool, { ...tool, name: 'fixture_long' }],
+    onTextOperation: () => { seen.push('operation') }, onTextDelta: text => { seen.push(text) } }))
+  assert.deepEqual(seen, [])
+})
+
+it('rejects conflicting IDs before name binding or any argument bytes', async () => {
+  const seen: string[] = []
   const model = new OpenAIChatDriver('fixture', { ...options, fetchImpl: async () => new Response(
-    frame({ tool_calls: [call(prefix)] }) + frame({ tool_calls: [{ index: 0, function: { name: '_long', arguments: 'answer.","outcome":null},"arguments":' + args + '}' } }] }, 'tool_calls')) })
-  await assert.rejects(model.run({ ...request, tools: [tool, { ...tool, name: 'fixture_long' }] }))
+    frame({ tool_calls: [call('', 0, 'fix', 'first')] })
+    + frame({ tool_calls: [call('', 0, '', 'different')] })
+    + frame({ tool_calls: [{ index: 0, function: { name: 'ture', arguments: envelope('Known answer.') } }] }, 'tool_calls')) })
+  await assert.rejects(model.run({ ...request, onTextDelta: text => { seen.push(text) } }))
+  assert.deepEqual(seen, [])
+})
+
+it('rejects typed content after a pending native delta even before its ID arrives', async () => {
+  const seen: string[] = []
+  const model = new OpenAIChatDriver('fixture', { ...options, fetchImpl: async () => new Response(
+    frame({ tool_calls: [{ index: 0, function: { name: 'fix', arguments: '{' } }] })
+    + frame({ content: publicWire('Conflicting typed content.') }, 'tool_calls')) })
+  await assert.rejects(model.run({ ...request, onTextDelta: text => { seen.push(text) } }))
+  assert.deepEqual(seen, [])
+})
+
+for (const ambiguous of [false, true]) it(`preserves safety rejection identity on ${ambiguous ? 'terminal ambiguous' : 'streaming unique'} name`, async () => {
+  const rejected = new PublicTextSafetyError('unsafe_content')
+  const model = new OpenAIChatDriver('fixture', { ...options, fetchImpl: async () => new Response(frame({ tool_calls: [call(envelope('Known answer.'))] }, 'tool_calls')) })
+  await assert.rejects(model.run({ ...request, tools: ambiguous ? [tool, { ...tool, name: 'fixture_long' }] : [tool],
+    onTextDelta: () => { throw rejected } }), (error: unknown) => {
+    assert.ok(isPublicTextSafetyFailure(error))
+    assert.equal((error as import('../src/errors.js').ModelDriverError).diagnostics.protocolCode, rejected.diagnostics.protocolCode)
+    return true
+  })
+})
+
+for (const answer of ['Known answer.', '']) it(`cancels at the terminal ambiguous operation without publishing answer text (length=${answer.length})`, async () => {
+  const abort = new AbortController(), seen: string[] = []
+  const model = new OpenAIChatDriver('fixture', { ...options, fetchImpl: async () => new Response(frame({ tool_calls: [call(envelope(answer))] }, 'tool_calls')) })
+  await assert.rejects(model.run({ ...request, tools: [tool, { ...tool, name: 'fixture_long' }], signal: abort.signal,
+    onTextOperation: () => { abort.abort() }, onTextDelta: text => { seen.push(text) } }))
+  assert.deepEqual(seen, [])
 })
 
 for (const name of ['fix', 'not_exposed']) it(`never publishes buffered arguments with unresolved identity ${name}`, async () => {
