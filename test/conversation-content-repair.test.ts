@@ -9,6 +9,7 @@ import type { ModelDriver } from '../src/model/driver.js'
 import type { AssistantMessage, SessionRecord, TurnContext, WorkCompletion } from '../src/protocol/types.js'
 import type { ExecutionStep } from '../src/control-plane/steps.js'
 import { durableProtocol } from './protocol-fixture.js'
+import { OpenAIChatDriver } from '../src/model/openai.js'
 
 // Failure model: docs/evidence/conversation-delivery-repair/FAILURE-MODEL.md.
 const original = 'Create a complete interactive comparison.'
@@ -105,6 +106,34 @@ it('only a trusted product hook defers repair and cannot skip resource checks',a
 const recoveryRequest = 'Explain how a circle\'s area changes when its radius doubles, with concrete examples.'
 const recoveryAnswer = 'A circle has area πr². A radius of 1 gives area π, and a radius of 2 gives area 4π. Doubling the radius quadruples the area because both dimensions scale by two.'
 const promise = 'I will prepare the explanation and examples.'
+it('combines real public protocol recovery, joint review and bounded content completion',async () => {
+  const f = fixture(recoveryRequest); let turns = 0,reviews = 0,settled = 0
+  const record = f.host.recordModelUsage
+  f.host.recordModelUsage = async (...args) => { await record(...args); settled++ }
+  const model = new OpenAIChatDriver('synthetic-combined', { apiKey: 'synthetic',publicTextProtocol: 'purpose-json-v1',
+    maxAttempts: 1,recovery: { maxAttempts: 1,totalTimeoutMs: 10_000 },fetchImpl: async (_url,init) => {
+      const request = JSON.parse(String(init?.body))
+      if (!request.stream) {
+        reviews++
+        assert.match(JSON.stringify(request.messages),/SAME response/,'content and scope use the joint review contract')
+        const value = { missing: turns === 3 ? [{ quote: recoveryRequest,reason: 'Explanation and examples are missing.' }] : [],limitations: [],deferred: [] }
+        return Response.json({ choices: [{ finish_reason: 'stop',message: { content: JSON.stringify(value) } }],usage: { prompt_tokens: 100,completion_tokens: 20 } })
+      }
+      turns++
+      if (turns === 2 || turns === 3) assert.match(JSON.stringify(request.messages),/purpose-json-v1/)
+      if (turns === 4) assert.match(JSON.stringify(request.messages),/fix the omissions/)
+      const content = JSON.stringify({ commentary: '',answer: turns <= 2 ? '' : turns === 3 ? promise : recoveryAnswer })
+      return new Response('data: '+JSON.stringify({ choices: [{ delta: { content },finish_reason: 'stop' }],usage: { prompt_tokens: 100,completion_tokens: 20 } })+'\n\ndata: [DONE]\n\n')
+    } })
+  await recoveryRuntime(f,model,3,{ maxModelCalls: 8,maxTokens: 200_000,wallClockMs: 30_000 }).runWork(f.work)
+  assert.deepEqual({ turns,reviews,settled },{ turns: 4,reviews: 2,settled: 6 })
+  assert.equal(f.result().committed?.body,recoveryAnswer)
+  assert.equal(f.result().committed?.envelope.goalOutcome.status,'satisfied')
+  // Successful work uses commitResult's atomic completion path; this fixture's
+  // completeWork callback only records non-result terminal paths.
+  assert.equal(f.result().completion,undefined)
+  assert.equal(f.steps.find(step => step.kind === 'runtime.binding')?.input['additionalContentCorrections'],3)
+})
 function recoveryRuntime(f: ReturnType<typeof fixture>,model: ModelDriver,extra?: number,rootModelBudget: RootModelBudgetOptions = {}) {
   const options: AgentRuntimeOptions = { rootModelBudget,...(extra === undefined ? {} : { additionalContentCorrections: extra }) }
   return new AgentRuntime(f.host,model,kernel,options)
@@ -136,7 +165,7 @@ for (const extra of [0,3]) for (const alwaysMissing of [false,true]) it(`bounds 
   await recoveryRuntime(f,synthetic.model,extra,{ maxModelCalls: 16,maxTokens: 1_000_000,wallClockMs: 30_000 }).runWork(f.work)
   const repaired = extra > 0 && !alwaysMissing
   assert.equal(synthetic.counts().turns,extra === 0 ? 3 : alwaysMissing ? 6 : 4)
-  assert.equal(synthetic.counts().reviews,extra === 0 ? 2 : alwaysMissing ? 8 : 3)
+  assert.equal(synthetic.counts().reviews,extra === 0 ? 1 : alwaysMissing ? 4 : 2)
   assert.equal(f.result().committed?.envelope.goalOutcome.status,repaired ? 'satisfied' : 'partial')
   assert.equal(f.result().committed?.body,repaired ? recoveryAnswer : promise)
   if (!repaired) assert.match(JSON.stringify(f.result().committed?.envelope.goalOutcome.gaps),/correction budget exhausted/i)
@@ -144,18 +173,18 @@ for (const extra of [0,3]) for (const alwaysMissing of [false,true]) it(`bounds 
 
 for (const limit of ['calls','tokens','cost','deadline'] as const) it(`does not let extra content corrections spend beyond the root ${limit} budget`,async t => {
   const f = fixture(recoveryRequest), synthetic = protocolThenOmission()
-  // Each issued attempt uses exactly 100 input + 20 output tokens. The fifth
-  // call finishes the first content check, before extra repair could start.
+  // Each issued attempt uses exactly 100 input + 20 output tokens. The fourth
+  // call finishes the joint content/scope check, before extra repair could start.
   const model: ModelDriver = { ...synthetic.model,countTokens: () => 100,maxOutputTokens: 20 }
   let settled = 0, now = Date.now()
   if (limit === 'deadline') t.mock.method(Date,'now',() => now)
   const record = f.host.recordModelUsage
-  f.host.recordModelUsage = async (...args) => { await record(...args); if (++settled === 5 && limit === 'deadline') now += 1000 }
-  await recoveryRuntime(f,model,3,{ maxModelCalls: limit === 'calls' ? 5 : 16,
-    maxTokens: limit === 'tokens' ? 600 : 1_000_000,maxCostMicros: limit === 'cost' ? 600 : 1_000_000,
+  f.host.recordModelUsage = async (...args) => { await record(...args); if (++settled === 4 && limit === 'deadline') now += 1000 }
+  await recoveryRuntime(f,model,3,{ maxModelCalls: limit === 'calls' ? 4 : 16,
+    maxTokens: limit === 'tokens' ? 480 : 1_000_000,maxCostMicros: limit === 'cost' ? 480 : 1_000_000,
     inputCostMicrosPerMillion: 1_000_000,outputCostMicrosPerMillion: 1_000_000,wallClockMs: limit === 'deadline' ? 1000 : 30_000 }).runWork(f.work)
-  assert.deepEqual(synthetic.counts(),{ turns: 3,reviews: 2 })
-  assert.equal(settled,5)
+  assert.deepEqual(synthetic.counts(),{ turns: 3,reviews: 1 })
+  assert.equal(settled,4)
   assert.equal(f.result().committed?.envelope.goalOutcome.status,'partial')
   assert.match(JSON.stringify(f.result().committed?.envelope.goalOutcome.gaps),/Model call, token, cost or execution-time budget exhausted/)
 })
@@ -165,7 +194,7 @@ it('stops on cancellation before issuing the additional content correction',asyn
   f.host.emitEvent = async (_work,event) => { if (event.kind === 'response.content_checked') cancelled = true }
   f.host.heartbeat = async () => ({ ok: true,cancelRequested: cancelled })
   await recoveryRuntime(f,synthetic.model,3).runWork(f.work)
-  assert.deepEqual(synthetic.counts(),{ turns: 3,reviews: 2 })
+  assert.deepEqual(synthetic.counts(),{ turns: 3,reviews: 1 })
   assert.equal(f.result().committed,undefined)
   assert.equal(f.result().completion?.status,'cancelled')
 })
@@ -183,7 +212,7 @@ it('restores spent content corrections after yielding the same work to a new own
   assert.equal(f.result().committed,undefined)
   f.host.saveStep = save; f.work.fence++
   await recoveryRuntime(f,synthetic.model,3).runWork(f.work)
-  assert.deepEqual(synthetic.counts(),{ turns: 6,reviews: 8 })
+  assert.deepEqual(synthetic.counts(),{ turns: 6,reviews: 4 })
   assert.equal(f.result().committed?.envelope.goalOutcome.status,'partial')
 })
 
