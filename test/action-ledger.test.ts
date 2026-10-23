@@ -6,6 +6,26 @@ import { it } from 'node:test'
 import { ControlPlaneService } from '../src/control-plane/service.js'
 import { MemoryActionLedger, MemoryEventStore, MemorySessionStore, MemoryWorkStore } from '../src/control-plane/memory-store.js'
 
+it('keeps a custom uncatalogued executor known unstarted when native trace persistence fails', async () => {
+  const actions = new MemoryActionLedger(), steps = new MemoryStepStore()
+  steps.save = async () => { throw new Error('Synthetic pre-dispatch marker failure') }
+  let executions = 0
+  const service = new ControlPlaneService({ modelBudgets: new MemoryModelBudgetStore(), steps,
+    work: new MemoryWorkStore(), sessions: new MemorySessionStore(), events: new MemoryEventStore(), actions,
+    contextProvider: { loadContext: async () => ({ persona: { name: '', role: '', instructions: '' }, capabilities: [], messages: [] }) },
+    capabilityResolver: { resolve: async () => [{ name: 'probe', methods: ['write'] }] },
+    delivery: { onEvent: async () => {}, deliverMessage: async () => {} },
+    actionExecutor: { prepare: async () => {}, execute: async () => { executions++; return { ok: true } } },
+  })
+  await service.enqueue({ id: 'custom', tenantId: 't', agentId: 'a', sessionId: 's', principalId: 'u', kind: 'turn', lane: 'interactive', triggerRef: 'm' })
+  const work = (await service.claim('worker'))!
+  const action = { runId: 'custom', cellId: 'c', callIndex: 0, action: 'probe.write', args: {}, idempotencyKey: '["custom","c",0]' }
+  const result = await service.executeAction(work, action)
+  assert.equal(result.executionState, 'no_effect'); assert.equal(executions, 0)
+  assert.deepEqual(await actions.unsettled(work.id), [])
+  assert.deepEqual(await service.executeAction(work, action), result)
+})
+
 it('reserves before execution, blocks concurrent replay and rejects changed arguments', async () => {
   const actions = new MemoryActionLedger()
   let calls = 0

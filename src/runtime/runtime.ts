@@ -242,7 +242,7 @@ export class AgentRuntime {
     this.processors.set(kind, processor)
   }
 
-  private async event(work: WorkItem, runId: string, event: Omit<RunEvent, 'runId' | 'seq'>): Promise<number> {
+  private async event(work: WorkItem, runId: string, event: Omit<RunEvent, 'runId' | 'seq'>, host = this.hostFor(work)): Promise<number> {
     if(this.privateMemoryRuns.has(runId)) {
       const data={...event.data}
       // These are diagnostic copies, not the authorized session or action ledger.
@@ -256,7 +256,7 @@ export class AgentRuntime {
     const seq = (this.eventSeqByRun.get(runId) ?? 0) + 1
     this.eventSeqByRun.set(runId, seq)
     const pending = (this.eventTails.get(runId) ?? Promise.resolve()).then(() =>
-      this.hostFor(work).emitEvent(work, { runId, seq, ...event }))
+      host.emitEvent(work, { runId, seq, ...event }))
     this.eventTails.set(runId, pending.catch(() => {}))
     await pending
     return seq
@@ -1209,11 +1209,9 @@ export class AgentRuntime {
       }
     }
 
-    await this.event(work, runId, {
-      kind: 'ipython.started', stage: 'started', visibility: 'internal',
-      data: { callId: call.callId, stepId: call.stepId, inputSha256: createHash('sha256').update(call.arguments).digest('hex') },
-    })
     const cellId = call.stepId ?? call.callId
+    const traceIdentity = { name: call.name, callId: call.callId, stepId: cellId,
+      requestVersion: (session.request?.revisions.length ?? 0) + 1, attemptId: this.modelAttempts.get(runId) }
     const step = { id: cellId, kind: call.name, requestVersion: (session.request?.revisions.length ?? 0) + 1,
       input: { callId: call.callId, ...(call.name === 'ipython' ? { code } : { arguments: call.arguments }) }, artifacts: [] as KernelArtifact[] }
     try {
@@ -1255,6 +1253,10 @@ export class AgentRuntime {
           })
         },
       }
+      await this.event(work, runId, {
+        kind: 'ipython.started', stage: 'started', visibility: 'internal',
+        data: { ...traceIdentity, inputSha256: createHash('sha256').update(call.arguments).digest('hex') },
+      })
       const execution = call.name === 'ipython'
         ? await this.kernels.execute(work, runId, cellId, code, signals.lifecycle.signal, executionOptions)
         : await this.executeDirect(work, call, executionOptions, signals.lifecycle.signal)
@@ -1289,7 +1291,7 @@ export class AgentRuntime {
       await this.event(work, runId, {
         kind: 'ipython.completed', stage: 'completed', visibility: 'internal',
         data: {
-          callId: call.callId, durationMs: execution.durationMs,
+          ...traceIdentity, durationMs: execution.durationMs,
           truncated: execution.truncated, artifactCount: execution.artifacts.length,
           artifacts: execution.artifacts,
           requestVersion: (session.request?.revisions.length ?? 0) + 1,
@@ -1338,11 +1340,19 @@ export class AgentRuntime {
       }
       return { nextStreamPartIndex, terminal: false, ...(correction ? { correction } : {}) }
     } catch (error) {
+      if (error instanceof KernelCancelledError) {
+        // The kernel has acknowledged cancellation. The lifecycle transport is
+        // already aborted; use a separately bounded diagnostic append which
+        // still requires this exact native lease/fence at the control plane.
+        await this.event(work, runId, { kind: 'ipython.cancelled', stage: 'cancelled', visibility: 'internal', data: traceIdentity },
+          deadlineHost(this.host, undefined, 5000, this.metrics)).catch(() => {})
+      }
       if (error instanceof ApprovalPendingError || error instanceof KernelTimeoutError || error instanceof KernelExecutionError) {
         await this.saveExecutionStep(work, { ...step, output: boundedToolOutput({ error: errorMessage(error), receipts,
           ...(error instanceof ApprovalPendingError ? { approvalPending: error.approvalId } : {}) }) }, signals.lifecycle.signal, error instanceof KernelTimeoutError)
       }
       if (error instanceof ApprovalPendingError) {
+        await this.event(work, runId, { kind: 'ipython.waiting', stage: 'completed', visibility: 'internal', data: traceIdentity })
         const goalOutcome: GoalOutcome = {
           status: 'awaiting_approval', verification: 'not_run', approvalId: error.approvalId,
           requestVersion: (session.request?.revisions.length ?? 0) + 1,
@@ -1368,7 +1378,7 @@ export class AgentRuntime {
         })
         await this.event(work, runId, {
           kind: 'ipython.timeout', stage: 'failed', visibility: 'internal',
-          data: { callId: call.callId, timeoutMs: error.timeoutMs },
+          data: { ...traceIdentity, timeoutMs: error.timeoutMs },
         })
         return { nextStreamPartIndex, terminal: false }
       }
@@ -1380,7 +1390,7 @@ export class AgentRuntime {
         })
         await this.event(work, runId, {
           kind: 'ipython.failed', stage: 'failed', visibility: 'internal',
-          data: { callId: call.callId, error: error.message, recoverable: budget.has('kernel_error') },
+          data: { ...traceIdentity, error: error.message, recoverable: budget.has('kernel_error') },
         })
         return {
           nextStreamPartIndex, terminal: false,

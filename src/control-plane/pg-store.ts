@@ -413,7 +413,7 @@ export class PgSessionStore implements SessionStore {
       CASE WHEN session.session_key IS NULL THEN NULL ELSE to_jsonb(session)||jsonb_build_object(
         'effective_request_snapshot',COALESCE(request.request_snapshot,session.request_snapshot)) END AS session,
       COALESCE((SELECT jsonb_agg(step ORDER BY step_seq) FROM
-        (SELECT * FROM lingxios.agent_steps WHERE work_id=work.id ORDER BY step_seq LIMIT 2049) step),'[]'::jsonb) AS steps
+        (SELECT * FROM lingxios.agent_steps WHERE work_id=work.id AND kind<>'runtime.action_trace' ORDER BY step_seq LIMIT 2049) step),'[]'::jsonb) AS steps
       FROM lingxios.agent_work_items work LEFT JOIN lingxios.agent_os_sessions session ON session.session_key=$2
       LEFT JOIN lingxios.agent_request_snapshots request ON request.work_id=work.id
       WHERE work.id=$1 AND work.fence=$3 AND work.status='leased' AND work.lease_expires_at>NOW()`, [work.id, sessionKeyOf(work), work.fence])
