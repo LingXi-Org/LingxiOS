@@ -44,7 +44,7 @@ it('all catalog arguments are checked without coercion or side effects before an
 })
 
 type Reply={answer:string|null;tool?:number;badSecond?:boolean;replace?:boolean;partial?:boolean}
-async function fixture(replies:Reply[],allowed=true){
+async function fixture(replies:Reply[],allowed=true,text='Read the synthetic record and explain the result.'){
   const db=new PGlite(),home=await mkdtemp(join(tmpdir(),'react-runtime-'))
   await db.exec(await readFile(new URL('../../db/schema.sql',import.meta.url),'utf8'))
   let tail=Promise.resolve(),modelCalls=0,effects=0,auxiliaryCalls=0
@@ -65,9 +65,21 @@ async function fixture(replies:Reply[],allowed=true){
   }})
   const worker=createWorker({controlPlane:app,model:driver,logger:nullLogger,kernel:{homesRoot:home},worker:{id:'react-worker',healthPort:0}})
   const identity={runId:'react-runtime',tenantId:'tenant',principalId:'human',agentId:'agent',sessionId:'room'}
-  await app.enqueue({id:identity.runId,...identity,text:'Read the synthetic record and explain the result.',mode:'execute',codeExecution:'disabled',deliveryMode:'auto'})
+  await app.enqueue({id:identity.runId,...identity,text,mode:'execute',codeExecution:'disabled',deliveryMode:'auto'})
   return {app,pool,identity,driver,worker,get calls(){return modelCalls},get effects(){return effects},get auxiliary(){return auxiliaryCalls},setAllowed(value:boolean){allowed=value},async run(){await worker.runNext();return (await app.readRunState(identity))!},async close(){await worker.stop();await app.stop();await db.close();await rm(home,{recursive:true,force:true})}}
 }
+
+it('full Worker answers a plain number in one generation without tools or semantic review',async()=>{
+  const f=await fixture([{answer:'43'}],true,'What is 17 + 26? Reply with only the number.')
+  try{
+    const state=await f.run()
+    assert.equal(state.run.status,'succeeded')
+    assert.equal(state.message?.body,'43')
+    assert.deepEqual({modelCalls:f.calls,effects:f.effects,auxiliaryCalls:f.auxiliary},{modelCalls:1,effects:0,auxiliaryCalls:0})
+    assert.equal(state.message?.publicTextSources?.segments.length,1)
+    assert.equal(state.message?.publicTextSources?.bodyHash,hash('43'))
+  }finally{await f.close()}
+})
 
 it('full Worker appends A → tool → B → tool → null final and atomically binds all sealed sources',async()=>{
   const f=await fixture([{answer:' A',tool:1},{answer:'B ',tool:2},{answer:null}])

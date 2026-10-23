@@ -27,8 +27,12 @@ Do not add a separate review or rewrite merely to produce this declaration. No o
 When calling native tools, encode any public text with outcome:null; a tool-only message may omit content. Never declare a terminal outcome on a tool-calling turn.
 Use the ordinary native tool_calls channel for tools, never encode tools into text. Previously unwrapped history is already decoded; only the new response uses this encoding.`
 
-export function publicPurposeInstructions(protocol: PublicTextProtocol = 'purpose-json-v1'): string {
+export function publicPurposeInstructions(protocol: PublicTextProtocol = 'purpose-json-v1', profile?: {
+  parallelTools?: boolean; jsonObjectWithTools?: boolean
+}): string {
   if(protocol==='purpose-json-v3')return PUBLIC_PURPOSE_V3_INSTRUCTIONS
+    + (profile?.parallelTools === false ? '\nThis profile permits at most ONE native tool call per model turn. Choose the next necessary action; wait for its result before requesting another. Do not add a second progress-report call alongside the needed action; the existing tool lifecycle reports progress.' : '')
+    + (profile?.jsonObjectWithTools === false ? '\nThis profile disables provider JSON response mode while native tools are exposed. That is not permission to send plain text: assistant content still uses the complete purpose-json-v3 object above. Untyped tool companion text is withheld, so put useful known content in answer within this SAME turn, never in an extra introductory call.' : '')
   return protocol === 'purpose-json-v2' ? PUBLIC_PURPOSE_V2_INSTRUCTIONS : PUBLIC_PURPOSE_INSTRUCTIONS
 }
 
@@ -41,7 +45,16 @@ commentary is optional PUBLIC progress, never reasoning. answer contains only us
 A native tool turn may carry useful answer text with outcome:null, or omit content entirely. Native tools use tool_calls, never JSON text. All tool calls must be complete and valid before any dispatch.
 A terminal turn has no tools and declares outcome with exactly status then gaps. status is satisfied only when the full accumulated requested result was delivered; partial or blocked require truthful nonempty gaps. Do not invent actions, receipts or delivery.
 answer:null is allowed ONLY to finish an already nonempty sealed answer supplied in the current answer-segment context. Otherwise supply substantive answer text. Null does not waive citations, resources, delivery, permissions or completion checks.
-gaps is an array of at most 16 nonempty strings, each at most 1000 characters, 8192 total; satisfied requires []. No extra fields, duplicate keys, markdown framing, trailing prose, or separate review calls. Previously decoded assistant history is not a wire template.`
+gaps is an array of at most 16 nonempty strings, each at most 1000 characters, 8192 total; satisfied requires []. No extra fields, duplicate keys, markdown framing, trailing prose, or separate review calls. Previously decoded assistant history is not a wire template.
+This purpose envelope is transport encoding decoded by the host, not user-visible assessment JSON. User formatting instructions such as "only the number" constrain the answer field itself; they do not remove this envelope or require displaying JSON to the user.
+Examples describe encoding only: never copy their factual claims, placeholder tool names, arguments or IDs.
+When the request already supplies useful facts AND a needed tool remains, put the known explanation in answer in the SAME tool-calling turn. Do not delay that explanation until every tool finishes; do not anticipate unknown results, successful saves or resource references.
+Tool-turn assistant content example:
+{"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":"The supplied numbers total 5. ","outcome":null}
+The same assistant message separately carries native tool_calls, for example [{"id":"<provider-assigned>","type":"function","function":{"name":"<one exposed tool>","arguments":"<valid JSON arguments for that tool>"}}]. Never put this tool_calls example inside content. Use only the actual exposed tool schema. If no useful answer is yet known, call the needed tool without inventing an answer or adding a preface round.
+After all requested work and references are already present in the active sealed answer, finish without replaying that body:
+{"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":null,"outcome":{"status":"satisfied","gaps":[]}}
+Otherwise append only the missing substantive result or truthful limitation with its correct outcome. A simple question that needs no tool uses the ordinary terminal answer object in one generation; these examples do not require extra tools, a separate review, or repeated drafts.`
 
 export function publicPurposeError(protocolCode:'public_text_invalid'|'public_text_incomplete'|'public_text_answer_required'='public_text_invalid'):ModelDriverError {
   return new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',protocolCode,finishReasons:[]})

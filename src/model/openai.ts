@@ -210,7 +210,6 @@ export class OpenAIChatDriver implements ModelDriver {
     this.recovery = recoveryPolicy(options.recovery)
     if(options.publicTextProtocol!==undefined&&!['purpose-json-v1','purpose-json-v2','purpose-json-v3'].includes(options.publicTextProtocol))throw new Error('invalid public text protocol')
     this.publicTextProtocol=options.publicTextProtocol
-    this.protocolTokens=this.publicTextProtocol?this.countTokens(publicPurposeInstructions(this.publicTextProtocol)):0
     this.baseUrl = (options.baseUrl ?? DEFAULT_MODEL.baseUrl).replace(/\/+$/, '')
     this.circuitKey = createHash('sha256').update(JSON.stringify([this.baseUrl, modelId, options.apiKey])).digest('hex')
     for (const key of ['reasoningEffort', 'compactionReasoningEffort'] as const) {
@@ -236,6 +235,7 @@ export class OpenAIChatDriver implements ModelDriver {
     for (const key of ['toolCalls', 'jsonObject', 'jsonObjectWithTools', 'parallelTools'] as const) {
       if (typeof this.profile[key] !== 'boolean') throw new Error(`invalid model capability ${key}`)
     }
+    this.protocolTokens=this.publicTextProtocol?this.countTokens(publicPurposeInstructions(this.publicTextProtocol,this.profile)):0
     // Default and explicit support share the same capability representation;
     // only an opt-out adds that capability field. Parsing policy is separately
     // versioned below and intentionally changes replay identity when revised.
@@ -248,6 +248,7 @@ export class OpenAIChatDriver implements ModelDriver {
       capabilities: jsonObjectWithTools === false ? { ...legacyCapabilities, jsonObjectWithTools: false } : legacyCapabilities,
       previewFormat: this.previewFormat,
       ...(this.publicTextProtocol?{publicTextProtocol:this.publicTextProtocol}:{}),
+      ...(this.publicTextProtocol==='purpose-json-v3'?{publicPurposeInstructionsPolicy:'v3-native-tool-phases-v1'}:{}),
       ...(this.publicTextProtocol && jsonObjectWithTools === false ? { toolCompanionPolicy: 'unpublished-native-prose-v1' } : {}),
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
@@ -469,7 +470,7 @@ export class OpenAIChatDriver implements ModelDriver {
     const companion = purposeParser && tools.length && this.profile.jsonObjectWithTools === false ? new ToolCompanionBoundary() : undefined
     const response = await this.request({
       model: this.modelId,
-      messages: toWireMessages(request.instructions+(purposeParser?'\n\n'+publicPurposeInstructions(this.publicTextProtocol):''), request.items),
+      messages: toWireMessages(request.instructions+(purposeParser?'\n\n'+publicPurposeInstructions(this.publicTextProtocol,this.profile):''), request.items),
       ...(purposeParser && (!tools.length || this.profile.jsonObjectWithTools !== false) ? { response_format: { type: 'json_object' } } : {}),
       ...(tools.length ? { tools, tool_choice: 'auto', parallel_tool_calls: this.profile.parallelTools } : {}),
       stream: true,

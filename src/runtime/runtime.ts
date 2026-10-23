@@ -798,7 +798,9 @@ export class AgentRuntime {
         }
         await this.event(work, runId, {
           kind: 'model.failed', stage: 'failed', visibility: 'internal',
-          data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: publicFailure(error) },
+          data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: publicFailure(error),
+            ...(error instanceof ModelDriverError ? { modelDiagnostics: publicModelDiagnostics(error.diagnostics) } : {}),
+          },
         })
         if (isPublicTextSafetyFailure(error) && budget.consume('response_protocol','public text safety rejected')) {
           protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return only safe user-facing content. Do not include private reasoning or internal protocol.'}
