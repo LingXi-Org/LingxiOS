@@ -69,7 +69,7 @@ export async function memoryForgetLockRegression(pool){
     console.log('atomic forget and real native synthesis peer passed')
   }finally{resume.resolve();await Promise.allSettled([forgetting,executing].filter(Boolean));await cleanup(pool,work)}
   await synthesisFirst(pool)
-  await invalidatedAction(pool)
+  await memorySynthesisInvalidationRegression(pool)
 }
 
 /** The reverse order commits the valid load first, then forget clears it atomically. */
@@ -111,8 +111,8 @@ async function synthesisFirst(pool) {
 }
 
 /** No discovery snapshot can stand in for final authorization after a wait. */
-async function invalidatedAction(pool) {
-  for (const mutation of ['fence','revision','cancel','scope','epoch','revoked','caller-scope','caller-kind']) {
+export async function memorySynthesisInvalidationRegression(pool, mutations = ['fence','revision','cancel','scope','epoch','revoked','caller-scope','caller-kind','lease-time']) {
+  for (const mutation of mutations) {
     const {scope,options,work,tool,action,store}=await fixture(pool,mutation)
     const errors=[],lockedScopes=[]
     let changed=false
@@ -124,6 +124,12 @@ async function invalidatedAction(pool) {
           lockedScopes.push(args.slice(0,3))
           if(!changed&&!mutation.startsWith('caller-')) {
             changed=true
+            if(mutation==='lease-time') {
+              const deadline=Date.now()+5000
+              while(!(await pool.query('SELECT clock_timestamp()>=lease_expires_at AS expired FROM lingxios.agent_work_items WHERE id=$1',[work.id])).rows[0].expired) {
+                assert.ok(Date.now()<deadline,'synthetic lease must expire naturally');await delay(10)
+              }
+            }
             if(mutation==='fence')await pool.query('UPDATE lingxios.agent_work_items SET fence=fence+1 WHERE id=$1',[work.id])
             if(mutation==='revision')await store.addSteer(work.id,'Synthetic replacement request')
             if(mutation==='cancel')await store.requestCancel(work.id)
@@ -136,6 +142,7 @@ async function invalidatedAction(pool) {
       }catch(error){errors.push(error.code);throw error}},release:()=>client.release()}
     }}
     try {
+      if(mutation==='lease-time')await pool.query("UPDATE lingxios.agent_work_items SET lease_expires_at=clock_timestamp()+INTERVAL '2 seconds' WHERE id=$1",[work.id])
       const supplied=mutation==='caller-scope'?{...work,meta:{...work.meta,scopeId:'other'}}:mutation==='caller-kind'?{...work,kind:'turn'}:work
       await assert.rejects(toolExecutor(wrapped,[tool],undefined,options).execute(supplied,action,executionOptions()))
       assert.equal(errors.includes('40P01'),false)

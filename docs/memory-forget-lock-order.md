@@ -27,7 +27,10 @@ and epoch come from the persisted row, and must match the leased work; tool
 arguments cannot choose them. The final work/intent lock rechecks every existing
 identity, live fence, cancellation and request-version condition and verifies
 the discovered scope/epoch again. A mismatch fails instead of acquiring a new
-scope under a work lock. Other work kinds retain work-first ordering; their
+scope under a work lock. Lease validity uses `clock_timestamp()` so a scope wait cannot reuse the
+transaction-start clock after expiry. A real-time regression holds the scope
+past the persisted lease deadline without changing the row; the old `NOW()`
+predicate incorrectly allowed the action. Other work kinds retain work-first ordering; their
 persisted kind must also match the leased work to prevent bypassing the rule.
 
 This is a scoped resource hierarchy, not a tenant-wide mutex:

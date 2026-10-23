@@ -7,7 +7,7 @@ import { lockMemoryScopes } from '../memory/forget.js'
 export async function lockAction(database: SqlQueryable, work: Omit<WorkItem, 'leaseToken'>, action: HostAction) {
   const query = `SELECT work.id,work.kind,work.meta FROM lingxios.agent_work_items work
     JOIN lingxios.agent_action_intents intent ON intent.idempotency_key=$3
-    WHERE work.id=$1 AND work.fence=$2 AND work.status='leased' AND work.lease_expires_at>NOW()
+    WHERE work.id=$1 AND work.fence=$2 AND work.status='leased' AND work.lease_expires_at>clock_timestamp()
       AND work.cancel_requested_at IS NULL AND work.tenant_id=$4 AND work.principal_id IS NOT DISTINCT FROM $5
       AND work.agent_id=$6 AND work.session_id=$7 AND work.thread_id IS NOT DISTINCT FROM $8
       AND intent.intent->>'workId'=work.id AND intent.intent->'action'=$9::jsonb
