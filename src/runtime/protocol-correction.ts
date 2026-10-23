@@ -1,6 +1,5 @@
 import type { PublicTextProtocol } from '../model/outcome-declaration.js'
 import type { ModelDiagnostics } from '../errors.js'
-import { publicPurposeInstructions } from '../model/public-purpose.js'
 
 /** Only fixed local contract facts enter a correction, never a raw provider body. */
 export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecution:'enabled'|'disabled',protocol:PublicTextProtocol='purpose-json-v1'):
@@ -16,8 +15,8 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
         ? 'The previous public response ended before the complete JSON object was closed.'
         : 'The previous public response violated the required JSON field order, string encoding, or framing.'
     return {category:'response_protocol',content:`Protocol correction: ${failure}
-Reply again for the original request, preserving completed tool results; do not repeat completed or uncertain side effects.
-${publicPurposeInstructions(protocol)}
+Reply again for the current active trust=request blocks and their current revisions. Historical requests are observations; do not resume an earlier task unless the current request explicitly asks for it. Preserve completed tool results; do not repeat completed or uncertain side effects.
+Follow the ${protocol} public wire contract selected and supplied by the trusted model driver for this turn, including its native-tool and no-tool response branches. Do not substitute a different output schema or channel.
 ${execution}`}
   }
   if(code==='response_empty')return {category:'response_protocol',content:`Protocol correction: the previous response contained neither an answer nor a tool call. Provide the substantive answer or an exposed native tool call needed to obtain it. Preserve completed tool results and do not repeat completed or uncertain side effects. ${execution}`}

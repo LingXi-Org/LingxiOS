@@ -24,6 +24,7 @@ for (const scenario of ['valid', 'bad-schema', 'truncated', 'typed-conflict', 's
       async connect() { return { query, release: await acquire() } } }
     const identity = { runId: `envelope-${scenario}`, tenantId: 'tenant', principalId: 'human', agentId: 'agent', sessionId: 'room' }
     let calls = 0, effects = 0, authorized = 0, argsComplete = false, durableBeforeArgs = false, unknownReplayed = false
+    const correctionPayloads: Array<{ correction: string | undefined; system: string }> = []
     let release!: () => void
     const published = new Promise<void>(resolve => { release = resolve })
     const answer = 'Known 2 + 3 = 5. '
@@ -66,6 +67,10 @@ for (const scenario of ['valid', 'bad-schema', 'truncated', 'typed-conflict', 's
         const body = JSON.parse(String(init?.body)); assert.equal(body.stream, true, 'no auxiliary judge')
         calls++
         if (calls > 1) {
+          if (['truncated', 'typed-conflict', 'second-call'].includes(scenario)) {
+            const correction = body.messages.find((message: { role: string; content?: string }) => message.role === 'user' && message.content?.startsWith('Protocol correction:'))
+            correctionPayloads.push({ correction: correction?.content, system: body.messages[0].content })
+          }
           const valid = scenario === 'valid'
           return new Response(frame({ content: JSON.stringify({ operation, commentary: '', answer: valid ? null : 'The synthetic action could not be completed.',
             outcome: { status: valid ? 'satisfied' : 'blocked', gaps: valid ? [] : ['Synthetic action unavailable.'] } }) }, 'stop') + ending)
@@ -102,6 +107,12 @@ for (const scenario of ['valid', 'bad-schema', 'truncated', 'typed-conflict', 's
       await app.enqueue({ id: identity.runId, ...identity, text: 'Explain the known sum 2 + 3 and read the synthetic number.', mode: 'execute', codeExecution: 'disabled', deliveryMode: 'text' })
       await worker.runNext()
       const state = await app.readRunState(identity), events = await app.readEvents(identity)
+      for (const payload of correctionPayloads) {
+        assert.ok(payload.correction, 'actual runtime recovery carries a bounded correction')
+        assert.match(payload.correction, /trusted model driver/)
+        assert.doesNotMatch(payload.correction, /Tool-turn assistant content example|"operation":|public_output/)
+        assert.match(payload.system, /native tool public output envelope v1/)
+      }
       assert.ok(durableBeforeArgs, 'public answer persisted while the answer string and business arguments were unfinished')
       assert.equal(effects, scenario === 'valid' || scenario === 'unknown-effect' ? 1 : 0)
       const first = events.events.find(event => event.kind === 'public.text.delta' && event.data['text'] === answer)!

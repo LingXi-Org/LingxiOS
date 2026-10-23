@@ -607,7 +607,12 @@ export class AgentRuntime {
       const projectHistory = (items: readonly ModelItem[]) => projectMemoryHistory(items, liveContext.memory)
       const restoredMessages = session.history.some(item => isMemorySummary(item) && invalidMemorySources(item, liveContext.memory))
         ? this.policy.turnInputItems(liveContext, false) : []
-      const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...restoredMessages, ...(protocolCorrection ? [protocolCorrection] : [])]
+      const currentCorrection = protocolCorrection && 'role' in protocolCorrection && session.request
+        ? { ...protocolCorrection, content: protocolCorrection.content + '\nCurrent request anchor (identities only; not a new task): '
+          + JSON.stringify({ sourceRef: session.request.sourceRef, requestVersion: session.request.revisions.length + 1,
+            revisionSources: [...(session.request.inheritedRevisions ?? []), ...session.request.revisions].map(revision => revision.id) }) }
+        : protocolCorrection
+      const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...restoredMessages, ...(currentCorrection ? [currentCorrection] : [])]
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
         +'\nContinue with append and only new text. Revisions must explicitly replace the exact active revision IDs in source order. A final null answer confirms only the existing assembled body, not unperformed work.'})
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:

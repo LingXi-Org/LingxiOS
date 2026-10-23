@@ -262,7 +262,8 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(this.publicTextProtocol && jsonObjectWithTools === false ? { toolCompanionPolicy: 'unpublished-native-prose-v1' } : {}),
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
-      ...(options.nativeToolPublicOutput ? { nativeToolPublicOutput: options.nativeToolPublicOutput } : {}),
+      ...(options.nativeToolPublicOutput ? { nativeToolPublicOutput: options.nativeToolPublicOutput,
+        nativeToolIdentityPolicy: 'bounded-interleaved-prefix-v1' } : {}),
     })).digest('hex')
   }
 
@@ -532,13 +533,22 @@ export class OpenAIChatDriver implements ModelDriver {
     }:request.onTextDelta, nativeEnvelope ? async (index, call, delta) => {
       request.signal?.throwIfAborted()
       if (index !== 0 || contentObserved || nativeIdentity && (nativeIdentity.id !== call.id || nativeIdentity.name !== call.name)) throw publicPurposeError()
-      if (!delta) return
-      if (!call.id.trim() || call.id.trim() !== call.id || !tools.some(tool => tool.function.name === call.name)) throw publicPurposeError()
-      nativeIdentity ??= { id: call.id, name: call.name }
-      nativeOutput ??= new NativeToolPublicOutput()
-      const parts = nativeOutput.push(delta)
-      if (nativeOutput.operation && !operationPublished) {
-        await request.onTextOperation?.(nativeOutput.operation); operationPublished = true
+      let publicDelta = delta
+      if (!nativeIdentity) {
+        // Names and arguments may arrive interleaved. Retain the accumulator's
+        // original bytes, but publish nothing until an exposed identity exists.
+        if (Buffer.byteLength(call.arguments) > 16 * 1024 * 1024 || call.id.trim() !== call.id
+          || !tools.some(tool => tool.function.name.startsWith(call.name))) throw publicPurposeError()
+        if (!call.id || !tools.some(tool => tool.function.name === call.name) || !call.arguments) return
+        nativeIdentity = { id: call.id, name: call.name }
+        nativeOutput = new NativeToolPublicOutput()
+        publicDelta = call.arguments
+      }
+      if (!publicDelta) return
+      const outputParser = nativeOutput!
+      const parts = outputParser.push(publicDelta)
+      if (outputParser.operation && !operationPublished) {
+        await request.onTextOperation?.(outputParser.operation); operationPublished = true
       }
       for (const part of parts) {
         request.signal?.throwIfAborted()

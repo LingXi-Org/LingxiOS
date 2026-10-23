@@ -4,7 +4,8 @@ import { PublicPurposeParser, publicPurposeError } from './public-purpose.js'
 import type { ToolDefinition } from '../tools/catalog.js'
 
 export const NATIVE_TOOL_PUBLIC_OUTPUT_INSTRUCTIONS = `Public output wire contract (purpose-json-v3), native tool public output envelope v1:
-All public output objects use exactly these keys IN THIS ORDER:
+Public output objects use these keys IN THIS ORDER: operation, commentary, answer, outcome.
+Native-tool public_output object example (outcome must be null on this branch):
 {"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":"Useful known answer text","outcome":null}.
 operation precedes text. append continues the SAME answer message without repeating earlier text. Supply necessary spaces/newlines: segments concatenate exactly, then the full body is trimmed once.
 To correct earlier segments, use kind replace and their exact active segment IDs in supersedes. Never invent IDs; replacement remains provisional until delivery validation succeeds.
@@ -13,6 +14,7 @@ This profile permits only ONE native call per turn. Its function arguments must 
 When useful answer content is already known, put the complete public output object above in public_output with outcome:null BEFORE arguments. Otherwise use public_output:null. Do not fabricate content, add a preface round, or add a second reporting call.
 The same native call performs the original action; arguments obey its original business schema. Assistant content on a native-tool turn must be omitted. Tool identity remains in native tool_calls, never in text.
 When returning NO tool calls, assistant content must be the complete public output object, with outcome:{"status":"satisfied","gaps":[]} or truthful partial/blocked status and nonempty gaps. Do not wrap terminal content in public_output/arguments.
+Terminal content example (NO tool calls, outcome must be an object on this branch): {"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":"The requested answer.","outcome":{"status":"satisfied","gaps":[]}}. A no-tool turn with outcome:null is invalid; do not emit a separate preface turn.
 Only declare satisfied when the accumulated requested result was delivered. Do not anticipate tool results, saves or references. This declaration does not replace permissions, receipts or delivery validation.
 answer:null is allowed only on a terminal turn finishing an already nonempty sealed answer in the current answer context; otherwise provide substantive answer text. Never replay an already delivered body.
 gaps has at most 16 nonempty strings, each at most 1000 characters, 8192 total. satisfied requires [].
