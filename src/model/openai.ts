@@ -241,6 +241,7 @@ export class OpenAIChatDriver implements ModelDriver {
     const { jsonObjectWithTools, ...legacyCapabilities } = this.profile
     this.configurationFingerprint = createHash('sha256').update(JSON.stringify({
       wire: 'openai-chat-completions-v1', model: modelId, baseUrl: this.baseUrl,
+      toolDeltaPolicy: 'nullable-optional-metadata-v1',
       reasoningEffort: options.reasoningEffort ?? null, maxOutputTokens: this.maxOutputTokens,
       contextWindowTokens: this.contextWindowTokens, maxThinkingTokens: this.maxThinkingTokens, compactionThinking: false, tool: 'ipython-v1',
       capabilities: jsonObjectWithTools === false ? { ...legacyCapabilities, jsonObjectWithTools: false } : legacyCapabilities,
@@ -377,7 +378,7 @@ export class OpenAIChatDriver implements ModelDriver {
             finish_reason?: string | null
             delta?: {
               content?: string | null
-              tool_calls?: Array<{ index?: number; id?: string; type?: string; function?: { name?: string; arguments?: string } }>
+              tool_calls?: Array<{ index?: number; id?: string | null; type?: string | null; function?: { name?: string | null; arguments?: string | null } | null }>
             }
           }>
         }
@@ -402,22 +403,24 @@ export class OpenAIChatDriver implements ModelDriver {
         for (const toolCall of choice.delta?.tool_calls ?? []) {
           const index = toolCall.index ?? 0
           if (!Number.isSafeInteger(index) || index < 0 || toolCall.index !== undefined && !Number.isSafeInteger(toolCall.index)
-            || toolCall.type !== undefined && toolCall.type !== 'function'
-            || toolCall.function !== undefined && (!toolCall.function || typeof toolCall.function !== 'object' || Array.isArray(toolCall.function))) accumulator.malformedToolCalls = true
+            || toolCall.type != null && toolCall.type !== 'function'
+            || toolCall.function != null && (typeof toolCall.function !== 'object' || Array.isArray(toolCall.function))) accumulator.malformedToolCalls = true
           let entry = accumulator.toolCalls.get(index)
           if (!entry) {
             entry = { id: '', name: '', arguments: '' }
             accumulator.toolCalls.set(index, entry)
           }
-          if (toolCall.id !== undefined) {
+          // OpenAPI nullable delta fields mean "not supplied in this chunk".
+          // Preserve already accumulated identity; final validation is unchanged.
+          if (toolCall.id != null) {
             if (typeof toolCall.id !== 'string' || entry.id && entry.id !== toolCall.id) accumulator.malformedToolCalls = true
             if (typeof toolCall.id === 'string') entry.id = toolCall.id
           }
-          if (toolCall.function?.name !== undefined) {
+          if (toolCall.function?.name != null) {
             if (typeof toolCall.function.name !== 'string') accumulator.malformedToolCalls = true
             else entry.name += toolCall.function.name
           }
-          if (toolCall.function?.arguments !== undefined) {
+          if (toolCall.function?.arguments != null) {
             if (typeof toolCall.function.arguments !== 'string') accumulator.malformedToolCalls = true
             else entry.arguments += toolCall.function.arguments
           }
