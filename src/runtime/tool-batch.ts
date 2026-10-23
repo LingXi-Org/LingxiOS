@@ -19,9 +19,11 @@ export function compileToolSchemas(tools:readonly ToolDefinition[]){
     const dialect=Reflect.get(tool.parameters,'$schema')
     if(dialect!==undefined&&!['http://json-schema.org/draft-07/schema#','https://json-schema.org/draft-07/schema','https://json-schema.org/draft/2020-12/schema'].includes(String(dialect)))throw new Error('unsupported trusted tool schema dialect')
     const ajv=dialect==='https://json-schema.org/draft/2020-12/schema'?draft2020:draft7
-    const validate=ajv.compile(tool.parameters)
-    // Context snapshots are short-lived; do not retain every schema object in Ajv.
-    ajv.removeSchema(tool.parameters)
+    let validate:ValidateFunction
+    // A compiled validator owns its references. Remove all non-meta registrations
+    // (including embedded $id resources), so later catalogs cannot resolve refs
+    // against a previous binding's schema. The WeakMap retains the validator.
+    try { validate=ajv.compile(tool.parameters) } finally { ajv.removeSchema() }
     cache.set(tool.parameters,validate)
   }
 }

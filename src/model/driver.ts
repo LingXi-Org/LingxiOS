@@ -105,6 +105,8 @@ export interface ModelDriver {
   readonly profile?: ModelProfile
   /** A provider tokenizer or calibrated upper bound; never a fixed bytes/constant guess. */
   countTokens?(text: string): number
+  /** Optional actual generation wire estimate; never used for auxiliary calls. */
+  generationInputTokens?(request: Pick<ModelTurnRequest, 'instructions' | 'items' | 'tools' | 'codeExecution'>): number | undefined
   readonly maxThinkingTokens?: number
   /** Runtime owns retries so each outbound request reserves and settles its own budget. */
   singleAttempt?(): ModelDriver
