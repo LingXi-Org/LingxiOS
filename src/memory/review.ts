@@ -33,6 +33,12 @@ export async function prepareMemoryReview(database: SqlQueryable,options: Memory
   // scope. Independent review must not hold a scope while waiting on its work.
   const [epoch] = await lockMemoryScopes(database,[scope])
   await authorizeScope(options,identity,database,scope,'write')
+  // The work row is already locked, but its lease may expire while waiting for
+  // the scope or current authorization. NOW() freezes at transaction start.
+  const current=await database.query(`SELECT id FROM lingxios.agent_work_items WHERE id=$1 AND fence=$2 AND tenant_id=$3 AND agent_id=$4
+    AND principal_id=$5 AND status='leased' AND lease_expires_at>clock_timestamp() AND cancel_requested_at IS NULL`,
+    [work.id,work.fence,work.tenantId,work.agentId,work.principalId])
+  if (!current.rows.length) throw new Error('memory review requires the current worker lease')
   if (!(await currentMemoryScopes(database,[epoch!],work.id)).length) throw new Error('memory source predates forgetting')
   const request = await requestSnapshot(database,work.id,Number(live.rows[0]!['request_version']))
   if (request.authorId!==work.principalId || request.tenantId!==work.tenantId) throw new Error('memory request identity mismatch')
