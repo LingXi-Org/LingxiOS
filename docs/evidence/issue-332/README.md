@@ -1,13 +1,12 @@
 # Protocol decoding and bounded recovery
 
-Related: [LingxiLoop #332](https://github.com/LingXi-Org/LingxiLoop/issues/332).
+This upstream report contains only generic source behavior and synthetic fixtures.
 Failure inventory was written before implementation in
 [`../../issue-332-protocol-failure-model.md`](../../issue-332-protocol-failure-model.md).
 
-A production public diagnostic reported a protocol failure after a normal `stop`,
-then delivered `model_unavailable`. The exact malformed field and original SSE
-bytes were not exposed. No original task was replayed, and no private response,
-conversation identifier, raw trace or credential is included here.
+A synthetic purpose JSON stream can finish with `stop` while its answer frame
+is lost by the decoder. The following reproductions exercise that defect and
+bounded correction using synthetic content and local worker state only.
 
 The local deterministic defect is in SSE framing: the delimiter expression
 accepts CRLF/LF (three characters), but the old decoder advances four characters
@@ -16,8 +15,7 @@ its initial `d`; the event is silently discarded. A valid three-frame purpose
 answer then becomes incomplete. The fix consumes the matched delimiter length.
 LF/LF, CRLF/CRLF, CRLF/LF and LF/CRLF are exercised at every network split; the
 real HTTP driver also verifies complete answers in buffered and one-character
-network chunks. This matches a possible production failure shape, not a proven
-original wire cause.
+network chunks. No external response body is used by this reproduction.
 
 Two recovery defects were also reproduced. Public text framing/empty-answer
 failures previously received a tool-protocol correction; now fixed local reason
@@ -30,11 +28,15 @@ real HTTP provider failure remains `model_unavailable`.
 The parser still rejects duplicate/reordered keys, trailing text, invalid escapes,
 unpaired surrogates and oversized framing. There is no raw-text fallback. Shared
 correction limits, root model budgets, cancellation, authorization and effect
-execution are unchanged. The parallel #331 budget work is integrated separately
-before one formal runtime publication.
+execution are unchanged. Any separate budget-policy work must be reconciled
+before formal runtime publication.
 
 ## Validation
 
+- Repeatable first-useful-answer, full-delivery and native terminal-tail samples
+  are in [EXPERIENCE.md](EXPERIENCE.md), with raw baseline/candidate JSON. The two
+  failing synthetic scenarios change from 0/3 to 3/3 complete deliveries;
+  commentary is excluded and failed timings remain null.
 - Build/typecheck passed on Node 22.23.3.
 - New protocol checks: **18/18 passed**, recorded in
   [`protocol-recovery.tap`](protocol-recovery.tap); source hashes are in
@@ -67,5 +69,5 @@ node --test --test-concurrency=1 dist/test/public-purpose.test.js dist/test/publ
 ```
 
 These synthetic cases prove concrete behavior, not a population completion rate
-or original private-case acceptance. Exact-head CI, formal package publication,
+or a live-provider service-level guarantee. Exact-head CI, formal package publication,
 product dependency integration and production release remain separate gates.

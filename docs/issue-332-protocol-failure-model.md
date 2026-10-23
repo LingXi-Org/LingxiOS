@@ -1,15 +1,14 @@
-# Protocol recovery failure model (LingxiLoop #332)
+# Protocol recovery failure model
 
-The production evidence establishes `protocol` + normal `stop` followed by a
-`model_unavailable` terminal. It does not expose the malformed response field.
-All provider bodies below are synthetic; no production task is replayed.
+All provider bodies below are synthetic. This document describes generic driver
+and runtime contract failures; it contains no external production evidence.
 
 Before implementation, the owning failure cases are:
 
 0. Mixed LF/CRLF blank lines are accepted by the SSE delimiter pattern but
    consumed with a guessed length, dropping a character from the next event.
    All four accepted combinations and network splits must preserve every frame.
-   This is a local deterministic defect, not a proven original production cause.
+   This is a local deterministic defect.
 1. A complete purpose JSON object with empty answer and no native tool call can
    emit commentary, then fail. Current feedback calls every model protocol error
    a tool protocol error, without identifying the missing substantive answer.
@@ -33,8 +32,13 @@ Before implementation, the owning failure cases are:
    prompts, correlation identifiers, credentials or hidden reasoning.
 7. End-to-end worker evidence must exercise the real HTTP driver, durable model
    reservations/settlements, normal tool execution and final result commit. A
-   successful corrected answer alone does not prove the original private run's
-   exact malformed field; document that boundary explicitly.
+   successful corrected answer only proves the exercised synthetic scenario.
+8. Experience measurements must use actual public answer callbacks after durable
+   append, exact committed answer equality and worker terminal completion. Never
+   count commentary as useful answer latency, turn missing timing into zero, or
+   label an uncommitted partial body successful. Use identical bounded synthetic
+   streams and pacing on baseline and candidate, include an unchanged normal
+   control, and report raw repetitions rather than claiming a live-provider SLA.
 
-Budget policy and the partial-result UX belong to the parallel #331 work. Any
-common runtime edits must be reconciled before a single formal upstream release.
+Budget policy and product presentation are outside this change. Coordinate
+common runtime edits before a single formal release.
