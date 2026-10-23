@@ -11,7 +11,7 @@ import type { SqlPool } from '../src/control-plane/pg-store.js'
 import { nullLogger } from '../src/logging.js'
 import { consumeRunEvent, consumeRunState, consumeRunStreamEvent, createRunView } from '../src/ui/index.js'
 
-it('purpose-aware public worker streams a substantive answer before EOF, executes its tool and accepts only the final answer across SSE/replay', {timeout:15_000}, async t => {
+for(const protocol of ['purpose-json-v1','purpose-json-v2'] as const) it(`${protocol}: purpose-aware public worker streams a substantive answer before EOF, executes its tool and accepts only the final answer across SSE/replay`, {timeout:15_000}, async t => {
   const db=new PGlite(), directory=await mkdtemp(join(tmpdir(),'public-text-worker-'))
   await db.exec(await readFile(new URL('../../db/schema.sql',import.meta.url),'utf8'))
   let tail=Promise.resolve()
@@ -19,6 +19,8 @@ it('purpose-aware public worker streams a substantive answer before EOF, execute
   const query:SqlPool['query']=async(sql,params)=>{const r=await db.query<Record<string,unknown>>(sql,params);return {rows:r.rows,rowCount:r.affectedRows??r.rows.length}}
   const pool:SqlPool={async query(sql,params){const release=await acquire();try{return await query(sql,params)}finally{release()}},
     async connect(){return {query,release:await acquire()}}}
+  const finalAnswer=protocol==='purpose-json-v2'?'检查结果是42；当前工具不能发送通知。':'检查结果是42。'
+  let auxiliaryCalls=0
   const identity={runId:'public-run',tenantId:'tenant',principalId:'human',agentId:'agent',sessionId:'room'}
   let beforeTool=false,toolCalls=0,modelCalls=0,authorizations=0,providerStarted=0,durableAtTool=0,firstEof=false,answerBeforeEof=false
   let releaseFirst!:()=>void
@@ -33,9 +35,9 @@ it('purpose-aware public worker streams a substantive answer before EOF, execute
       beforeTool=rows.rows.some(row=>String((row['data'] as Record<string,unknown>)['text']).includes('已知基础值是40。'))
       return {ok:true,value:{answer:42}}
     }}]})
-  const driver=new OpenAIChatDriver('public-worker-fixture',{apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v1',fetchImpl:async(_url,init)=>{
+  const driver=new OpenAIChatDriver('public-worker-fixture',{apiKey:'fixture',maxAttempts:1,publicTextProtocol:protocol,fetchImpl:async(_url,init)=>{
     const request=JSON.parse(String(init?.body))
-    if(!request.stream)return Response.json({model:'fixture',choices:[{finish_reason:'stop',message:{content:'{"missing":[]}'}}],usage:{prompt_tokens:10,completion_tokens:5}})
+    if(!request.stream){auxiliaryCalls++;return Response.json({model:'fixture',choices:[{finish_reason:'stop',message:{content:'{"missing":[]}'}}],usage:{prompt_tokens:10,completion_tokens:5}})}
     const first=++modelCalls===1
     if(first)providerStarted=performance.now()
     const frame=(delta:unknown,finish:string|null)=>`data: ${JSON.stringify({choices:[{delta,finish_reason:finish}],usage:{prompt_tokens:10,completion_tokens:5}})}\n\n`
@@ -44,10 +46,10 @@ it('purpose-aware public worker streams a substantive answer before EOF, execute
     },async pull(controller){
       await firstPublished
       firstEof=true
-      controller.enqueue(new TextEncoder().encode(frame({content:'"}',tool_calls:[{index:0,id:'probe',function:{name:'probe__read',arguments:'{}'}}]},'tool_calls')+'data: [DONE]\n\n'))
+      controller.enqueue(new TextEncoder().encode(frame({content:protocol==='purpose-json-v2'?'","outcome":null}':'"}',tool_calls:[{index:0,id:'probe',function:{name:'probe__read',arguments:'{}'}}]},'tool_calls')+'data: [DONE]\n\n'))
       controller.close()
     }}))
-    return new Response(frame({content:JSON.stringify({commentary:'记录已读取',answer:'检查结果是42。'})},'stop')+'data: [DONE]\n\n')
+    return new Response(frame({content:JSON.stringify({commentary:'记录已读取',answer:finalAnswer,...(protocol==='purpose-json-v2'?{outcome:{status:'partial',gaps:['The requested notification cannot be sent with the available tools.']}}:{})})},'stop')+'data: [DONE]\n\n')
   }} as OpenAIDriverOptions)
   // Keep this maxAttempts:1 fixture instance so the callback observes the real durable append.
   driver.singleAttempt=()=>driver
@@ -62,7 +64,7 @@ it('purpose-aware public worker streams a substantive answer before EOF, execute
   }})
   const worker=createWorker({controlPlane:app,model:driver,logger:nullLogger,kernel:{homesRoot:directory},worker:{id:'public-fixture',healthPort:0}})
   try{
-    await app.enqueue({id:identity.runId,...identity,text:'读取记录并告诉我结果',mode:'execute',codeExecution:'disabled'})
+    await app.enqueue({id:identity.runId,...identity,text:protocol==='purpose-json-v2'?'读取记录并发送通知':'读取记录并告诉我结果',mode:'execute',codeExecution:'disabled',...(protocol==='purpose-json-v2'?{deliveryMode:'auto' as const}:{})})
     await worker.runNext()
     const state=await app.readRunState(identity)
     assert.ok(state)
@@ -70,13 +72,20 @@ it('purpose-aware public worker streams a substantive answer before EOF, execute
     assert.equal(beforeTool,true,'substantive answer must already be durable before native tool execution')
     assert.equal(answerBeforeEof,true,'answer must be durable before provider EOF, not buffered until the tool or final turn')
     assert.equal(modelCalls,2)
+    assert.equal(auxiliaryCalls,0)
+    if(protocol==='purpose-json-v2'){
+      assert.equal(state.run.status,'partial')
+      const message=state.message!.envelope
+      assert.equal(message.goalOutcome.status,'partial');assert.equal(message.goalOutcome.verification,'not_run')
+      assert.deepEqual(message.goalOutcome.gaps,['The requested notification cannot be sent with the available tools.'])
+    }
     assert.ok(authorizations>0)
     const events=await app.readEvents(identity)
     let replay=consumeRunState(createRunView(identity.runId),state)
     for(const event of events.events)replay=consumeRunEvent(replay,event)
     const parts=(Reflect.get(replay,'publicTextParts')??[]) as unknown as Array<{text:string;reason:string}>
     assert.ok(parts.some(part=>part.text==='已知基础值是40。'&&part.reason==='tool'))
-    assert.equal(state.message?.body,'检查结果是42。')
+    assert.equal(state.message?.body,finalAnswer)
     assert.equal(replay.publicTextParts?.length,4)
     assert.deepEqual(replay.publicTextParts?.map(part=>Reflect.get(part,'purpose')),['commentary','answer','commentary','answer'])
     assert.deepEqual(replay.publicTextParts?.map(part=>Reflect.get(part,'acceptedResultId')),[null,null,null,state.run.resultId])

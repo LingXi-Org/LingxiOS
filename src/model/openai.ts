@@ -1,4 +1,5 @@
-import { PUBLIC_PURPOSE_INSTRUCTIONS, PublicPurposeParser, publicPurposeError } from './public-purpose.js'
+import type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
+import { publicPurposeInstructions, PublicPurposeParser, publicPurposeError } from './public-purpose.js'
 /**
  * OpenAI-compatible chat-completions driver.
  *
@@ -31,7 +32,7 @@ export const DEFAULT_MODEL = { id: 'deepseek-ai/DeepSeek-V4-Flash', baseUrl: 'ht
 export type ReasoningEffort = 'low' | 'high' | 'max'
 
 export interface OpenAIDriverOptions {
-  publicTextProtocol?: 'purpose-json-v1'
+  publicTextProtocol?: PublicTextProtocol
   recovery?: Partial<ModelRecoveryPolicy>
   capabilities?: Partial<Pick<ModelProfile, 'toolCalls' | 'jsonObject' | 'jsonObjectWithTools' | 'parallelTools'>>
   /** Calibrated tokenizer for this exact model configuration. */
@@ -184,7 +185,7 @@ export async function* sseDataEvents(body: ReadableStream<Uint8Array>): AsyncGen
 export class OpenAIChatDriver implements ModelDriver {
   readonly recovery: ModelRecoveryPolicy
   readonly previewFormat = 'user-text' as const
-  readonly publicTextProtocol: 'purpose-json-v1' | undefined
+  readonly publicTextProtocol: PublicTextProtocol | undefined
   readonly profile: ModelProfile
   countTokens(text: string): number { return this.options.countTokens?.(text) ?? Buffer.byteLength(text) }
   readonly maxThinkingTokens: number
@@ -204,9 +205,9 @@ export class OpenAIChatDriver implements ModelDriver {
 
   constructor(readonly modelId: string, private readonly options: OpenAIDriverOptions) {
     this.recovery = recoveryPolicy(options.recovery)
-    if(options.publicTextProtocol!==undefined&&options.publicTextProtocol!=='purpose-json-v1')throw new Error('invalid public text protocol')
+    if(options.publicTextProtocol!==undefined&&options.publicTextProtocol!=='purpose-json-v1'&&options.publicTextProtocol!=='purpose-json-v2')throw new Error('invalid public text protocol')
     this.publicTextProtocol=options.publicTextProtocol
-    this.protocolTokens=this.publicTextProtocol?this.countTokens(PUBLIC_PURPOSE_INSTRUCTIONS):0
+    this.protocolTokens=this.publicTextProtocol?this.countTokens(publicPurposeInstructions(this.publicTextProtocol)):0
     this.baseUrl = (options.baseUrl ?? DEFAULT_MODEL.baseUrl).replace(/\/+$/, '')
     this.circuitKey = createHash('sha256').update(JSON.stringify([this.baseUrl, modelId, options.apiKey])).digest('hex')
     for (const key of ['reasoningEffort', 'compactionReasoningEffort'] as const) {
@@ -440,10 +441,10 @@ export class OpenAIChatDriver implements ModelDriver {
     ]
     if (tools.length && !this.profile.toolCalls) throw new Error('selected model does not support tool calls')
     if(this.publicTextProtocol&&!this.profile.jsonObject)throw new Error('public text protocol requires JSON object support')
-    const purposeParser=this.publicTextProtocol?new PublicPurposeParser():undefined
+    const purposeParser=this.publicTextProtocol?new PublicPurposeParser(this.publicTextProtocol):undefined
     const response = await this.request({
       model: this.modelId,
-      messages: toWireMessages(request.instructions+(purposeParser?'\n\n'+PUBLIC_PURPOSE_INSTRUCTIONS:''), request.items),
+      messages: toWireMessages(request.instructions+(purposeParser?'\n\n'+publicPurposeInstructions(this.publicTextProtocol):''), request.items),
       ...(purposeParser && (!tools.length || this.profile.jsonObjectWithTools !== false) ? { response_format: { type: 'json_object' } } : {}),
       ...(tools.length ? { tools, tool_choice: 'auto', parallel_tool_calls: this.profile.parallelTools } : {}),
       stream: true,
@@ -463,11 +464,16 @@ export class OpenAIChatDriver implements ModelDriver {
     }
     const output: ModelItem[] = []
     let text = accumulator.text
+    let outcomeDeclaration:OutcomeDeclaration|undefined
     if(purposeParser){
       try {
         if(text.length){
           purposeParser.finish()
           text=(JSON.parse(text) as {answer:string}).answer
+        }
+        if(this.publicTextProtocol==='purpose-json-v2'){
+          if(accumulator.toolCalls.size){if(accumulator.text.length&&purposeParser.outcome!==null)throw publicPurposeError()}
+          else {if(!purposeParser.outcome)throw publicPurposeError();outcomeDeclaration=purposeParser.outcome}
         }
         if(!accumulator.toolCalls.size&&!text.trim())throw publicPurposeError('public_text_answer_required')
       }catch(error){throw new ModelDriverError('invalid public text protocol',{
@@ -495,7 +501,7 @@ export class OpenAIChatDriver implements ModelDriver {
         ...diagnostics, kind: 'protocol', protocolCode: 'response_empty',
       })
     }
-    const result: ModelTurnResult = { output, text, usage: diagnostics.usage }
+    const result: ModelTurnResult = { output, text, usage: diagnostics.usage, ...(outcomeDeclaration ? { outcomeDeclaration } : {}) }
     if (accumulator.model !== undefined) result.model = accumulator.model
     if (accumulator.finishReasons.length > 0) result.diagnostics = { finishReasons: accumulator.finishReasons }
     return result

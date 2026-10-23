@@ -60,3 +60,29 @@ New native `tool.started` / `tool.completed` events record the triggering `reque
 The upstream tests use synthetic providers and isolated PGlite databases. The process-recovery test runs real HTTP workers in separate Node processes, kills only its own test worker after a persisted prefix, then starts a fresh worker against the same isolated database. It is a real process/HTTP recovery test, **not** a network PostgreSQL crash or production test.
 
 The [evidence manifest](evidence/public-text/manifest.json) records the exact tested source commits, Node version, commands, log hashes, the baseline failures, and later fixes. Product-side network PostgreSQL, authorization, IM discovery, and rendering acceptance belong to the consumer integration. No real provider or production result is claimed here. The initial implementation evidence refers to a local candidate with 3.5.6 metadata. The subsequent compatibility release is allocated version 3.5.7, retaining native schema 12; formal publication and product integration are separate gates.
+
+### Same-generation outcome declarations (explicit v2 producer)
+
+`publicTextProtocol: 'purpose-json-v2'` is an explicit producer opt-in. It keeps the
+existing public-text reader schema and streams `commentary` and `answer` in that
+order, then consumes a bounded declaration without publishing metadata as text:
+
+```json
+{"commentary":"","answer":"The source was read; sending is unavailable.","outcome":{"status":"partial","gaps":["The requested notification was not sent."]}}
+```
+
+A terminal response requires exactly `status` then `gaps`: `satisfied` with `[]`,
+or `partial` / `blocked` with at least one nonempty gap. Limits are 16 gaps,
+1000 UTF-16 code units per gap, 8192 in total, and 32768 for the serialized tail.
+With native tool calls, text-bearing messages instead use `outcome:null`; native
+tool-only messages may omit content. The typed driver result exposes only final
+`outcomeDeclaration`. It is a model-authored declaration, not semantic proof or
+verification. Native authorization, action reconciliation, resources and commit
+checks still apply and may downgrade a declared satisfied result.
+
+No separate model review is needed for this field. An honest partial/blocked
+result without an actual repair finding ends in the same generation. No wording
+classifier or substring matching decides completion. Invalid or missing terminal
+metadata uses the existing bounded protocol-failure path. Explicit v2 participates
+in provider identity and run behavior binding; old bindings are not reinterpreted.
+The default and exact v1 wire remain unchanged, including rejection of extra keys.
