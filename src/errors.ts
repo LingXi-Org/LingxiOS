@@ -93,6 +93,8 @@ export interface ModelDiagnostics {
   /** Provider usage remains billable when its completed response violates the protocol. */
   usage?: import('./model/driver.js').ModelUsage
   kind?: 'provider' | 'protocol'
+  /** Fixed contract failures only; never provider response text. */
+  protocolCode?: 'public_text_invalid' | 'public_text_incomplete' | 'public_text_answer_required' | 'tool_identity_invalid' | 'response_empty'
   status?: number
   finishReasons: string[]
   requestId?: string
