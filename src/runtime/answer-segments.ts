@@ -8,6 +8,7 @@ import { messagesStateReducer } from '@langchain/langgraph/web'
 import { answerMessageId, assemblePublicTextSources, snapshotPublicTextOperation, type PublicTextOperation } from '../protocol/answer-segments.js'
 import type { PublicTextIdentity } from '../protocol/public-text.js'
 import type { ExecutionStep } from '../control-plane/steps.js'
+import { decodePublicAnswerCall, publicAnswerHistory } from '../protocol/public-answer-call.js'
 
 export interface SealedAnswerSegment { identity:PublicTextIdentity; text:string; bodyHash:string; recovery?:PublicTextRecovery }
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex')
@@ -37,8 +38,10 @@ export class AnswerSegmentSet {
     let changed=false
     for(const record of this.revisions.values()){
       if(!record.recovery||partIds.includes(record.identity.partId))continue
-      const item:ModelItem={role:'assistant',content:record.text,memorySources:record.recovery.memorySources}
-      appendRequestHistory(session,workId,item)
+      const items:ModelItem[]=record.recovery.version===2
+        ? publicAnswerHistory(record.recovery.publicAnswerCall,record.recovery.memorySources)
+        : [{role:'assistant',content:record.text,memorySources:record.recovery.memorySources}]
+      appendRequestHistory(session,workId,...items)
       partIds.push(record.identity.partId);changed=true
     }
     if(changed)session.request.publicTextHistory={requestVersion:this.requestVersion,partIds}
@@ -48,6 +51,10 @@ export class AnswerSegmentSet {
     return this.active.map(item=>this.revisions.get(String(item.additional_kwargs['partId']))!)
   }
   get hasBody(){return this.records.some(item=>item.text.trim().length>0)}
+  /** Sealed revisions outlive compaction of their model-history representation. */
+  hasPublicAnswerCall(callId:string):boolean {
+    return [...this.revisions.values()].some(record=>record.recovery?.version===2&&record.recovery.publicAnswerCall.callId===callId)
+  }
   get context(){return {messageId:this.messageId,segmentIds:this.records.map(item=>item.identity.partId)}}
   prepare(value:PublicTextOperation,partId:string):string {
     const operation=snapshotPublicTextOperation(value), current=this.records
@@ -71,6 +78,11 @@ export class AnswerSegmentSet {
       return
     }
     const operation=snapshotPublicTextOperation({kind:identity.operation,supersedes:identity.supersedes})
+    if(record.recovery?.version===2){
+      const call=record.recovery.publicAnswerCall,decoded=decodePublicAnswerCall(call)
+      if(decoded.text!==text||!isDeepStrictEqual(decoded.operation,operation))throw new Error('sealed output call does not match source')
+      if(this.hasPublicAnswerCall(call.callId))throw new Error('sealed output call identity reused')
+    }
     const segmentId=this.prepare(operation,identity.partId)
     if(identity.segmentId!==segmentId)throw new Error('answer logical identity changed')
     const update=new AIMessage({id:segmentId,content:text,additional_kwargs:{partId:identity.partId}})

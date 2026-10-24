@@ -1,3 +1,4 @@
+import { decodePublicAnswerCall, publicAnswerHistory } from '../protocol/public-answer-call.js'
 import { AnswerSegmentSet } from './answer-segments.js'
 import { snapshotPublicTextSources, type PublicTextSources } from '../protocol/answer-segments.js'
 import { validateToolBatch, compileToolSchemas } from './tool-batch.js'
@@ -424,7 +425,7 @@ export class AgentRuntime {
       if(source.publicTextProtocol!=='purpose-json-v3'||work.conversation?.internal!==true)return source
       if(!source.withPublicTextProtocol)throw new Error('v3 driver must support explicit private-work protocol selection')
       const selected=source.withPublicTextProtocol('purpose-json-v2')
-      if(selected.publicTextProtocol!=='purpose-json-v2'||selected.publicTextContinuation!==undefined)throw new Error('invalid private-work protocol selection')
+      if(selected.publicTextProtocol!=='purpose-json-v2'||selected.publicTextContinuation!==undefined||selected.publicAnswerTool!==undefined)throw new Error('invalid private-work protocol selection')
       return selected
     }
     if(this.model.publicTextProtocol==='purpose-json-v3'&&work.conversation?.internal===true){
@@ -467,6 +468,8 @@ export class AgentRuntime {
       const binding = { runtime: releaseVersions.runtime, ...(this.model.publicTextProtocol==='purpose-json-v3'?{publicTextSelection:'public-v3-internal-v2-v1'}:{}), semanticReview: this.semanticReview,
         ...(semanticReviewPolicy ? { semanticReviewPolicy } : {}), harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
+        ...(deepModel.publicAnswerTool?{publicAnswerTool:deepModel.publicAnswerTool}:{}),
+        ...(fastModel?.publicAnswerTool?{fastPublicAnswerTool:fastModel.publicAnswerTool}:{}),
         ...(deepModel.publicTextContinuation?{publicTextContinuation:deepModel.publicTextContinuation}:{}),
         ...(fastModel?.publicTextContinuation?{fastPublicTextContinuation:fastModel.publicTextContinuation}:{}),
         ...(deepModel.publicTextProtocol==='purpose-json-v2'||deepModel.publicTextProtocol==='purpose-json-v3'?{publicTextProtocol:deepModel.publicTextProtocol}:{}),
@@ -910,13 +913,28 @@ export class AgentRuntime {
         try {
           // Validate the entire batch before sealing any candidate or dispatching any effect.
           validateToolBatch(calls,modelTools,codeExecution,model.profile?.parallelTools)
+          if(model.publicAnswerTool==='native-v1'&&!turn.publicAnswerCall
+            &&(!calls.length||turn.text!==''||turn.answerOperation!==undefined||turn.answerIsNull!==undefined
+              ||turn.publicTextPhase!==undefined||turn.outcomeDeclaration!==undefined
+              ||turn.output.some(item=>'role' in item||item.type!=='function_call')))throw new Error('public output requires its native call binding')
+          if(turn.publicAnswerCall){
+            const decoded=decodePublicAnswerCall(turn.publicAnswerCall)
+            if(model.publicAnswerTool!=='native-v1'||calls.length||turn.output.length
+              || decoded.text!==(turn.answerIsNull?null:turn.text)
+              || canonicalJson(decoded.operation)!==canonicalJson(turn.answerOperation)
+              || canonicalJson(decoded.outcome)!==canonicalJson(intermediate?null:turn.outcomeDeclaration))throw new Error('invalid public output binding')
+            if(answerSegments.hasPublicAnswerCall(turn.publicAnswerCall.callId)||session.history.some(item=>'type' in item && item.callId===turn.publicAnswerCall!.callId
+              && isCurrentHistory(item,work.id) && item.historySource?.requestVersion===(session.request?.revisions.length??0)+1))throw new Error('public output call identity reused')
+          }
           const publication=this.publications.get(runId)
           if (turn.text) {
             if (!turn.answerOperation || !publication?.segmentIdentity
               || canonicalJson(turn.answerOperation)!==canonicalJson({kind:publication.segmentIdentity.operation,supersedes:publication.segmentIdentity.supersedes})) throw new Error('answer operation changed after publication')
             await publication.finish(turn.text)
             await publication.end(calls.length ? 'tool' : 'completed')
-            const record=await publication.seal(turn.text,intermediate?{version:1,phase:'intermediate',memorySources:derivedSources}:undefined)
+            const record=await publication.seal(turn.text,turn.publicAnswerCall
+              ?{version:2,phase:intermediate?'intermediate':'terminal',memorySources:derivedSources,publicAnswerCall:turn.publicAnswerCall}
+              :intermediate?{version:1,phase:'intermediate',memorySources:derivedSources}:undefined)
             answerSegments.seal(record)
             pendingReplacement ||= record.identity.operation==='replace'
           } else {
@@ -941,11 +959,22 @@ export class AgentRuntime {
         }
       }
 
+      // Protocol history has the same memory dependencies as the sealed text.
+      // Persistence failures are not model protocol failures. Recovery uses the
+      // authoritative seal when an acknowledgement is lost before session save.
+      if(turn.publicAnswerCall){
+        if(turn.answerIsNull)appendRequestHistory(session,work.id,...publicAnswerHistory(turn.publicAnswerCall,derivedSources))
+        else if(!answerSegments.restoreMessageHistory(session,work.id))throw new Error('public output call has no new sealed source')
+        await host.saveSession(work,session)
+      }
+
       if(intermediate){
         // The existing seal transaction is the recovery authority. A lost ACK
         // before session save is reconciled from that exact record on restart.
-        if(!answerSegments.restoreMessageHistory(session,work.id))throw new Error('intermediate message has no new sealed source')
-        await host.saveSession(work,session)
+        if(!turn.publicAnswerCall){
+          if(!answerSegments.restoreMessageHistory(session,work.id))throw new Error('intermediate message has no new sealed source')
+          await host.saveSession(work,session)
+        }
         protocolCorrection=null
         continue // next loop refreshes cancellation, permissions and global budget
       }

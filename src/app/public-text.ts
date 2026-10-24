@@ -1,4 +1,5 @@
 import {snapshotPublicTextRecovery} from '../protocol/public-text-recovery.js'
+import { decodePublicAnswerCall } from '../protocol/public-answer-call.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
 import { abortable } from '../deadline.js'
@@ -71,6 +72,10 @@ export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undef
             AND kind='public.text.delta' AND data->>'partId'=$2 ORDER BY seq`,[event.runId,data.partId])).rows
           const text=chunks.map(row=>String(row['text'])).join('')
           if(!text||chunks.length!==data.chunkCount||createHash('sha256').update(text).digest('hex')!==data.bodyHash)throw new Error('answer seal does not match durable text')
+          if(recovery?.version===2){
+            const decoded=decodePublicAnswerCall(recovery.publicAnswerCall)
+            if(decoded.text!==text || !isDeepStrictEqual(decoded.operation,{kind:data.operation,supersedes:data.supersedes}))throw new Error('answer seal recovery does not match durable text')
+          }
           const inserted=await append(database)
           if(!inserted)throw new Error('answer seal sequence already exists')
           const input={...data,sealedSeq:event.seq}, stepId='sealed:'+createHash('sha256').update(data.partId).digest('hex')

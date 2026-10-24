@@ -68,3 +68,46 @@ our execution path. The browser projection has no LangChain imports. Native
 fencing, sealed storage, outcome validation and outbox transactions remain the
 only source of authority. Database schema stays 14; the readable public text
 contract advances to 3.
+
+## Optional native public answer binding
+
+`publicAnswerTool: 'native-v1'` is an explicit v3/typed-message option for a
+single-call native profile. `src/model/public-answer-tool.ts` constructs an
+actual `tool(...)` from the already locked `@langchain/core@1.3.0`, then invokes
+its public `convertToOpenAITool` adapter. The reused source is
+`libs/langchain-core/src/tools/index.ts` (`tool`, JSON-schema structured-tool
+construction) and `libs/langchain-core/src/utils/function_calling.ts`
+(`convertToOpenAITool` → `convertToOpenAIFunction` → `toJsonSchema`) at the pinned
+LangChain revision above. This adds no dependency and retains the upstream MIT
+license in the distributed package. No upstream source was copied.
+
+This is an output binding, not a second executor. Its upstream callable throws
+if invoked; only the existing incremental `PublicPurposeParser`, authorized
+seal transaction, `AnswerSegmentSet`, and outcome/delivery gates implement it.
+The business catalog's schemas remain unchanged. The complete original native
+batch must contain at most one call, including `public_answer`; a mixed public
+and business batch is rejected before any seal or dispatch. Provider
+`tool_choice` stays `auto`. No provider support for `required` is assumed.
+
+The public tool carries the existing ordered v3 object (optional commentary).
+Raw assistant content and reasoning never become public text or history. A
+nonempty intermediate answer uses `outcome:null`; an ordinary completed answer
+uses one output-tool generation with a terminal outcome. There is no obligatory
+preface, router, evaluator, or lower task budget.
+
+The host-only seal recovery record stores the exact native call and the same
+memory dependencies as the text. Recovery appends that call and a fixed
+`public_message_recorded` protocol acknowledgement once via the existing
+request-scoped cursor. It does not append a duplicate assistant body, fabricate
+a business receipt, or count the output binding as a business tool invocation.
+The transaction checks recovery text/operation against the durable chunks.
+For an allowed null terminal answer, no empty seal is created: the call/ack pair
+is persisted in the current session before ordinary final validation. Losing
+that session write cannot expose a half pair to the next request.
+
+The option and history policy alter the provider fingerprint and frozen
+runtime binding. Switching an explicitly internal conversation to v2 clears
+this option; older v2/private behavior and v1 recovery records remain readable.
+New tests live in `test/public-answer-tool-driver.test.ts` and
+`test/public-answer-tool-worker.test.ts`. They qualify local synthetic behavior,
+not provider support or production performance.

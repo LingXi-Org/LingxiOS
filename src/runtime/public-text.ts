@@ -1,7 +1,7 @@
 import type { PublicTextProtocol } from '../model/outcome-declaration.js'
 import type { PublicTextEndReason, PublicTextIdentity, PublicTextSafetyInput, PublicTextSafetyDecision } from '../protocol/public-text.js'
 import type { RunEvent } from '../protocol/types.js'
-import { ModelDriverError } from '../errors.js'
+import { LeaseLostError, ModelDriverError, RunCancelledError } from '../errors.js'
 import { createHash } from 'node:crypto'
 import { snapshotPublicTextOperation, type PublicTextOperation } from '../protocol/answer-segments.js'
 import { AIMessageChunk } from '@langchain/core/messages'
@@ -247,7 +247,14 @@ export class PublicTextAttemptWriter {
     if(!identity||!writer?.partId||this.sealed)throw new PublicTextPublicationError()
     this.signal.throwIfAborted()
     const bodyHash=createHash('sha256').update(text).digest('hex')
-    await this.emit({kind:'public.text.sealed',stage:'completed',visibility:'user',data:{...identity,chunkCount:writer.chunkCount,bodyHash},...(publicTextRecovery?{publicTextRecovery}:{})})
+    try {
+      await this.emit({kind:'public.text.sealed',stage:'completed',visibility:'user',data:{...identity,chunkCount:writer.chunkCount,bodyHash},...(publicTextRecovery?{publicTextRecovery}:{})})
+    } catch(error) {
+      if(error instanceof LeaseLostError||error instanceof RunCancelledError||this.signal.aborted)throw error
+      // A storage/authorization rejection is not a model-format correction.
+      // Never continue into a business tool after failing to persist its output.
+      throw new PublicTextPublicationError()
+    }
     this.sealed=true
     return {identity,text,bodyHash,...(publicTextRecovery?{recovery:publicTextRecovery}:{})}
   }
