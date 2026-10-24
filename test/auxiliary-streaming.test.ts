@@ -11,7 +11,7 @@ type Failure = 'idle' | 'total' | 'request' | 'cancel' | 'length' | 'invalid-jso
 const usage = { prompt_tokens: 11, completion_tokens: 7, completion_tokens_details: { reasoning_tokens: 4 } }
 const measuredUsage = { available: true, inputTokens: 11, outputTokens: 7, reasoningTokens: 4 }
 
-async function streamingFixture(failure?: Failure) {
+async function streamingFixture(failure?: Failure, contentDelayMs = 120) {
   const requests: Record<string, unknown>[] = []
   let firstByte!: () => void, disconnected!: () => void
   const started = new Promise<void>(resolve => { firstByte = resolve })
@@ -61,7 +61,7 @@ async function streamingFixture(failure?: Failure) {
       else if (mode === 'comment-tail') response.write(': synthetic heartbeat\n')
       else if (mode !== 'missing-done') response.write('data: [DONE]\n\n')
       response.end()
-    }, 120))
+    }, requests.length === 1 ? contentDelayMs : 0))
   })
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
@@ -80,11 +80,12 @@ function invoke(driver: ModelDriver, purpose: 'structured' | 'compaction', signa
 
 for (const purpose of ['structured', 'compaction'] as const) {
   for (const ending of [undefined, 'missing-done', 'comment-tail'] as const) it(`opts ${purpose} into bounded SSE with ${ending ?? 'DONE'} and retains final content, usage and clone configuration`, async t => {
-    const fixture = await streamingFixture(ending)
+    const responseReadyMs = 600, firstByteTimeoutMs = 500
+    const fixture = await streamingFixture(ending, responseReadyMs)
     try {
       const driver = new OpenAIChatDriver('auxiliary-fixture', { apiKey: 'synthetic-only', baseUrl: fixture.baseUrl,
-        auxiliaryStreaming: true, maxAttempts: 1, firstByteTimeoutMs: 60, streamIdleTimeoutMs: 60,
-        requestTimeoutMs: 500, recovery: { maxAttempts: 1, totalTimeoutMs: 500 } })
+        auxiliaryStreaming: true, maxAttempts: 1, firstByteTimeoutMs, streamIdleTimeoutMs: 500,
+        requestTimeoutMs: 3000, recovery: { maxAttempts: 1, totalTimeoutMs: 3000 } })
       const start = performance.now()
       const result = await invoke(driver.singleAttempt(), purpose)
       assert.deepEqual(result.value, purpose === 'structured' ? { ok: true } : '{"ok":true}')
@@ -94,7 +95,8 @@ for (const purpose of ['structured', 'compaction'] as const) {
       assert.deepEqual(fixture.requests[0]?.['stream_options'], { include_usage: true })
       assert.deepEqual(fixture.requests[0]?.['response_format'], { type: 'json_object' })
       assert.doesNotMatch(JSON.stringify(result), /SYNTHETIC_REASONING_ONLY/)
-      t.diagnostic(JSON.stringify({ purpose, firstByteTimeoutMs: 60, totalTimeoutMs: 500, responseReadyMs: 120,
+      assert.ok(performance.now() - start >= responseReadyMs, 'reasoning keeps a response alive beyond its first-byte deadline')
+      t.diagnostic(JSON.stringify({ purpose, firstByteTimeoutMs, totalTimeoutMs: 3000, responseReadyMs,
         elapsedMs: Math.round((performance.now() - start) * 100) / 100, outcome: 'succeeded' }))
     } finally { await fixture.close() }
   })
@@ -106,9 +108,12 @@ for (const purpose of ['structured', 'compaction'] as const) {
       const fixture = await streamingFixture(failure)
       try {
         const driver = new OpenAIChatDriver('auxiliary-fixture', { apiKey: 'synthetic-only', baseUrl: fixture.baseUrl,
-          auxiliaryStreaming: true, maxAttempts: 1, firstByteTimeoutMs: 60, streamIdleTimeoutMs: 60,
-          requestTimeoutMs: failure === 'request' ? 180 : 500,
-          recovery: { maxAttempts: 1, totalTimeoutMs: failure === 'total' ? 180 : 500 } })
+          // Protocol/usage assertions need a scheduling margin; only the
+          // dedicated timeout cases impose their deliberately short deadline.
+          auxiliaryStreaming: true, maxAttempts: 1, firstByteTimeoutMs: 1000,
+          streamIdleTimeoutMs: failure === 'idle' ? 60 : 1000,
+          requestTimeoutMs: failure === 'request' ? 180 : 3000,
+          recovery: { maxAttempts: 1, totalTimeoutMs: failure === 'total' ? 180 : 3000 } })
         const controller = new AbortController()
         const pending = invoke(driver, purpose, controller.signal)
         const rejected = assert.rejects(pending, error => {
@@ -116,6 +121,8 @@ for (const purpose of ['structured', 'compaction'] as const) {
           assert.ok(error instanceof ModelDriverError)
           if (['idle', 'total', 'request', 'usage-idle'].includes(failure)) assert.equal(modelFailure(error).category, 'timeout')
           if (['invalid-event', 'truncated-tail'].includes(failure)) assert.equal(modelFailure(error).category, 'protocol')
+          if (failure === 'empty') assert.equal(error.message, purpose === 'structured'
+            ? 'structured call returned no content' : 'compaction returned no summary')
           if (!['idle', 'total', 'request'].includes(failure)) {
             assert.deepEqual(error.diagnostics.usage, measuredUsage)
             assert.doesNotMatch(JSON.stringify(error), /SYNTHETIC_|unexpected/)
