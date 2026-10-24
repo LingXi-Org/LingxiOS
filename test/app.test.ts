@@ -215,7 +215,8 @@ it('assembles the public app through HTTP model and Python, persisting results a
     assert.equal(await readFile(snapshotPath, 'utf8'), '5')
     await writeFile(snapshotPath, '4')
     const recoveredHistory = (await db.query<{ history: unknown[] }>('SELECT history FROM lingxios.agent_os_sessions WHERE session_id=$1', [identity.sessionId])).rows[0]!.history
-    assert.deepEqual(recoveredHistory.at(-1), { role: 'assistant', content: '4' })
+    assert.deepEqual(recoveredHistory.at(-1), { role: 'assistant', content: '4',
+      historySource: { workId: 'request', requestVersion: 1 } })
     const recoveryEvents = (await db.query('SELECT seq,kind,visibility,data FROM lingxios.agent_run_events WHERE run_id=$1 AND seq>100000 ORDER BY seq', [identity.runId])).rows
     assert.deepEqual(recoveryEvents, [])
     assert.equal(await worker.runNext(), false)

@@ -57,7 +57,8 @@ it('runs namespaced stores on PostgreSQL without touching product tables', async
     session.revision = 1
     session.history = [{ role: 'user', content: 'preserved' }]
     assert.deepEqual(await sessions.save(session), { ok: true, revision: 2 })
-    assert.deepEqual(await sessions.get(session.key), { ...session, revision: 2 })
+    assert.deepEqual(await sessions.get(session.key), { ...session, revision: 2,
+      historyBoundary: { workId: 'w', requestVersion: 1 } })
     assert.deepEqual(await sessions.save({ ...session, key: 'missing' }), { ok: false, conflict: true })
 
     const ledger = new PgActionLedger(pool)

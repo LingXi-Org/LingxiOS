@@ -1,3 +1,6 @@
+import { PublicAnswerParser } from './public-answer-parser.js'
+import { PUBLIC_ANSWER_TOOL, PUBLIC_ANSWER_TOOL_INSTRUCTIONS } from './public-answer-tool.js'
+import { PUBLIC_ANSWER_TOOL_NAME, decodePublicAnswerCall, type PublicAnswerCall } from '../protocol/public-answer-call.js'
 import type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
 import { publicPurposeInstructions, PublicPurposeParser, publicPurposeError } from './public-purpose.js'
 import { ToolCompanionBoundary, completeCompanionTurn, companionHasJsonFraming } from './tool-companion.js'
@@ -36,8 +39,12 @@ export type ReasoningEffort = 'low' | 'high' | 'max'
 
 export interface OpenAIDriverOptions {
   publicTextProtocol?: PublicTextProtocol
+  /** Opt-in v3 message completion distinct from terminal execution completion. */
+  publicTextContinuation?: 'typed-message-v1' | undefined
   /** Explicit single-call v3 wire binding; never inferred from provider prose. */
   nativeToolPublicOutput?: 'envelope-v1' | undefined
+  /** Explicit native output binding; business schemas remain unchanged. */
+  publicAnswerTool?: 'native-v1' | undefined
   recovery?: Partial<ModelRecoveryPolicy>
   capabilities?: Partial<Pick<ModelProfile, 'toolCalls' | 'jsonObject' | 'jsonObjectWithTools' | 'parallelTools'>>
   /** Calibrated tokenizer for this exact model configuration. */
@@ -193,12 +200,14 @@ export class OpenAIChatDriver implements ModelDriver {
   readonly recovery: ModelRecoveryPolicy
   readonly previewFormat = 'user-text' as const
   readonly publicTextProtocol: PublicTextProtocol | undefined
+  readonly publicTextContinuation: 'typed-message-v1' | undefined
+  readonly publicAnswerTool: 'native-v1' | undefined
   readonly profile: ModelProfile
   countTokens(text: string): number { return this.options.countTokens?.(text) ?? Buffer.byteLength(text) }
   readonly maxThinkingTokens: number
   readonly protocolTokens: number
   withPublicTextProtocol(publicTextProtocol:PublicTextProtocol):ModelDriver { return new OpenAIChatDriver(this.modelId,{...this.options,publicTextProtocol,
-    ...(publicTextProtocol === 'purpose-json-v3' ? {} : { nativeToolPublicOutput: undefined })}) }
+    ...(publicTextProtocol === 'purpose-json-v3' ? {} : { nativeToolPublicOutput: undefined, publicTextContinuation: undefined, publicAnswerTool: undefined })}) }
   singleAttempt(): ModelDriver { return new OpenAIChatDriver(this.modelId, { ...this.options, maxAttempts: 1 }) }
   readonly configurationFingerprint: string
   readonly contextWindowTokens: number
@@ -216,6 +225,10 @@ export class OpenAIChatDriver implements ModelDriver {
     this.recovery = recoveryPolicy(options.recovery)
     if(options.publicTextProtocol!==undefined&&!['purpose-json-v1','purpose-json-v2','purpose-json-v3'].includes(options.publicTextProtocol))throw new Error('invalid public text protocol')
     this.publicTextProtocol=options.publicTextProtocol
+    if(options.publicTextContinuation!==undefined && (options.publicTextContinuation!=='typed-message-v1'
+      || this.publicTextProtocol!=='purpose-json-v3' || options.nativeToolPublicOutput!==undefined))throw new Error('public text continuation requires v3 and original native tool schemas')
+    this.publicTextContinuation=options.publicTextContinuation
+    this.publicAnswerTool=options.publicAnswerTool
     this.baseUrl = (options.baseUrl ?? DEFAULT_MODEL.baseUrl).replace(/\/+$/, '')
     this.circuitKey = createHash('sha256').update(JSON.stringify([this.baseUrl, modelId, options.apiKey])).digest('hex')
     for (const key of ['reasoningEffort', 'compactionReasoningEffort'] as const) {
@@ -245,7 +258,11 @@ export class OpenAIChatDriver implements ModelDriver {
       || this.publicTextProtocol !== 'purpose-json-v3' || this.profile.jsonObjectWithTools !== false || this.profile.parallelTools !== false)) {
       throw new Error('native tool public output requires explicit v3, no combined JSON mode, and single native calls')
     }
-    this.protocolTokens=this.publicTextProtocol?this.countTokens(publicPurposeInstructions(this.publicTextProtocol,this.profile)):0
+    if (this.publicAnswerTool !== undefined && (this.publicAnswerTool !== 'native-v1'
+      || this.publicTextProtocol !== 'purpose-json-v3' || this.publicTextContinuation !== 'typed-message-v1'
+      || options.nativeToolPublicOutput !== undefined || !this.profile.toolCalls || !this.profile.jsonObject
+      || this.profile.jsonObjectWithTools !== false || this.profile.parallelTools !== false)) throw new Error('public answer tool requires v3 typed messages, original business schemas, and single native calls')
+    this.protocolTokens=this.publicAnswerTool ? this.countTokens(PUBLIC_ANSWER_TOOL_INSTRUCTIONS) : this.publicTextProtocol?this.countTokens(publicPurposeInstructions(this.publicTextProtocol,this.profile,this.publicTextContinuation)):0
     // Default and explicit support share the same capability representation;
     // only an opt-out adds that capability field. Parsing policy is separately
     // versioned below and intentionally changes replay identity when revised.
@@ -258,11 +275,14 @@ export class OpenAIChatDriver implements ModelDriver {
       capabilities: jsonObjectWithTools === false ? { ...legacyCapabilities, jsonObjectWithTools: false } : legacyCapabilities,
       previewFormat: this.previewFormat,
       ...(this.publicTextProtocol?{publicTextProtocol:this.publicTextProtocol}:{}),
-      ...(this.publicTextProtocol==='purpose-json-v3'?{publicPurposeInstructionsPolicy:'v3-native-tool-phases-v1'}:{}),
+      ...(this.publicTextProtocol==='purpose-json-v3'?{publicPurposeInstructionsPolicy:'v3-native-tool-phases-v1',publicPurposeParserPolicy:'optional-commentary-v1'}:{}),
       ...(this.publicTextProtocol && jsonObjectWithTools === false ? { toolCompanionPolicy: 'unpublished-native-prose-v1' } : {}),
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
-      ...(options.nativeToolPublicOutput ? { nativeToolPublicOutput: options.nativeToolPublicOutput } : {}),
+      ...(this.publicTextContinuation ? { publicTextContinuation: this.publicTextContinuation } : {}),
+      ...(this.publicAnswerTool ? { publicAnswerTool:this.publicAnswerTool, publicAnswerHistoryPolicy:'sealed-native-call-ack-v1', publicAnswerParserPolicy:'streamparser-field-order-v1', publicAnswerToolChoice:'auto-v1', publicAnswerInstructionsHash:createHash('sha256').update(PUBLIC_ANSWER_TOOL_INSTRUCTIONS).digest('hex') } : {}),
+      ...(options.nativeToolPublicOutput ? { nativeToolPublicOutput: options.nativeToolPublicOutput,
+        nativeToolIdentityPolicy: 'bounded-unambiguous-prefix-v1' } : {}),
     })).digest('hex')
   }
 
@@ -441,17 +461,19 @@ export class OpenAIChatDriver implements ModelDriver {
           if (onToolDelta) await onToolDelta(index, entry, typeof toolCall.function?.arguments === 'string' ? toolCall.function.arguments : '')
         }
       }
-    } catch (error) {
-      const usage = this.usageOf(accumulator)
-      if (!usage.available && !(error instanceof ModelDriverError)) throw error
-      const diagnostics = error instanceof ModelDriverError ? error.diagnostics
-        : { kind: 'provider' as const, category: modelFailure(error).category, finishReasons: accumulator.finishReasons }
-      throw new ModelDriverError(error instanceof ModelDriverError ? error.message : 'model stream failed',
-        { ...diagnostics, category: diagnostics.category ?? modelFailure(error).category,
-          finishReasons: diagnostics.finishReasons.length ? diagnostics.finishReasons : accumulator.finishReasons,
-          ...(diagnostics.usage?.available ? { usage: diagnostics.usage } : usage.available ? { usage } : {}) }, { cause: error })
-    }
+    } catch (error) { this.throwStreamFailure(error, accumulator) }
     return accumulator
+  }
+
+  private throwStreamFailure(error: unknown, accumulator: StreamAccumulator): never {
+    const usage = this.usageOf(accumulator)
+    if (!usage.available && !(error instanceof ModelDriverError)) throw error
+    const diagnostics = error instanceof ModelDriverError ? error.diagnostics
+      : { kind: 'provider' as const, category: modelFailure(error).category, finishReasons: accumulator.finishReasons }
+    throw new ModelDriverError(error instanceof ModelDriverError ? error.message : 'model stream failed',
+      { ...diagnostics, category: diagnostics.category ?? modelFailure(error).category,
+        finishReasons: diagnostics.finishReasons.length ? diagnostics.finishReasons : accumulator.finishReasons,
+        ...(diagnostics.usage?.available ? { usage: diagnostics.usage } : usage.available ? { usage } : {}) }, { cause: error })
   }
 
   private usageOf(accumulator: Pick<StreamAccumulator, 'usage'>): ModelUsage {
@@ -471,16 +493,21 @@ export class OpenAIChatDriver implements ModelDriver {
     return this.guarded(() => this.runOnce(request), request.signal)
   }
   private generationInstructions(instructions: string, nativeEnvelope: boolean): string {
-    return instructions + (nativeEnvelope ? '\n\n' + NATIVE_TOOL_PUBLIC_OUTPUT_INSTRUCTIONS
-      : this.publicTextProtocol ? '\n\n' + publicPurposeInstructions(this.publicTextProtocol, this.profile) : '')
+    return instructions + (this.publicAnswerTool ? '\n\n' + PUBLIC_ANSWER_TOOL_INSTRUCTIONS : nativeEnvelope ? '\n\n' + NATIVE_TOOL_PUBLIC_OUTPUT_INSTRUCTIONS
+      : this.publicTextProtocol ? '\n\n' + publicPurposeInstructions(this.publicTextProtocol, this.profile, this.publicTextContinuation) : '')
   }
   /** Actual provider wire estimate only for agent generation. Auxiliary methods
    * use their existing independent payloads and never enter this binding. */
   generationInputTokens(request: Pick<ModelTurnRequest, 'instructions' | 'items' | 'tools' | 'codeExecution'>): number | undefined {
-    if (!this.options.nativeToolPublicOutput) return undefined
+    if (!this.options.nativeToolPublicOutput && !this.publicAnswerTool) return undefined
     const allowPython = request.codeExecution === 'enabled' || request.codeExecution === undefined && request.tools === undefined
     const tools = [ ...(allowPython ? [IPYTHON_TOOL] : []), ...(request.tools ?? []).map(tool => ({ type: 'function' as const,
       function: { name: tool.name, description: describeTool(tool), parameters: tool.parameters } })) ]
+    if (this.publicAnswerTool) {
+      if (tools.some(tool => tool.function.name === PUBLIC_ANSWER_TOOL_NAME)) throw new Error('reserved public answer tool name')
+      return this.countTokens(JSON.stringify({ messages: toWireMessages(this.generationInstructions(request.instructions, false), request.items),
+        tools: [...tools, PUBLIC_ANSWER_TOOL], tool_choice:'auto', parallel_tool_calls:false }))
+    }
     const nativeEnvelope = tools.length > 0
     return this.countTokens(JSON.stringify({ messages: toWireMessages(this.generationInstructions(request.instructions, nativeEnvelope),
       request.items, nativeEnvelope), ...(tools.length ? { tools: tools.map(tool => ({ ...tool, function: { ...tool.function,
@@ -494,6 +521,10 @@ export class OpenAIChatDriver implements ModelDriver {
     ]
     if (tools.length && !this.profile.toolCalls) throw new Error('selected model does not support tool calls')
     const nativeEnvelope = !!this.options.nativeToolPublicOutput && tools.length > 0
+    if (this.publicAnswerTool) {
+      if (tools.some(tool => tool.function.name === PUBLIC_ANSWER_TOOL_NAME)) throw new Error('reserved public answer tool name')
+      tools.push(PUBLIC_ANSWER_TOOL as typeof tools[number])
+    }
     const wireTools = nativeEnvelope ? tools.map(tool => ({ ...tool, function: { ...tool.function,
       parameters: wrapNativeToolSchema(tool.function.parameters) } })) : tools
     if (nativeEnvelope) {
@@ -504,24 +535,84 @@ export class OpenAIChatDriver implements ModelDriver {
     }
     if(this.publicTextProtocol&&!this.profile.jsonObject)throw new Error('public text protocol requires JSON object support')
     const purposeParser=this.publicTextProtocol?new PublicPurposeParser(this.publicTextProtocol):undefined
+    const publicCallParser=this.publicAnswerTool ? new PublicAnswerParser() : undefined
+    let publicCallIdentity: {id:string;name:string} | undefined
+    let publicCallConsumed = 0
     let operationPublished=false
     let nativeOutput: NativeToolPublicOutput | undefined
     let nativeIdentity: { id: string; name: string } | undefined
+    let nativeCallId: string | undefined
+    let nativeCallObserved = false
     let contentObserved = false
-    const companion = purposeParser && tools.length && this.profile.jsonObjectWithTools === false ? new ToolCompanionBoundary() : undefined
+    const companion = !this.publicAnswerTool && purposeParser && tools.length && this.profile.jsonObjectWithTools === false ? new ToolCompanionBoundary() : undefined
+    const acceptNativeDelta = async (index: number, call: { id: string; name: string; arguments: string }, delta: string, finalIdentity = false) => {
+      request.signal?.throwIfAborted()
+      nativeCallObserved = true
+      if (index !== 0 || contentObserved || call.id.trim() !== call.id
+        || nativeCallId && nativeCallId !== call.id
+        || nativeIdentity && (nativeIdentity.id !== call.id || nativeIdentity.name !== call.name)) throw publicPurposeError()
+      if (call.id) nativeCallId ??= call.id
+      let publicDelta = delta
+      if (!nativeIdentity) {
+        // A catalog name may itself prefix another name. Keep original bytes
+        // private until the identity is unique, or a valid turn confirms it.
+        const candidates = tools.filter(tool => tool.function.name.startsWith(call.name))
+        if (Buffer.byteLength(call.arguments) > 16 * 1024 * 1024 || !candidates.length) throw publicPurposeError()
+        if (!call.id || !candidates.some(tool => tool.function.name === call.name) || !call.arguments
+          || !finalIdentity && candidates.length > 1) return
+        nativeIdentity = { id: call.id, name: call.name }
+        nativeOutput = new NativeToolPublicOutput()
+        publicDelta = call.arguments
+      }
+      if (!publicDelta) return
+      const outputParser = nativeOutput!
+      const parts = outputParser.push(publicDelta)
+      if (outputParser.operation && !operationPublished) {
+        await request.onTextOperation?.(outputParser.operation); operationPublished = true
+        request.signal?.throwIfAborted()
+      }
+      for (const part of parts) {
+        request.signal?.throwIfAborted()
+        await request.onTextDelta?.(part.text, { purpose: part.purpose })
+        request.signal?.throwIfAborted()
+      }
+    }
+    const acceptPublicDelta = async (index:number, call:{id:string;name:string;arguments:string}, _delta:string, finalIdentity=false) => {
+      request.signal?.throwIfAborted()
+      if(index !== 0)throw publicPurposeError()
+      if(publicCallIdentity && (call.id!==publicCallIdentity.id || call.name!==publicCallIdentity.name))throw publicPurposeError()
+      if(!publicCallIdentity) {
+        const candidates=tools.filter(tool=>tool.function.name.startsWith(call.name))
+        if(!candidates.length)throw publicPurposeError()
+        if(call.name!==PUBLIC_ANSWER_TOOL_NAME || !call.id || call.id.trim()!==call.id
+          || !finalIdentity && candidates.length>1)return
+        publicCallIdentity={id:call.id,name:call.name}
+      }
+      if(call.arguments.length>256_000)throw publicPurposeError()
+      const parts=publicCallParser!.push(call.arguments.slice(publicCallConsumed)); publicCallConsumed=call.arguments.length
+      if(publicCallParser!.operation && !operationPublished) {
+        await request.onTextOperation?.(publicCallParser!.operation); operationPublished=true
+        request.signal?.throwIfAborted()
+      }
+      for(const part of parts) {
+        request.signal?.throwIfAborted()
+        await request.onTextDelta?.(part.text,{purpose:part.purpose})
+        request.signal?.throwIfAborted()
+      }
+    }
     const response = await this.request({
       model: this.modelId,
       messages: toWireMessages(this.generationInstructions(request.instructions, nativeEnvelope), request.items, nativeEnvelope),
-      ...(purposeParser && (!tools.length || this.profile.jsonObjectWithTools !== false) ? { response_format: { type: 'json_object' } } : {}),
+      ...(!this.publicAnswerTool && purposeParser && (!tools.length || this.profile.jsonObjectWithTools !== false) ? { response_format: { type: 'json_object' } } : {}),
       ...(tools.length ? { tools: wireTools, tool_choice: 'auto', parallel_tool_calls: this.profile.parallelTools } : {}),
       stream: true,
       stream_options: { include_usage: true },
     }, request.signal)
-    const accumulator = await this.consumeStream(response, purposeParser?async chunk=>{
+    const accumulator = await this.consumeStream(response, this.publicAnswerTool ? undefined : purposeParser?async chunk=>{
       request.signal?.throwIfAborted()
       if (companion) { const framed = companion.push(chunk); if (framed === null) return; chunk = framed }
       contentObserved = true
-      if (nativeOutput) throw publicPurposeError()
+      if (nativeCallObserved) throw publicPurposeError()
       const parts=purposeParser.push(chunk)
       if(purposeParser.operation&&!operationPublished){await request.onTextOperation?.(purposeParser.operation);operationPublished=true}
       for(const part of parts){
@@ -529,23 +620,7 @@ export class OpenAIChatDriver implements ModelDriver {
         await request.onTextDelta?.(part.text,{purpose:part.purpose})
         request.signal?.throwIfAborted()
       }
-    }:request.onTextDelta, nativeEnvelope ? async (index, call, delta) => {
-      request.signal?.throwIfAborted()
-      if (index !== 0 || contentObserved || nativeIdentity && (nativeIdentity.id !== call.id || nativeIdentity.name !== call.name)) throw publicPurposeError()
-      if (!delta) return
-      if (!call.id.trim() || call.id.trim() !== call.id || !tools.some(tool => tool.function.name === call.name)) throw publicPurposeError()
-      nativeIdentity ??= { id: call.id, name: call.name }
-      nativeOutput ??= new NativeToolPublicOutput()
-      const parts = nativeOutput.push(delta)
-      if (nativeOutput.operation && !operationPublished) {
-        await request.onTextOperation?.(nativeOutput.operation); operationPublished = true
-      }
-      for (const part of parts) {
-        request.signal?.throwIfAborted()
-        await request.onTextDelta?.(part.text, { purpose: part.purpose })
-        request.signal?.throwIfAborted()
-      }
-    } : undefined)
+    }:request.onTextDelta, this.publicAnswerTool ? acceptPublicDelta : nativeEnvelope ? acceptNativeDelta : undefined)
     const diagnostics = { finishReasons: accumulator.finishReasons, usage: this.usageOf(accumulator) }
     if (request.signal?.aborted) throw new ModelDriverError('model request cancelled', {
       ...diagnostics, kind: 'provider', category: 'cancelled',
@@ -560,13 +635,47 @@ export class OpenAIChatDriver implements ModelDriver {
     const output: ModelItem[] = []
     let text = accumulator.text
     let outcomeDeclaration:OutcomeDeclaration|undefined
-    if (nativeEnvelope && accumulator.toolCalls.size) {
+    let publicTextPhase:ModelTurnResult['publicTextPhase']
+    let publicAnswerCall:PublicAnswerCall|undefined
+    if(this.publicAnswerTool) {
+      if(!accumulator.toolCalls.size)throw new ModelDriverError('public answer requires the declared output tool',{
+        ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_text_answer_required'})
+      if(!completeCompanionTurn({text:'',calls:accumulator.toolCalls,finishReasons:accumulator.finishReasons,
+        ...(accumulator.malformedToolCalls?{malformed:true}:{})},tools.map(tool=>tool.function.name),false))throw new ModelDriverError('invalid original native output batch',{
+        ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid'})
+      const call=accumulator.toolCalls.get(0)!
+      text='' // Raw content and reasoning never enter public text or model history.
+      if(call.name===PUBLIC_ANSWER_TOOL_NAME) {
+        if(/^\s*[\[{]/.test(accumulator.text)||companionHasJsonFraming(accumulator.text))throw new ModelDriverError('ambiguous public output channels',{
+          ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_text_invalid'})
+        try { await acceptPublicDelta(0,call,'',true) } catch(error) { this.throwStreamFailure(error,accumulator) }
+        publicAnswerCall={type:'function_call',callId:call.id,name:PUBLIC_ANSWER_TOOL_NAME,arguments:call.arguments}
+        let decoded:ReturnType<typeof decodePublicAnswerCall>
+        try {
+          publicCallParser!.finish()
+          decoded=decodePublicAnswerCall(publicAnswerCall)
+          validateToolBatch([publicAnswerCall],[{name:PUBLIC_ANSWER_TOOL_NAME,action:'output.public_answer',description:'Public output protocol',effect:'read',approval:false,
+            parameters:PUBLIC_ANSWER_TOOL.function.parameters as import('../tools/catalog.js').ToolDefinition['parameters']}],'disabled',false)
+        } catch(error) { throw new ModelDriverError('invalid public answer tool arguments', { ...diagnostics,kind:'protocol',category:'protocol',
+          protocolCode:error instanceof ModelDriverError ? error.diagnostics.protocolCode ?? 'public_text_invalid' : 'public_text_invalid' }) }
+        text=decoded!.text ?? ''
+        if(decoded!.outcome===null)publicTextPhase='intermediate'
+        else outcomeDeclaration=decoded!.outcome
+        if(!text.trim() && !(decoded!.text===null && request.answerContext?.segmentIds.length && outcomeDeclaration))throw publicPurposeError('public_text_answer_required')
+      }
+    } else if (nativeEnvelope && accumulator.toolCalls.size) {
+      if (!nativeOutput && !contentObserved && !companionHasJsonFraming(accumulator.text)
+        && completeCompanionTurn({ text: '', calls: accumulator.toolCalls, finishReasons: accumulator.finishReasons },
+          tools.map(tool => tool.function.name), false)) {
+        try { await acceptNativeDelta(0, accumulator.toolCalls.get(0)!, '', true) }
+        catch (error) { this.throwStreamFailure(error, accumulator) }
+      }
       if (!nativeOutput || contentObserved || companionHasJsonFraming(accumulator.text)) {
-        throw new ModelDriverError('invalid native public output envelope', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: 'public_text_invalid' })
+        throw new ModelDriverError('invalid native public output envelope', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: !nativeOutput ? 'native_envelope_invalid' : 'public_text_invalid' })
       }
       let decoded: ReturnType<NativeToolPublicOutput['finish']>
       try { decoded = nativeOutput.finish() }
-      catch { throw new ModelDriverError('invalid native public output envelope', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: 'public_text_invalid' }) }
+      catch { throw new ModelDriverError('invalid native public output envelope', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: 'native_envelope_invalid' }) }
       text = decoded.text
       accumulator.toolCalls.get(0)!.arguments = decoded.arguments
     } else if (companion?.unpublished) {
@@ -586,7 +695,12 @@ export class OpenAIChatDriver implements ModelDriver {
         }
         if(this.publicTextProtocol==='purpose-json-v2'||this.publicTextProtocol==='purpose-json-v3'){
           if(accumulator.toolCalls.size){if(accumulator.text.length&&purposeParser.outcome!==null)throw publicPurposeError()}
-          else {if(!purposeParser.outcome)throw publicPurposeError();outcomeDeclaration=purposeParser.outcome}
+          else if(purposeParser.outcome===null && this.publicTextContinuation==='typed-message-v1') {
+            if(!text.trim() || purposeParser.answerIsNull || !purposeParser.operation)throw publicPurposeError('public_text_answer_required')
+            publicTextPhase='intermediate'
+          } else {if(purposeParser.outcome===null)throw new ModelDriverError('terminal response requires an outcome declaration', {
+            ...diagnostics, kind:'protocol', category:'protocol', protocolCode:'terminal_outcome_required',
+          });if(!purposeParser.outcome)throw publicPurposeError();outcomeDeclaration=purposeParser.outcome}
         }
         if(!accumulator.toolCalls.size&&!text.trim()&&!(this.publicTextProtocol==='purpose-json-v3'&&purposeParser.answerIsNull
           &&request.answerContext?.segmentIds.length))throw publicPurposeError('public_text_answer_required')
@@ -595,13 +709,14 @@ export class OpenAIChatDriver implements ModelDriver {
         protocolCode:error instanceof ModelDriverError ? error.diagnostics.protocolCode ?? 'public_text_invalid' : 'public_text_invalid',
       })}
     }
-    if (text.trim()) output.push({ role: 'assistant', content: text })
+    if (!publicAnswerCall && text.trim()) output.push({ role: 'assistant', content: text })
     const toolCalls = [...accumulator.toolCalls.entries()].sort(([a], [b]) => a - b)
     if(this.publicTextProtocol==='purpose-json-v3'&&toolCalls.length&&!completeCompanionTurn({text:'',calls:accumulator.toolCalls,
       finishReasons:accumulator.finishReasons,...(accumulator.malformedToolCalls?{malformed:true}:{})},tools.map(tool=>tool.function.name),this.profile.parallelTools)){
       throw new ModelDriverError('invalid native tool batch',{...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid'})
     }
     for (const [, call] of this.profile.parallelTools ? toolCalls : toolCalls.slice(0, 1)) {
+      if(publicAnswerCall)continue // Full original batch was validated above; output binding is not dispatchable.
       if (!call.id.trim()
         || call.name === IPYTHON_TOOL_NAME && !allowPython
         || call.name !== IPYTHON_TOOL_NAME && !request.tools?.some(tool => tool.name === call.name)) {
@@ -619,12 +734,13 @@ export class OpenAIChatDriver implements ModelDriver {
         request.tools ?? [], allowPython ? 'enabled' : 'disabled', false) }
       catch { throw new ModelDriverError('invalid native business arguments', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: 'tool_identity_invalid' }) }
     }
-    if (output.length === 0 && !(this.publicTextProtocol==='purpose-json-v3'&&purposeParser?.answerIsNull&&request.answerContext?.segmentIds.length&&outcomeDeclaration)) {
+    if (!publicAnswerCall && output.length === 0 && !(this.publicTextProtocol==='purpose-json-v3'&&purposeParser?.answerIsNull&&request.answerContext?.segmentIds.length&&outcomeDeclaration)) {
       throw new ModelDriverError('model returned neither assistant text nor a tool call', {
         ...diagnostics, kind: 'protocol', protocolCode: 'response_empty',
       })
     }
-    const result: ModelTurnResult = { output, text, usage: diagnostics.usage, ...(outcomeDeclaration ? { outcomeDeclaration } : {}) }
+    const result: ModelTurnResult = { output, text, usage: diagnostics.usage, ...(publicTextPhase ? {publicTextPhase} : {}), ...(outcomeDeclaration ? { outcomeDeclaration } : {}) }
+    if(publicAnswerCall){result.publicAnswerCall=publicAnswerCall;result.answerOperation=publicCallParser!.operation!;result.answerIsNull=publicCallParser!.answerIsNull}
     if(this.publicTextProtocol==='purpose-json-v3'&&purposeParser?.operation){result.answerOperation=purposeParser.operation;result.answerIsNull=purposeParser.answerIsNull}
     if (nativeOutput?.operation) { result.answerOperation = nativeOutput.operation; result.answerIsNull = false }
     if (accumulator.model !== undefined) result.model = accumulator.model

@@ -24,7 +24,8 @@ import { ChildAdmissionRejectedError, recordChildBudgetDenials } from '../model/
 
 export function toolExecutor(database: SqlPool, definitions: readonly ToolDefinition[],
   createArtifact?: (work: Omit<WorkItem, 'leaseToken'>, input: ArtifactInput, signal?: AbortSignal) => Promise<KernelArtifact>, memory?: MemoryOptions,
-  activateSkillDelivery?: (context: ActionContext, skill: Pick<import('../skills/definition.js').SkillIndex, 'name' | 'version' | 'hash'>) => Promise<import('../skills/delivery.js').SkillActivation>): ActionExecutor {
+  activateSkillDelivery?: (context: ActionContext, skill: Pick<import('../skills/definition.js').SkillIndex, 'name' | 'version' | 'hash'>) => Promise<import('../skills/delivery.js').SkillActivation>,
+  assertSchedule?: (context: ActionContext) => Promise<void>): ActionExecutor {
   const tools = new Map(definitions.map(tool => [tool.action, tool]))
   if (tools.size !== definitions.length || new Set(definitions.map(tool => tool.name)).size !== definitions.length) throw new Error('duplicate tool definition')
   const quotas = new Map<string, ResourceQuota>()
@@ -157,6 +158,7 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
         const ctx = context(work, action, options, db, () => executing)
         await assertToolContract(tool, ctx)
         await authorize(() => tool.authorize(ctx, input), options, false)
+        await assertSchedule?.(ctx)
         await assertObservation(tool, ctx, input, tools)
         options.signal.throwIfAborted()
         const pending = await approvalGate(tool, ctx, input)
@@ -171,6 +173,7 @@ export function toolExecutor(database: SqlPool, definitions: readonly ToolDefini
           await authorizeConversationWork(database, work)
           await tool.authorize(ctx, input)
         }, options)
+        await assertSchedule?.(ctx)
         await abortable(assertObservation(tool, ctx, input, tools), options.signal)
         if (tool.approval) {
           const pending = await withTransaction(deadlinePool(database,options.signal), async db => {

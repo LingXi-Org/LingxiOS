@@ -221,6 +221,8 @@ export interface RunEvent {
   /** `user` events may be surfaced to end users; `internal` never are. */
   visibility: 'user' | 'internal'
   data: Record<string, unknown>
+  /** Host-only seal metadata, excluded from public event storage and fan-out. */
+  publicTextRecovery?: import('./public-text-recovery.js').PublicTextRecovery
 }
 
 // ---------------------------------------------------------------------------
@@ -231,7 +233,12 @@ export type ModelItem = (
   | { role: 'user' | 'assistant' | 'system'; content: string }
   | { type: 'function_call'; callId: string; name: string; arguments: string; stepId?: string }
   | { type: 'function_call_output'; callId: string; output: string }
-) & { memorySources?: import('../memory/history.js').MemorySources }
+) & {
+  memorySources?: import('../memory/history.js').MemorySources
+  /** Server-owned origin; null means unproven legacy data. Original item and
+   * receipt bytes remain durable. Only the current work renders native turns. */
+  historySource?: { workId: string | null; requestVersion: number | null }
+}
 
 /**
  * Durable conversational state of one agent session, saved with optimistic
@@ -239,6 +246,9 @@ export type ModelItem = (
  */
 export interface SessionRecord {
   request?: import('../context/request.js').RequestSnapshot
+  /** Raw shared-session boundary, distinct from a work-specific request overlay.
+   * It is not proof that every legacy history item originated in that work. */
+  historyBoundary?: { workId: string; requestVersion: number } | null
   key: string
   tenantId: string
   agentId: string
@@ -308,6 +318,8 @@ export interface TurnContext {
   discoveredTools?: string[]
   harness?: import('../harness/profile.js').HarnessContext
   executionSteps?: import('../control-plane/steps.js').ExecutionStep[]
+  /** Host-derived scheduling, separate from authorization grants. */
+  explanationStage?: import('../skills/explanation-stage.js').ExplanationStage
   productRules?: string
   executionCheckpoint?: import('../runtime/corrections.js').ProgressCheckpoint
   dependencies?: Array<{ id: string; status: string; resultText: string | null; goalOutcome: import('./outcome.js').GoalOutcome | null | undefined }>

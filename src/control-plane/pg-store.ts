@@ -469,6 +469,7 @@ export class PgSessionStore implements SessionStore {
 }
 
 function sessionFromRow(row: Record<string, unknown>): SessionRecord {
+  const rawRequest = row['request_snapshot'] as SessionRecord['request']
   return {
     key: String(row['session_key']),
     tenantId: String(row['tenant_id']),
@@ -477,6 +478,7 @@ function sessionFromRow(row: Record<string, unknown>): SessionRecord {
     ...(row['thread_id'] !== null ? { threadId: String(row['thread_id']) } : {}),
     ...(row['summary'] !== null ? { summary: String(row['summary']) } : {}),
     ...(row['effective_request_snapshot'] ? { request: row['effective_request_snapshot'] as NonNullable<SessionRecord['request']> } : {}),
+    historyBoundary: rawRequest ? { workId: rawRequest.workId, requestVersion: rawRequest.revisions.length + 1 } : null,
     history: row['history'] as SessionRecord['history'],
     appliedWorkIds: (row['applied_work_ids'] ?? []) as string[],
     revision: Number(row['revision']),

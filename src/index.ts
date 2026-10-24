@@ -13,6 +13,7 @@ export type { ConversationIdentity, ThreadIdentity, ConversationPolicy, Conversa
 export { assembleHarness, type HarnessProfile, type CapabilityDefinition, type HarnessContext } from './harness/profile.js'
 export type { SkillActivation, SkillDeliveryDecision } from './skills/delivery.js'
 export { skillIndex, type SkillDefinition, type SkillIndex } from './skills/definition.js'
+export { parseExplanationDeclaration, type ExplanationDeclaration, type ExplanationStage, type RequestQuote } from './skills/explanation-stage.js'
 export type { PresentationDefinition, TrustedPresentation } from './presentation/definition.js'
 export type { ObservationRef } from './context/observations.js'
 export { toolContractHash } from './tools/contracts.js'

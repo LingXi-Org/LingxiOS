@@ -65,3 +65,7 @@ it('only exposes known fixed protocol codes, never arbitrary driver extensions',
   assert.deepEqual(publicModelDiagnostics({kind:'protocol',protocolCode:'PRIVATE_BODY_SENTINEL',raw:'PRIVATE_BODY_SENTINEL'}),{kind:'protocol'})
   assert.deepEqual(publicModelDiagnostics({kind:'protocol',protocolCode:'public_text_incomplete',raw:'PRIVATE_BODY_SENTINEL'}),{kind:'protocol',protocolCode:'public_text_incomplete'})
 })
+
+for (const protocolCode of ['native_envelope_invalid','terminal_outcome_required']) it(`preserves fixed public diagnostic ${protocolCode}`,()=>{
+  assert.deepEqual(publicModelDiagnostics({kind:'protocol',protocolCode,raw:'PRIVATE_BODY_SENTINEL'}),{kind:'protocol',protocolCode})
+})

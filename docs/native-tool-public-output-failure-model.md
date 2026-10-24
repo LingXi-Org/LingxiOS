@@ -105,3 +105,9 @@ The unchanged path retains its fingerprints and input estimates; private v2,
 structured calls and compaction do not receive the envelope. Plain companions
 remain unpublished while JSON primitive and typed dual-channel conflicts fail.
 No live provider, production, browser or release qualification was performed.
+
+## Precise protocol diagnostics (development 3.8.11)
+
+The retained 113fef development graph failed first on an unknown outer envelope key with complete native identity, then on a no-tool v3 response whose outcome was null. Only the first key classification was captured; its name/value are unknown. Neither failure demonstrates an identity-fragment bug. Both currently collapse into public_text_invalid, whose correction incorrectly describes field ordering/string encoding/framing even when only the terminal declaration is missing.
+
+The regression matrix requires fixed native_envelope_invalid and terminal_outcome_required codes through driver, public diagnostics and the actual Worker correction payload. No raw unknown keys or provider payload may enter diagnostics. Corrections identify the failed branch and refer to the same trusted driver contract without duplicating schemas. Invalid first turns have zero tool execution and zero sealed sources; valid correction may succeed within the existing retry limit. Cancellation, callback safety failures, business argument validation/identity and malformed non-terminal purpose fields keep their existing boundaries. No relaxed validation, token budget increase, extra provider call, or carrier change is part of this repair.

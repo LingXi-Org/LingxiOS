@@ -1,3 +1,5 @@
+import { explanationStageTools, explanationStageInstructions } from '../skills/explanation-stage.js'
+import { decodePublicAnswerCall, publicAnswerHistory } from '../protocol/public-answer-call.js'
 import { AnswerSegmentSet } from './answer-segments.js'
 import { snapshotPublicTextSources, type PublicTextSources } from '../protocol/answer-segments.js'
 import { validateToolBatch, compileToolSchemas } from './tool-batch.js'
@@ -43,6 +45,7 @@ import {
 } from '../errors.js'
 import type { HostPort } from '../host/port.js'
 import { requestItems, snapshotRequest } from '../context/request.js'
+import { appendRequestHistory, archivePriorRequest, historyBoundary, isCurrentHistory, projectRequestHistory } from '../context/request-history.js'
 import type { GoalOutcome } from '../protocol/outcome.js'
 import { evidenceItems, snapshotEvidence } from '../context/evidence.js'
 import { createResponseEnvelope, type ResponseEnvelope } from '../outcome/envelope.js'
@@ -423,7 +426,7 @@ export class AgentRuntime {
       if(source.publicTextProtocol!=='purpose-json-v3'||work.conversation?.internal!==true)return source
       if(!source.withPublicTextProtocol)throw new Error('v3 driver must support explicit private-work protocol selection')
       const selected=source.withPublicTextProtocol('purpose-json-v2')
-      if(selected.publicTextProtocol!=='purpose-json-v2')throw new Error('invalid private-work protocol selection')
+      if(selected.publicTextProtocol!=='purpose-json-v2'||selected.publicTextContinuation!==undefined||selected.publicAnswerTool!==undefined)throw new Error('invalid private-work protocol selection')
       return selected
     }
     if(this.model.publicTextProtocol==='purpose-json-v3'&&work.conversation?.internal===true){
@@ -466,6 +469,10 @@ export class AgentRuntime {
       const binding = { runtime: releaseVersions.runtime, ...(this.model.publicTextProtocol==='purpose-json-v3'?{publicTextSelection:'public-v3-internal-v2-v1'}:{}), semanticReview: this.semanticReview,
         ...(semanticReviewPolicy ? { semanticReviewPolicy } : {}), harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
+        ...(deepModel.publicAnswerTool?{publicAnswerTool:deepModel.publicAnswerTool}:{}),
+        ...(fastModel?.publicAnswerTool?{fastPublicAnswerTool:fastModel.publicAnswerTool}:{}),
+        ...(deepModel.publicTextContinuation?{publicTextContinuation:deepModel.publicTextContinuation}:{}),
+        ...(fastModel?.publicTextContinuation?{fastPublicTextContinuation:fastModel.publicTextContinuation}:{}),
         ...(deepModel.publicTextProtocol==='purpose-json-v2'||deepModel.publicTextProtocol==='purpose-json-v3'?{publicTextProtocol:deepModel.publicTextProtocol}:{}),
         ...(fastModel?.publicTextProtocol==='purpose-json-v2'||fastModel?.publicTextProtocol==='purpose-json-v3'?{fastPublicTextProtocol:fastModel.publicTextProtocol}:{}),
         ...(this.additionalContentCorrections ? { additionalContentCorrections: this.additionalContentCorrections } : {}),
@@ -484,6 +491,7 @@ export class AgentRuntime {
     let finalPublicTextPartId: string | undefined
     let finalPublicTextSources: PublicTextSources | undefined
     let answerSegments = new AnswerSegmentSet(runId,(session.request?.revisions.length ?? 0)+1,work.fence,context.executionSteps)
+    if((deepModel.publicTextContinuation==='typed-message-v1'||fastModel?.publicTextContinuation==='typed-message-v1')&&answerSegments.restoreMessageHistory(session,work.id))await host.saveSession(work,session)
     let pendingReplacement = false
     let lastGood: { text: string; envelope: ResponseEnvelope; publicTextPartId?: string; publicTextSources?: PublicTextSources } | undefined
     let terminalError: Error | undefined
@@ -550,7 +558,7 @@ export class AgentRuntime {
           }
           await this.hostFor(work).saveSession(work, session)
         } else {
-          session.history.push({
+          appendRequestHistory(session, work.id, {
             role: 'user',
             content: `Highest-priority human steering:\n${steers.map((item) => item.text).join('\n')}`,
           })
@@ -592,7 +600,7 @@ export class AgentRuntime {
       const execution = hop === 0 ? initialExecution : executionSnapshot(liveContext, this.policy)
       const { codeExecution } = execution
       liveContext.tools = execution.tools
-      const modelTools = exposedTools(execution.tools, liveContext.executionSteps ?? [], liveContext.discoveredTools)
+      const modelTools = await explanationStageTools(exposedTools(execution.tools, liveContext.executionSteps ?? [], liveContext.discoveredTools),liveContext.explanationStage)
       if (react) compileToolSchemas(modelTools) // Unsupported trusted schemas fail before a model call, never after an effect.
       session.promptContext = buildPromptContext(liveContext, this.policy, session.compactionEpoch, this.promptContractVersion, undefined, execution, this.promptCache)
       const preferenceItems = (session.promptContext.blocks ?? []).filter(block => block.trust !== 'platform' && block.trust !== 'product').map(contextItem)
@@ -604,12 +612,19 @@ export class AgentRuntime {
       const currentEvidenceItems = evidenceItems(evidence(), modelTools.some(tool => tool.action === 'task.read_evidence'))
       const currentRequestItems = session.request ? requestItems(session.request,
         this.onDemandAttachments && modelTools.some(tool => tool.action === 'task.read_attachment')) : []
-      const projectHistory = (items: readonly ModelItem[]) => projectMemoryHistory(items, liveContext.memory)
+      const projectHistory = (items: readonly ModelItem[]) => projectRequestHistory(projectMemoryHistory(items, liveContext.memory), work.id)
       const restoredMessages = session.history.some(item => isMemorySummary(item) && invalidMemorySources(item, liveContext.memory))
         ? this.policy.turnInputItems(liveContext, false) : []
-      const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...restoredMessages, ...(protocolCorrection ? [protocolCorrection] : [])]
+      const currentCorrection = protocolCorrection && 'role' in protocolCorrection && session.request
+        ? { ...protocolCorrection, content: protocolCorrection.content + '\nCurrent request anchor (identities only; not a new task): '
+          + JSON.stringify({ sourceRef: session.request.sourceRef, requestVersion: session.request.revisions.length + 1,
+            revisionSources: [...(session.request.inheritedRevisions ?? []), ...session.request.revisions].map(revision => revision.id) }) }
+        : protocolCorrection
+      const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...restoredMessages, ...(currentCorrection ? [currentCorrection] : [])]
+      if (liveContext.explanationStage?.status === 'pending' && !liveContext.explanationStage.stale) supplementalItems.push({role:'user',
+        content:explanationStageInstructions(liveContext.explanationStage)+'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes)})
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
-        +'\nContinue with append and only new text. Revisions must explicitly replace the exact active revision IDs in source order. A final null answer confirms only the existing assembled body, not unperformed work.'})
+        +'\nAppend adds text; replace selects active revision IDs in source order. A terminal null answer uses the assembled body.'})
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
       const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
@@ -644,11 +659,11 @@ export class AgentRuntime {
           requestTokens: inputTokens(model, currentRequestItems), evidenceTokens: inputTokens(model, currentEvidenceItems),
           dynamicContextTokens: dynamicTokens,
           memoryTokens: memoryForModel ? Math.max(0, inputTokens(model, supplementalItems.slice(0, dynamicCount)) - dynamicTokens) : 0,
-          historyTokens: estimateTokens(session.history, model), reservedTokens }
+          historyTokens: estimateTokens(projectHistory(session.history), model), reservedTokens }
       }
       if (overheadTokens >= hardLimit) {
         throw new HardLimitExceededError('mandatory context exceeds the context budget; original request was preserved', {
-          reason: 'irreducible_context', estimatedTokens: estimateTokens(session.history, model) + overheadTokens,
+          reason: 'irreducible_context', estimatedTokens: estimateTokens(projectHistory(session.history), model) + overheadTokens,
           hardLimitTokens: hardLimit, contextWindowTokens: profile.contextWindowTokens,
           requestInputTokens: overheadTokens - reservedTokens, reservedTokens, overheadTokens,
           historyItems: session.history.length, completedChunks: 0, components: contextComponents(),
@@ -656,13 +671,13 @@ export class AgentRuntime {
       }
       const backgroundLimit = Math.min(this.compaction.contextWindowTokens * this.compaction.softRatio * 0.8,
         this.rootModelBudget.maxTokens * 0.4)
-      if (pendingCompaction && estimateTokens(session.history, model) + overheadTokens >= hardLimit) {
+      if (pendingCompaction && estimateTokens(projectHistory(session.history), model) + overheadTokens >= hardLimit) {
         await pendingCompaction.settled
       }
       const prepared = pendingCompaction?.ready ? pendingCompaction.install(session) : { compacted: false }
       if (pendingCompaction?.ready) pendingCompaction = undefined
       let compacted = prepared
-      if (!this.asyncCompaction || estimateTokens(session.history, model) + overheadTokens >= hardLimit) {
+      if (!this.asyncCompaction || estimateTokens(projectHistory(session.history), model) + overheadTokens >= hardLimit) {
         const recovered = await compactIfNeeded(session, instructions, model, this.compaction, signals.generationSignal(), overheadTokens, false, projectHistory)
           .catch((error): CompactionOutcome => {
             if (!signals.hasSteer() && (!memoryForModel || !(error instanceof HardLimitExceededError))) throw error
@@ -682,7 +697,7 @@ export class AgentRuntime {
       if (memoryForModel && inputTokens(model, modelInputFor(session.history),true)+reservedTokens>hardLimit) {
         const original=memoryForModel
         renderMemory(undefined)
-        const available=Math.floor(hardLimit)-estimateTokens(session.history, model)-overheadTokens-512
+        const available=Math.floor(hardLimit)-estimateTokens(projectHistory(session.history), model)-overheadTokens-512
         if (available>512) renderMemory(fitMemorySnapshot(original,this.compaction.contextWindowTokens,available))
         if (inputTokens(model, modelInputFor(session.history),true)+reservedTokens>hardLimit) renderMemory(undefined)
       }
@@ -748,7 +763,7 @@ export class AgentRuntime {
               }
               // Reserve the reply first; optional compaction must not consume its budget.
               if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
-                && estimateTokens(session.history, model) + overheadTokens >= backgroundLimit) {
+                && estimateTokens(projectHistory(session.history), model) + overheadTokens >= backgroundLimit) {
                 sessionRef.compaction = pendingCompaction = this.trackCompaction(prepareCompaction(session, model,
                   { ...this.compaction, softRatio: backgroundLimit / this.compaction.contextWindowTokens }, generationSignal, overheadTokens, projectHistory))
               }
@@ -874,12 +889,14 @@ export class AgentRuntime {
       if (!preview && model.previewFormat === 'candidate-json') parser.push(turn.text)
       if (!calls.length && model.previewFormat === 'candidate-json' && parser.complete && turn.finalCandidate === undefined) turn = { ...turn, finalCandidate: turn.text }
 
+      const intermediate=turn.publicTextPhase==='intermediate'
       let declaration: OutcomeDeclaration | undefined
-      if (model.publicTextProtocol === 'purpose-json-v2' || react || turn.outcomeDeclaration !== undefined) {
+      if (model.publicTextProtocol === 'purpose-json-v2' || react || turn.outcomeDeclaration !== undefined || turn.publicTextPhase!==undefined) {
         try {
           if ((!react && model.publicTextProtocol !== 'purpose-json-v2') || turn.finalCandidate !== undefined) throw new Error('outcome declaration requires an explicit outcome protocol')
+          if(turn.publicTextPhase!==undefined && (!intermediate || !react || model.publicTextContinuation!=='typed-message-v1' || calls.length || !turn.text.trim() || !turn.answerOperation || turn.answerIsNull===true || turn.outcomeDeclaration!==undefined))throw new Error('invalid intermediate public message')
           if (calls.length) { if (turn.outcomeDeclaration !== undefined) throw new Error('tool turns cannot declare a terminal outcome') }
-          else declaration = snapshotOutcomeDeclaration(turn.outcomeDeclaration)
+          else if(!intermediate) declaration = snapshotOutcomeDeclaration(turn.outcomeDeclaration)
         } catch {
           // Custom drivers have the same fail-closed boundary as the wire driver.
           // No returned tool call executes while its declaration is invalid.
@@ -899,13 +916,30 @@ export class AgentRuntime {
         try {
           // Validate the entire batch before sealing any candidate or dispatching any effect.
           validateToolBatch(calls,modelTools,codeExecution,model.profile?.parallelTools)
+          if(model.publicAnswerTool==='native-v1'&&!turn.publicAnswerCall
+            &&(!calls.length||turn.text!==''||turn.answerOperation!==undefined||turn.answerIsNull!==undefined
+              ||turn.publicTextPhase!==undefined||turn.outcomeDeclaration!==undefined
+              ||turn.output.some(item=>'role' in item||item.type!=='function_call')))throw new Error('public output requires its native call binding')
+          if(turn.publicAnswerCall){
+            const decoded=decodePublicAnswerCall(turn.publicAnswerCall)
+            if(model.publicAnswerTool!=='native-v1'||calls.length||turn.output.length
+              || decoded.text!==(turn.answerIsNull?null:turn.text)
+              || canonicalJson(decoded.operation)!==canonicalJson(turn.answerOperation)
+              || canonicalJson(decoded.outcome)!==canonicalJson(intermediate?null:turn.outcomeDeclaration))throw new Error('invalid public output binding')
+            if(answerSegments.hasPublicAnswerCall(turn.publicAnswerCall.callId)||session.history.some(item=>'type' in item && item.callId===turn.publicAnswerCall!.callId
+              && isCurrentHistory(item,work.id) && item.historySource?.requestVersion===(session.request?.revisions.length??0)+1))throw new Error('public output call identity reused')
+          }
           const publication=this.publications.get(runId)
           if (turn.text) {
             if (!turn.answerOperation || !publication?.segmentIdentity
               || canonicalJson(turn.answerOperation)!==canonicalJson({kind:publication.segmentIdentity.operation,supersedes:publication.segmentIdentity.supersedes})) throw new Error('answer operation changed after publication')
             await publication.finish(turn.text)
             await publication.end(calls.length ? 'tool' : 'completed')
-            const record=await publication.seal(turn.text)
+            const record=await publication.seal(turn.text,turn.publicAnswerCall
+              ?{version:2,phase:intermediate?'intermediate':'terminal',memorySources:derivedSources,publicAnswerCall:turn.publicAnswerCall,
+                ...(intermediate&&turn.answerOperation.kind==='append'&&liveContext.explanationStage?.status==='pending'&&!liveContext.explanationStage.stale
+                  ?{explanationStageId:liveContext.explanationStage.id}:{})}
+              :intermediate?{version:1,phase:'intermediate',memorySources:derivedSources}:undefined)
             answerSegments.seal(record)
             pendingReplacement ||= record.identity.operation==='replace'
           } else {
@@ -916,7 +950,7 @@ export class AgentRuntime {
           if (answerSegments.hasBody) {
             const assembled=answerSegments.assemble()
             if (calls.length) await rememberCandidate(assembled.body,liveContext)
-            else turn={...turn,text:assembled.body}
+            else if(!intermediate) turn={...turn,text:assembled.body}
           }
         } catch (error) {
           if (error instanceof LeaseLostError || error instanceof RunCancelledError || signals.lifecycle.signal.aborted || isPublicTextPublicationFailure(error)) throw error
@@ -930,6 +964,26 @@ export class AgentRuntime {
         }
       }
 
+      // Protocol history has the same memory dependencies as the sealed text.
+      // Persistence failures are not model protocol failures. Recovery uses the
+      // authoritative seal when an acknowledgement is lost before session save.
+      if(turn.publicAnswerCall){
+        if(turn.answerIsNull)appendRequestHistory(session,work.id,...publicAnswerHistory(turn.publicAnswerCall,derivedSources))
+        else if(!answerSegments.restoreMessageHistory(session,work.id))throw new Error('public output call has no new sealed source')
+        await host.saveSession(work,session)
+      }
+
+      if(intermediate){
+        // The existing seal transaction is the recovery authority. A lost ACK
+        // before session save is reconciled from that exact record on restart.
+        if(!turn.publicAnswerCall){
+          if(!answerSegments.restoreMessageHistory(session,work.id))throw new Error('intermediate message has no new sealed source')
+          await host.saveSession(work,session)
+        }
+        protocolCorrection=null
+        continue // next loop refreshes cancellation, permissions and global budget
+      }
+
       let assessment: GoalAssessment | undefined
       if (calls.length === 0 && turn.finalCandidate !== undefined) {
         try {
@@ -940,7 +994,7 @@ export class AgentRuntime {
         } catch (error) {
           await this.event(work, runId, { kind: 'response.withheld', stage: 'failed', visibility: 'internal',
             data: { violation: errorMessage(error), candidateType: 'final_json' } })
-          session.history.push(...derivedOutput())
+          appendRequestHistory(session, work.id, ...derivedOutput())
           await this.hostFor(work).saveSession(work, session)
           // A failed self-check does not invalidate an independently valid answer body.
           let body: unknown
@@ -1133,7 +1187,7 @@ export class AgentRuntime {
         if (finalPublicTextPartId) await this.hostFor(work).saveStep(work, { id: `public-text:${finalPublicTextPartId}`, kind: 'runtime.public_text_source',
           requestVersion: (session.request?.revisions.length ?? 0) + 1,
           input: { publicTextPartId: finalPublicTextPartId, publicTextBodyHash: createHash('sha256').update(turn.text.trim()).digest('hex') }, output: '{}', artifacts: [] })
-        session.history.push(...stripMemorySources(turn.output))
+        appendRequestHistory(session, work.id, ...stripMemorySources(turn.output))
         finalText = turn.text.trim()
         if (finalText) {
           if (!react) {
@@ -1149,7 +1203,7 @@ export class AgentRuntime {
       }
 
       for (const call of calls) call.stepId ??= `step:${randomUUID()}`
-      session.history.push(...derivedOutput())
+      appendRequestHistory(session, work.id, ...derivedOutput())
       await this.hostFor(work).saveSession(work, session)
       const onlyReads = model.profile?.parallelTools !== false
         && calls.every(call => liveContext.tools?.some(tool => tool.name === call.name && tool.effect === 'read'))
@@ -1159,7 +1213,7 @@ export class AgentRuntime {
         if (signals.leaseLost()) throw signals.leaseLost()!
         if (signals.lifecycle.signal.aborted) throw new RunCancelledError('lifecycle')
         if (signals.hasSteer()) {
-          session.history.push(...calls.slice(index).map(call => ({ type: 'function_call_output' as const, callId: call.callId,
+          appendRequestHistory(session, work.id, ...calls.slice(index).map(call => ({ type: 'function_call_output' as const, callId: call.callId,
             output: boundedToolOutput({ state: 'not_started', reason: 'request was revised' }) })))
           break
         }
@@ -1218,7 +1272,7 @@ export class AgentRuntime {
       finalEnvelope = createResponseEnvelope(finalText, {
         status: 'partial', verification: 'inconclusive', requestVersion: (session.request?.revisions.length ?? 0) + 1, gaps,
       }, evidence(), artifacts, session.request?.contract, session.request?.resourceChecks)
-      session.history.push({ role: 'assistant', content: finalText })
+      appendRequestHistory(session, work.id, { role: 'assistant', content: finalText })
       await this.hostFor(work).saveSession(work, session)
       if (!finalPublicTextSources) await this.event(work, runId, {
         kind: 'model.delta', stage: 'delta', visibility: 'user',
@@ -1287,7 +1341,7 @@ export class AgentRuntime {
 
     if (call.name === 'ipython' && codeExecution === 'disabled') {
       const message = 'Python execution is disabled by trusted runtime authorization for this request'
-      session.history.push({
+      appendRequestHistory(session, work.id, {
         type: 'function_call_output', callId: call.callId,
         output: boundedToolOutput({ error: message, protocolError: true, executionState: 'not_started' }),
       })
@@ -1311,7 +1365,7 @@ export class AgentRuntime {
       }
     } catch (error) {
       const message = errorMessage(error)
-      session.history.push({
+      appendRequestHistory(session, work.id, {
         type: 'function_call_output', callId: call.callId,
         output: boundedToolOutput({ error: message, protocolError: true }),
       })
@@ -1404,7 +1458,7 @@ export class AgentRuntime {
         const facts = progressFacts({ artifacts: execution.artifacts, observations: receipts.map(receipt => ({ action: receipt.action, result: receipt.result })) })
         if (JSON.stringify(facts) !== '{}') budget.observe(facts)
       }
-      session.history.push({ type: 'function_call_output', callId: call.callId,
+      appendRequestHistory(session, work.id, { type: 'function_call_output', callId: call.callId,
         output: call.name === 'ipython' ? output : boundedDirectToolOutput(receipts[0]!),
         ...receiptMemoryMetadata(receipts, call.memorySources) })
       await this.event(work, runId, {
@@ -1480,7 +1534,7 @@ export class AgentRuntime {
           kind: 'approval.pending', stage: 'completed', visibility: 'user',
           data: { approvalId: error.approvalId, cellId: error.cellId, goalOutcome },
         })
-        session.history.push({
+        appendRequestHistory(session, work.id, {
           type: 'function_call_output', callId: call.callId,
           ...receiptMemoryMetadata(receipts, call.memorySources),
           output: boundedToolOutput({ approvalPending: error.approvalId, receipts }),
@@ -1490,7 +1544,7 @@ export class AgentRuntime {
         return { nextStreamPartIndex, terminal: true }
       }
       if (error instanceof KernelTimeoutError) {
-        session.history.push({
+        appendRequestHistory(session, work.id, {
           type: 'function_call_output', callId: call.callId,
           ...receiptMemoryMetadata(receipts, call.memorySources),
           output: boundedToolOutput({ error: error.message, kernelRestarted: true, receipts }),
@@ -1502,7 +1556,7 @@ export class AgentRuntime {
         return { nextStreamPartIndex, terminal: false }
       }
       if (error instanceof KernelExecutionError) {
-        session.history.push({
+        appendRequestHistory(session, work.id, {
           type: 'function_call_output', callId: call.callId,
           ...receiptMemoryMetadata(receipts, call.memorySources),
           output: boundedToolOutput({ error: error.message, receipts }),
@@ -1592,15 +1646,28 @@ export class AgentRuntime {
       compactionEpoch: 0,
     }
     session.appliedWorkIds ??= []
+    // Legacy same-work calls can only be recovered from existing durable proof;
+    // they are never replayable merely because a request overlay matches.
+    const legacyPending = new Map<string, Extract<ModelItem, { type: 'function_call' }>>()
+    if (historyBoundary(session)?.workId === work.id) for (const item of session.history) {
+      if (item.historySource?.workId || !('type' in item)) continue
+      if (item.type === 'function_call') legacyPending.set(item.callId, item)
+      else legacyPending.delete(item.callId)
+    }
+    const legacyIndexes = new Set([...legacyPending.values()].map(item => session.history.indexOf(item)))
+    archivePriorRequest(session, work.id, context.executionSteps)
     const pendingCalls = new Map<string, Extract<ModelItem, { type: 'function_call' }>>()
-    for (const item of session.history) {
+    for (const [index, item] of session.history.entries()) {
+      if (!isCurrentHistory(item, work.id) && !legacyIndexes.has(index)) continue
       if ('type' in item && item.type === 'function_call') pendingCalls.set(item.callId, item)
       if ('type' in item && item.type === 'function_call_output') pendingCalls.delete(item.callId)
     }
     for (const [callId, call] of pendingCalls) {
       const step = await this.hostFor(work).recoverStep(work, call.stepId ?? callId)
+      const recoveredSource = isCurrentHistory(call, work.id) ? call.historySource! : { workId: work.id, requestVersion: null }
       let receipts: Array<{ action: string; idempotencyKey: string; result: HostActionResult }> | null = null
       if (step) {
+        call.historySource = recoveredSource
         context.priorArtifacts = [...context.priorArtifacts ?? [], ...step.artifacts]
         const journal = JSON.parse(step.output) as { receipts?: Array<{ action: string; idempotencyKey: string; result: HostActionResult }> }
         receipts = journal.receipts ?? null
@@ -1613,25 +1680,26 @@ export class AgentRuntime {
         // Rendering deliberately omits provenance; recover the original trusted
         // receipt proof from the ledger, never today's memory snapshot.
         const sourceReceipts = await this.hostFor(work).recoverCell(work, call.stepId ?? callId)
-        session.history.push({ type: 'function_call_output', callId, output,
+        session.history.push({ type: 'function_call_output', callId, output, historySource: recoveredSource,
           ...receiptMemoryMetadata(sourceReceipts ?? receipts ?? [], call.memorySources) })
       } else {
         receipts = await this.hostFor(work).recoverCell(work, call.stepId ?? callId)
         const tool = context.tools?.find(tool => tool.name === call.name)
-        if (!receipts?.length && tool && ['read', 'transaction', 'idempotent'].includes(tool.effect)) {
+        if (!receipts?.length && isCurrentHistory(call, work.id) && tool && ['read', 'transaction', 'idempotent'].includes(tool.effect)) {
           const identity = { runId: work.id, cellId: call.stepId ?? callId, callIndex: 0 }
           const key = actionKeyOf(identity)
           receipts = [{ action: tool.action, idempotencyKey: key, result: await this.hostFor(work).executeAction(work,
             { ...identity, idempotencyKey: key, action: tool.action, args: JSON.parse(call.arguments) as Record<string, unknown> }) }]
         }
         if (!receipts?.length) throw new AgentOSError('unresolved_checkpoint','unresolved tool execution checkpoint; reconcile before continuing')
+        call.historySource = recoveredSource
         context.priorArtifacts = [...context.priorArtifacts ?? [], ...receipts.flatMap(({ result }) => result.ok ? result.artifacts ?? [] : [])]
         if (receipts.some(({ result }) => result.executionState === 'unknown')
           && receipts.some(({ result }) => result.directive?.type === 'defer')) {
           throw new Error('cell continued after a terminal action with an unknown outcome; reconcile before continuing')
         }
         session.history.push({
-          type: 'function_call_output', callId,
+          type: 'function_call_output', callId, historySource: recoveredSource,
           ...receiptMemoryMetadata(receipts, call.memorySources),
           output: call.name === 'ipython'
             ? boundedToolOutput({ recovered: true, localExecutionOutput: 'not_recovered', receipts }, undefined,
@@ -1679,17 +1747,19 @@ export class AgentRuntime {
         role: 'user', content: JSON.stringify({ source: `history:request:${session.request.workId}`,
           version: String(session.request.revisions.length + 1), trust: 'observation', truncated: false,
           content: JSON.stringify({ originalText: session.request.originalText, revisions: session.request.revisions }) }),
+        historySource: { workId: session.request.workId, requestVersion: session.request.revisions.length + 1 },
       })
       session.request = snapshotRequest(context)
     }
+    session.historyBoundary = { workId: work.id, requestVersion: session.request.revisions.length + 1 }
 
     session.promptContext = buildPromptContext(context, this.policy, session.compactionEpoch, this.promptContractVersion, undefined, execution, this.promptCache)
 
     if (!session.appliedWorkIds.includes(work.id)) {
-      session.history.push(...this.policy.turnInputItems(context, session.history.length > 0))
+      appendRequestHistory(session, work.id, ...this.policy.turnInputItems(context, session.history.length > 0))
       if (context.pendingApproval) {
         const approval = context.pendingApproval
-        session.history.push({
+        appendRequestHistory(session, work.id, {
           role: 'user',
           content: `Approval ${approval.approvalId} was ${approval.approved ? 'approved' : 'rejected'}.`
             + ' The approval decision alone does not establish execution or resource changes.'

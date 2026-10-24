@@ -1,3 +1,5 @@
+import {snapshotPublicTextRecovery} from '../protocol/public-text-recovery.js'
+import { decodePublicAnswerCall } from '../protocol/public-answer-call.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
 import { abortable } from '../deadline.js'
@@ -28,7 +30,8 @@ async function allowed(policy:PublicTextPolicy|undefined, work:Omit<WorkItem,'le
   await authorizeConversationWork(context.database,work,'speak',true)
   return await abortable(Promise.resolve(policy(work,version,context)),context.signal)===true
 }
-export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undefined){
+export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undefined,
+  validateExplanationStage?: (database:SqlQueryable,work:Omit<WorkItem,'leaseToken'>,version:number,id:string)=>Promise<void>){
   return {
     async allowed(work:Omit<WorkItem,'leaseToken'>,version:number){
       if(!policy||work.conversation?.internal)return false
@@ -37,6 +40,8 @@ export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undef
     async append(event:StoredRunEvent,proof:StoreLeaseProof|undefined,work:Omit<WorkItem,'leaseToken'>|undefined,
       append:(database:SqlQueryable)=>Promise<boolean>){
       const data=publicTextPayload(event)
+      const recovery=event.publicTextRecovery? snapshotPublicTextRecovery(event.publicTextRecovery):undefined
+      if(recovery&&(event.kind!=='public.text.sealed'||data?.version!==3))throw new Error('recovery metadata requires a v3 seal')
       if(!data||!proof||!work||!policy)throw new Error('public text publication is not enabled')
       return bounded(pool,async context=>{
         const {database}=context
@@ -68,13 +73,21 @@ export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undef
             AND kind='public.text.delta' AND data->>'partId'=$2 ORDER BY seq`,[event.runId,data.partId])).rows
           const text=chunks.map(row=>String(row['text'])).join('')
           if(!text||chunks.length!==data.chunkCount||createHash('sha256').update(text).digest('hex')!==data.bodyHash)throw new Error('answer seal does not match durable text')
+          if(recovery?.version===2){
+            const decoded=decodePublicAnswerCall(recovery.publicAnswerCall)
+            if(decoded.text!==text || !isDeepStrictEqual(decoded.operation,{kind:data.operation,supersedes:data.supersedes}))throw new Error('answer seal recovery does not match durable text')
+            if(recovery.explanationStageId){
+              if(!validateExplanationStage || recovery.phase!=='intermediate' || data.operation!=='append' || !text.trim())throw new Error('invalid explanation stage publication')
+              await validateExplanationStage(database,current,data.requestVersion,recovery.explanationStageId)
+            }
+          }
           const inserted=await append(database)
           if(!inserted)throw new Error('answer seal sequence already exists')
           const input={...data,sealedSeq:event.seq}, stepId='sealed:'+createHash('sha256').update(data.partId).digest('hex')
           // The event and recovery record share the same authorized lease transaction.
           await database.query(`INSERT INTO lingxios.agent_steps(work_id,step_id,request_version,kind,input_hash,input,output,artifacts,completed_at)
             VALUES($1,$2,$3,'runtime.answer_segment',$4,$5::jsonb,$6::jsonb,'[]'::jsonb,NOW())`,
-          [work.id,stepId,data.requestVersion,createHash('sha256').update(JSON.stringify(input)).digest('hex'),JSON.stringify(input),JSON.stringify(JSON.stringify({text}))])
+          [work.id,stepId,data.requestVersion,createHash('sha256').update(JSON.stringify(input)).digest('hex'),JSON.stringify(input),JSON.stringify(JSON.stringify({text,...(recovery?{recovery}:{})}))])
           return true
         }
         if(prior?.['kind']==='public.text.ended'||prior?.['kind']==='public.text.sealed')throw new Error('public text part is already closed')

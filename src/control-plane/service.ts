@@ -74,6 +74,7 @@ export interface ControlPlaneDeps {
   semanticReviewPolicy?: SemanticReviewPolicyIdentity & {
     resolve(work: Omit<WorkItem, 'leaseToken'>, candidate: Candidate): Promise<SemanticReviewScope | undefined>
   }
+  explanationStage?: (work: Omit<WorkItem, 'leaseToken'>, version: number) => Promise<import('../skills/explanation-stage.js').ExplanationStage | undefined>
   tools?: readonly ToolDefinition[]
   steps: import('./steps.js').StepStore
   work: WorkStore
@@ -547,11 +548,14 @@ export class ControlPlaneService {
     }
     if (typeof work.meta?.['text'] === 'string' && !grants.some(grant => grant.name === 'task')) grants.push({ name: 'task', methods: TASK_TOOLS.map(tool => tool.action.split('.')[1]!) })
     await this.requireLease(proof)
+    delete (context as Partial<TurnContext>).explanationStage
+    const explanationStage = await this.deps.explanationStage?.(work,requestVersion)
     delete (context as Partial<TurnContext>).semanticReviewPolicy
     const policy = this.deps.semanticReviewPolicy
       ? snapshotSemanticReviewPolicyIdentity({ id: this.deps.semanticReviewPolicy.id, version: this.deps.semanticReviewPolicy.version }) : undefined
     return { work: { ...work, leaseToken: proof.leaseToken }, ...context,
       ...(policy ? { semanticReviewPolicy: policy } : {}),
+      ...(explanationStage ? { explanationStage } : {}),
       snapshotVersion: { fence: work.fence, requestVersion, sessionRevision: snapshot.session?.revision ?? 0 },
       ...(includeSession ? { session: snapshot.session } : {}),
       executionSteps: steps, ...(checkpoint ? { executionCheckpoint: checkpoint.input as unknown as import('../runtime/corrections.js').ProgressCheckpoint } : {}), grants, dependencies, tools: grantedTools(this.deps.tools ?? TASK_TOOLS, grants).filter(tool => permitsTool(work, tool)), priorArtifacts: [...priorArtifacts.values()] }
@@ -873,6 +877,7 @@ export class ControlPlaneService {
     ) {
       throw new ControlPlaneError(400, 'invalid run event envelope')
     }
+    if(event.publicTextRecovery!==undefined && event.kind!=='public.text.sealed')throw new ControlPlaneError(400,'recovery metadata requires a public seal')
     if (event.kind === 'response.committed') throw new ControlPlaneError(400, 'response.committed is reserved for the result transaction')
     // Attempt-range fencing: an event must land inside its own attempt's
     // sequence range so retried attempts can never shadow one another.
@@ -899,7 +904,8 @@ export class ControlPlaneService {
     }
     this.deps.metrics?.counter('agentos_events_recorded_total', 'Run events recorded').inc({ kind: event.kind })
     try {
-      await this.deps.delivery.onEvent(work, event)
+      const {publicTextRecovery:_recovery,...publicEvent}=event
+      await this.deps.delivery.onEvent(work, publicEvent)
     } catch (error) {
       // Delivery is best-effort fan-out; the durable ledger already has the
       // event, so a delivery hiccup must not fail the worker's call.
@@ -1117,6 +1123,11 @@ export class ControlPlaneService {
     ) {
       throw new ControlPlaneError(400, 'invalid session record for this work lease')
     }
+    const publicHistory=session.request?.publicTextHistory
+    if(publicHistory && (!Number.isSafeInteger(publicHistory.requestVersion) || publicHistory.requestVersion<1
+      || publicHistory.requestVersion>session.request!.revisions.length+1 || !Array.isArray(publicHistory.partIds)
+      || publicHistory.partIds.length>128 || new Set(publicHistory.partIds).size!==publicHistory.partIds.length
+      || publicHistory.partIds.some(id=>typeof id!=='string'||!id||id.length>1000)))throw new ControlPlaneError(400,'invalid public message history cursor')
     if (session.request?.contract) {
       const contract = session.request.contract
       try {
@@ -1244,7 +1255,11 @@ export class ControlPlaneService {
       await this.requireLease(proof)
       const current = await this.deps.sessions.get(session.key, work.id)
       if (current && current.revision === session.revision + 1
-        && isDeepStrictEqual(current, { ...session, revision: current.revision })) {
+        && isDeepStrictEqual(current, { ...session, revision: current.revision,
+          // The store derives this from the raw saved request, not the client's previous read.
+          historyBoundary: session.request
+            ? { workId: session.request.workId, requestVersion: session.request.revisions.length + 1 }
+            : null })) {
         return { revision: current.revision }
       }
       throw new ControlPlaneError(409, 'session revision conflict', 'session_conflict')

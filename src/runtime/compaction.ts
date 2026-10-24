@@ -93,7 +93,9 @@ export async function compactIfNeeded(
   background = false,
   project?: (items: readonly ModelItem[]) => ModelItem[],
 ): Promise<CompactionOutcome> {
-  const estimated = estimateTokens(session.history, model) + overheadTokens
+  const estimate = (items: readonly ModelItem[]) => estimateTokens(project ? project(items) : items, model)
+  const isLiveNative = (item: ModelItem) => 'type' in item && (!project || project([item]).some(value => 'type' in value))
+  const estimated = estimate(session.history) + overheadTokens
   const softLimit = Math.floor(options.contextWindowTokens * options.softRatio)
   const hardLimit = Math.floor(options.contextWindowTokens * options.hardRatio)
   // History compaction cannot shrink fixed instructions, tools or the current request.
@@ -112,21 +114,21 @@ export async function compactIfNeeded(
   const targetLimit = background ? softLimit : hardLimit
   let boundary: number
   const completedCalls = new Set(session.history.flatMap(item =>
-    'type' in item && item.type === 'function_call_output' ? [item.callId] : []))
+    isLiveNative(item) && 'type' in item && item.type === 'function_call_output' ? [item.callId] : []))
   do {
     boundary = session.history.length - keepTailItems
     // A candidate may be built while tools run; their future outputs must retain the original calls.
     for (let index = 0; index < boundary; index++) {
       const item = session.history[index]!
-      if ('type' in item && item.type === 'function_call' && !completedCalls.has(item.callId)) boundary = index
+      if (isLiveNative(item) && 'type' in item && item.type === 'function_call' && !completedCalls.has(item.callId)) boundary = index
     }
     // Close the kept suffix over tool pairs. Moving the boundary can expose
     // another output, so scan again until the boundary stops moving.
     for (let index = boundary; index < session.history.length; index++) {
       const item = session.history[index]!
-      if ('type' in item && item.type === 'function_call_output') {
+      if (isLiveNative(item) && 'type' in item && item.type === 'function_call_output') {
         const callIndex = session.history.findIndex((candidate) =>
-          'type' in candidate && candidate.type === 'function_call' && candidate.callId === item.callId)
+          isLiveNative(candidate) && 'type' in candidate && candidate.type === 'function_call' && candidate.callId === item.callId)
         if (callIndex >= 0 && callIndex < boundary) {
           boundary = callIndex
           index = boundary - 1
@@ -136,7 +138,7 @@ export async function compactIfNeeded(
     // Item count is only a preference: short histories can already exhaust the budget.
     // Halve the tail until a paired suffix leaves room for the bounded summary.
     if (estimated < targetLimit || keepTailItems === 0
-      || estimateTokens(session.history.slice(boundary), model) + overheadTokens + options.maxSummaryChars <= targetLimit) break
+      || estimate(session.history.slice(boundary)) + overheadTokens + options.maxSummaryChars <= targetLimit) break
     keepTailItems = Math.floor(keepTailItems / 2)
   } while (true)
   if (boundary === 0) return { compacted: false }
@@ -205,7 +207,7 @@ export async function compactIfNeeded(
     }
     signal?.throwIfAborted()
     const history = [{ ...summaryItem(combined), ...(project || summarize.some(item => item.memorySources) ? { memorySources } : {}) }, ...keep]
-    if (estimateTokens(history, model) >= estimateTokens(session.history, model)) return { compacted: false }
+    if (estimate(history) >= estimate(session.history)) return { compacted: false }
     session.summary = combined
     session.history = history
     session.compactionEpoch += 1

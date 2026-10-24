@@ -12,6 +12,7 @@ import {AnswerSegmentSet,type SealedAnswerSegment} from '../src/runtime/answer-s
 import {validateToolBatch,compileToolSchemas} from '../src/runtime/tool-batch.js'
 import {TASK_TOOLS,type ToolDefinition} from '../src/tools/catalog.js'
 import type {SqlPool} from '../src/control-plane/pg-store.js'
+import {LeaseLostError} from '../src/errors.js'
 import {nullLogger} from '../src/logging.js'
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex')
 const record=(partId:string,text:string,supersedes:string[]=[],segmentId=partId):SealedAnswerSegment=>({text,bodyHash:hash(text),identity:{version:3,purpose:'answer',messageId:'answer:run:v1',requestVersion:1,fence:1,attemptId:partId,partId,segmentId,partIndex:1,operation:supersedes.length?'replace':'append',supersedes}})
@@ -43,30 +44,50 @@ it('all catalog arguments are checked without coercion or side effects before an
   assert.throws(()=>compileToolSchemas([{...probe,parameters:{...probe.parameters,properties:{value:{unrecognizedAssertion:true}}}}]),/unknown keyword/)
 })
 
-type Reply={answer:string|null;tool?:number;badSecond?:boolean;replace?:boolean;partial?:boolean}
-async function fixture(replies:Reply[],allowed=true,text='Read the synthetic record and explain the result.'){
+type Reply={answer:string|null;tool?:number;badSecond?:boolean;replace?:boolean;partial?:boolean;intermediate?:boolean;omitCommentary?:boolean}
+async function fixture(replies:Reply[],allowed=true,text='Read the synthetic record and explain the result.',continuation=false,fault?:'seal'|'second-seal'|'cancel',maxCalls?:number,fastOnly=false){
   const db=new PGlite(),home=await mkdtemp(join(tmpdir(),'react-runtime-'))
   await db.exec(await readFile(new URL('../../db/schema.sql',import.meta.url),'utf8'))
-  let tail=Promise.resolve(),modelCalls=0,effects=0,auxiliaryCalls=0
+  let tail=Promise.resolve(),modelCalls=0,effects=0,auxiliaryCalls=0,faulted=false,seals=0
+  const requests:Array<{messages:Array<{content:unknown}>}>=[]
   const acquire=async()=>{let release!:()=>void;const previous=tail;tail=new Promise<void>(r=>{release=r});await previous;return release}
   const query:SqlPool['query']=async(sql,params)=>{const r=await db.query<Record<string,unknown>>(sql,params);return {rows:r.rows,rowCount:r.affectedRows??r.rows.length}}
   const pool:SqlPool={async query(sql,params){const release=await acquire();try{return await query(sql,params)}finally{release()}},async connect(){return {query,release:await acquire()}}}
-  const app=await createLingxiOS({database:pool,homesRoot:home,logger:nullLogger,delivery:{onEvent:async()=>{},deliverMessage:async()=>({messageId:'synthetic-receipt'})},realtime:{allowPublicText:()=>allowed},tools:[{...probe,parse:args=>args as Record<string,unknown>,authorize:async()=>{},execute:async()=>{effects++;return {ok:true,value:{value:2}}}}]})
-  const driver=new OpenAIChatDriver('react-fixture',{apiKey:'fixture',publicTextProtocol:'purpose-json-v3',maxAttempts:1,capabilities:{parallelTools:true,jsonObjectWithTools:true},fetchImpl:async(_url,init)=>{
+  const app=await createLingxiOS({...(fastOnly?{responsePolicy:'auto' as const}:{}),database:pool,homesRoot:home,logger:nullLogger,delivery:{onEvent:async()=>{},deliverMessage:async()=>({messageId:'synthetic-receipt'})},realtime:{allowPublicText:()=>allowed},tools:[{...probe,parse:args=>args as Record<string,unknown>,authorize:async()=>{},execute:async()=>{effects++;return {ok:true,value:{value:2}}}}]})
+  const connect=app.connectWorker.bind(app)
+  app.connectWorker=options=>{
+    const host=connect(options),emit=host.emitEvent.bind(host)
+    host.emitEvent=async(work,event,signal)=>{
+      await emit(work,event,signal)
+      if(event.kind==='public.text.sealed')seals++
+      if(fault&&!faulted&&event.kind==='public.text.sealed'&&(fault!=='second-seal'||seals===2)){
+        faulted=true
+        if(fault==='cancel'){await app.cancel(identity);return}
+        await pool.query("UPDATE lingxios.agent_work_items SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE id=$1",[work.id])
+        await pool.query("UPDATE lingxios.agent_os_session_leases SET expires_at=NOW()-INTERVAL '1 second' WHERE work_id=$1",[work.id])
+        throw new LeaseLostError('synthetic lost seal acknowledgement')
+      }
+    };return host
+  }
+  const fetchImpl:typeof fetch=async(_url,init)=>{
     const request=JSON.parse(String(init?.body)) as {stream?:boolean;messages:Array<{content:unknown}>}
+    requests.push(request)
     if(!request.stream){auxiliaryCalls++;throw new Error('ordinary ReAct must not call a judge')}
     const reply=replies[modelCalls++]??{answer:null,partial:true}
     const rows=await pool.query("SELECT input FROM lingxios.agent_steps WHERE kind='runtime.answer_segment' ORDER BY step_seq")
     const supersedes=reply.replace?rows.rows.map(row=>String((row['input'] as Record<string,unknown>)['partId'])):[]
-    const content=JSON.stringify({operation:{kind:reply.replace?'replace':'append',supersedes},commentary:'',answer:reply.answer,outcome:reply.tool===undefined?{status:reply.partial?'partial':'satisfied',gaps:reply.partial?['Synthetic limitation.']:[]}:null})
+    const content=JSON.stringify({operation:{kind:reply.replace?'replace':'append',supersedes},...(reply.omitCommentary?{}:{commentary:''}),answer:reply.answer,outcome:reply.tool===undefined&&!reply.intermediate?{status:reply.partial?'partial':'satisfied',gaps:reply.partial?['Synthetic limitation.']:[]}:null})
     const calls=reply.tool===undefined?undefined:[{index:0,id:`call-${modelCalls}`,function:{name:probe.name,arguments:JSON.stringify({value:reply.tool})}},...reply.badSecond?[{index:1,id:`bad-${modelCalls}`,function:{name:probe.name,arguments:'{"value":"invalid"}'}}]:[]]
     const frame=(delta:unknown,finish:string|null)=>`data: ${JSON.stringify({choices:[{delta,finish_reason:finish}],usage:{prompt_tokens:20,completion_tokens:10}})}\n\n`
     return new Response(frame({content},null)+frame(calls?{tool_calls:calls}:{},calls?'tool_calls':'stop')+'data: [DONE]\n\n')
-  }})
-  const worker=createWorker({controlPlane:app,model:driver,logger:nullLogger,kernel:{homesRoot:home},worker:{id:'react-worker',healthPort:0}})
+  }
+  const options={apiKey:'fixture',publicTextProtocol:'purpose-json-v3' as const,maxAttempts:1,capabilities:{parallelTools:true,jsonObjectWithTools:true},fetchImpl}
+  const driver=new OpenAIChatDriver('react-fixture',{...options,...(continuation?{publicTextContinuation:'typed-message-v1' as const}:{})})
+  const model=fastOnly?new OpenAIChatDriver('deep-terminal-only',options):driver
+  const worker=createWorker({...(maxCalls?{modelBudget:{maxModelCalls:maxCalls}}:{}),controlPlane:app,model,...(fastOnly?{fastModel:driver}:{}),logger:nullLogger,kernel:{homesRoot:home},worker:{id:'react-worker',healthPort:0}})
   const identity={runId:'react-runtime',tenantId:'tenant',principalId:'human',agentId:'agent',sessionId:'room'}
   await app.enqueue({id:identity.runId,...identity,text,mode:'execute',codeExecution:'disabled',deliveryMode:'auto'})
-  return {app,pool,identity,driver,worker,get calls(){return modelCalls},get effects(){return effects},get auxiliary(){return auxiliaryCalls},setAllowed(value:boolean){allowed=value},async run(){await worker.runNext();return (await app.readRunState(identity))!},async close(){await worker.stop();await app.stop();await db.close();await rm(home,{recursive:true,force:true})}}
+  return {app,pool,identity,driver,worker,requests,async restart(){await worker.stop();const replacement=createWorker({controlPlane:app,model,...(fastOnly?{fastModel:driver}:{}),logger:nullLogger,kernel:{homesRoot:home},worker:{id:'replacement-worker',healthPort:0}});try{await replacement.runNext();return (await app.readRunState(identity))!}finally{await replacement.stop()}},get calls(){return modelCalls},get effects(){return effects},get auxiliary(){return auxiliaryCalls},setAllowed(value:boolean){allowed=value},async run(){await worker.runNext();return (await app.readRunState(identity))!},async close(){await worker.stop();await app.stop();await db.close();await rm(home,{recursive:true,force:true})}}
 }
 
 it('full Worker answers a plain number in one generation without tools or semantic review',async()=>{
@@ -152,4 +173,81 @@ it('declared draft-2020 schemas validate standard URI and date-time without dele
   const call=(args:unknown)=>[{type:'function_call' as const,callId:'formats',name:probe.name,arguments:JSON.stringify(args)}]
   validateToolBatch(call({url:'https://example.org/item',at:'2026-10-23T12:00:00Z'}),[schema],'disabled')
   for(const args of [{url:'not a URI',at:'2026-10-23T12:00:00Z'},{url:'https://example.org/item',at:'2026-99-99'}])assert.throws(()=>validateToolBatch(call(args),[schema],'disabled'),/schema/)
+})
+
+
+it('explicit intermediate A → native tool → B → null final preserves one answer and normal generation count',async()=>{
+  const f=await fixture([{answer:' A ',intermediate:true},{answer:'',tool:2},{answer:'B ',intermediate:true},{answer:null}],true,'Read and explain.',true)
+  try{const state=await f.run();assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'A B')
+    assert.equal(f.calls,4);assert.equal(f.effects,1);assert.equal(f.auxiliary,0)
+    const events=(await f.app.readEvents(f.identity)).events
+    assert.equal(events.filter(e=>e.kind==='public.text.sealed').length,2)
+    assert.equal(events.filter(e=>e.kind==='response.committed').length,1)
+    const steps=await f.pool.query("SELECT kind FROM lingxios.agent_steps WHERE kind='runtime.answer_segment'")
+    assert.equal(steps.rows.length,2);assert.equal(state.message?.publicTextSources?.segments.length,2)
+  }finally{await f.close()}
+})
+it('continuation opt-in arithmetic still delivers in one generation without a tool or judge',async()=>{
+  const f=await fixture([{answer:'43'}],true,'What is 17 + 26?',true)
+  try{const state=await f.run();assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'43');assert.equal(f.calls,1);assert.equal(f.effects,0);assert.equal(f.auxiliary,0)}finally{await f.close()}
+})
+
+it('durable intermediate seal survives lost acknowledgement before history save and resumes without replay',async()=>{
+  const f=await fixture([{answer:'A known fact. ',intermediate:true},{answer:'',tool:2},{answer:'B observed result.',intermediate:true},{answer:null}],true,'Read and explain.',true,'seal')
+  try{await f.run();assert.equal(f.calls,1);assert.equal(f.effects,0)
+    const state=await f.restart();assert.equal(state.run.status,'succeeded');assert.equal(state.run.fence,2)
+    assert.equal(state.message?.body,'A known fact. B observed result.');assert.equal(f.calls,4);assert.equal(f.effects,1)
+    assert.equal(JSON.stringify(f.requests[1]).split('A known fact. ').length-1,1,'recovered body occurs once in the next model request')
+    const events=(await f.app.readEvents(f.identity)).events
+    assert.equal(events.filter(e=>e.kind==='public.text.sealed').length,2)
+    assert.equal(events.filter(e=>e.kind==='public.text.delta'&&e.data['text']==='A known fact. ').length,1)
+    assert.equal(events.some(e=>JSON.stringify(e).includes('publicTextRecovery')),false,'private provenance never enters public events')
+  }finally{await f.close()}
+})
+it('cancellation after intermediate seal prevents a subsequent native dispatch or terminal commit',async()=>{
+  const f=await fixture([{answer:'A known fact.',intermediate:true},{answer:'',tool:2}],true,'Read and explain.',true,'cancel')
+  try{const state=await f.run();assert.equal(state.run.status,'cancelled');assert.equal(f.calls,1);assert.equal(f.effects,0);assert.equal(state.message,null)
+    assert.equal((await f.app.readEvents(f.identity)).events.filter(e=>e.kind==='public.text.sealed').length,1)
+  }finally{await f.close()}
+})
+
+it('restart after a later sealed message retains prior saved history once and never repeats the completed tool',async()=>{
+  const f=await fixture([{answer:'A known fact. ',intermediate:true},{answer:'',tool:2},{answer:'B observed result.',intermediate:true},{answer:null}],true,'Read and explain.',true,'second-seal')
+  try{await f.run();assert.equal(f.calls,3);assert.equal(f.effects,1)
+    const state=await f.restart();assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'A known fact. B observed result.')
+    assert.equal(f.calls,4);assert.equal(f.effects,1)
+    const next=JSON.stringify(f.requests[3]);assert.equal(next.split('A known fact. ').length-1,1);assert.equal(next.split('B observed result.').length-1,1)
+    assert.equal((await f.app.readEvents(f.identity)).events.filter(e=>e.kind==='public.text.sealed').length,2)
+  }finally{await f.close()}
+})
+it('an explicit partial terminal declaration after intermediate content cannot become satisfied',async()=>{
+  const f=await fixture([{answer:'Known portion. ',intermediate:true},{answer:'Missing the requested observation.',partial:true}],true,'Read and explain.',true)
+  try{const state=await f.run();assert.equal(state.run.status,'partial');assert.equal(state.message?.body,'Known portion. Missing the requested observation.');assert.equal(f.calls,2);assert.equal(f.effects,0)}finally{await f.close()}
+})
+
+it('repeated intermediate items consume the existing global model budget without declaring completion',async()=>{
+  const f=await fixture(Array.from({length:5},(_,i)=>({answer:`Known fact ${i}. `,intermediate:true})),true,'Explain the known facts.',true,undefined,3)
+  try{const state=await f.run();assert.equal(state.run.status,'failed');assert.equal(f.calls,3);assert.equal(f.effects,0);assert.equal(state.message,null)
+    const events=(await f.app.readEvents(f.identity)).events
+    assert.equal(events.filter(e=>e.kind==='public.text.sealed').length,3);assert.equal(events.filter(e=>e.kind==='response.committed').length,0)
+  }finally{await f.close()}
+})
+
+it('fast-only continuation restores its sealed body when restart selects terminal-only deep',async()=>{
+  const f=await fixture([{answer:'Known answer.',intermediate:true},{answer:null}],true,'Explain.',true,'seal',undefined,true)
+  try{const initial=await f.run();assert.equal(f.calls,1,JSON.stringify(initial.run))
+    const state=await f.restart();assert.equal(state.run.status,'succeeded',JSON.stringify(state.run));assert.equal(f.calls,2);assert.equal(state.message?.body,'Known answer.')
+    assert.equal(JSON.stringify(f.requests[1]).split('Known answer.').length-1,1)
+  }finally{await f.close()}
+})
+
+it('optional commentary completes intermediate → native tool → terminal without protocol correction',async()=>{
+  const f=await fixture([{answer:'Known fact. ',intermediate:true,omitCommentary:true},{answer:'',tool:2},{answer:'Observed result.',omitCommentary:true}],true,'Read and explain.',true)
+  try{const state=await f.run();assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'Known fact. Observed result.')
+    assert.equal(f.calls,3);assert.equal(f.effects,1);assert.equal(f.auxiliary,0)
+    const events=(await f.app.readEvents(f.identity)).events
+    assert.equal(events.filter(e=>e.kind==='public.text.sealed').length,2)
+    const failures=await f.pool.query("SELECT 1 FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='model.failed'",[f.identity.runId])
+    assert.equal(failures.rows.length,0)
+  }finally{await f.close()}
 })

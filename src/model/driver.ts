@@ -25,6 +25,10 @@ export interface ModelTurnResult {
   outcomeDeclaration?: OutcomeDeclaration
   answerOperation?: PublicTextOperation
   answerIsNull?: boolean
+  /** A complete public message; execution continues until an explicit terminal declaration. */
+  publicTextPhase?: 'intermediate'
+  /** Protocol output only: never dispatch through the business tool executor. */
+  publicAnswerCall?: import('../protocol/public-answer-call.js').PublicAnswerCall
   /** Items to append to session history (assistant text and/or tool calls). */
   output: ModelItem[]
   /** Full assistant text of this turn ('' when the turn is a tool call). */
@@ -102,6 +106,8 @@ export interface ModelDriver {
   readonly previewFormat?: 'candidate-json' | 'user-text'
   /** Explicit public text generation protocol; absent means unknown purpose. */
   readonly publicTextProtocol?: PublicTextProtocol | undefined
+  readonly publicTextContinuation?: 'typed-message-v1' | undefined
+  readonly publicAnswerTool?: 'native-v1' | undefined
   readonly profile?: ModelProfile
   /** A provider tokenizer or calibrated upper bound; never a fixed bytes/constant guess. */
   countTokens?(text: string): number

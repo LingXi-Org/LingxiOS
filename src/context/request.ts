@@ -11,6 +11,8 @@ import { snapshotObligations, type DeliveryObligation } from '../outcome/obligat
 export type DeliveryMode = 'auto' | 'text' | 'action'
 
 export interface RequestSnapshot {
+  /** Host-owned seal cursor, saved atomically with session history and retained through compaction. */
+  publicTextHistory?: {requestVersion:number;partIds:string[]}
   version: 1
   workId: string
   tenantId: string
@@ -56,7 +58,7 @@ export function snapshotRequest(context: TurnContext): RequestSnapshot {
       || typeof delegation?.['assignment'] !== 'string' || typeof delegation?.['instructionAuthorId'] !== 'string'
       || !Number.isSafeInteger(delegation?.['parentRequestVersion'])
       || Number(delegation['parentRequestVersion']) !== parent.revisions.length + 1) throw new Error('invalid delegated request snapshot')
-    const { contract: _contract, resourceChecks: _checks, deliveryMode: _parentDelivery, mode: parentMode, obligations: _parentObligations, codeExecution: parentCode, ...inherited } = structuredClone(parent)
+    const { publicTextHistory: _publicHistory, contract: _contract, resourceChecks: _checks, deliveryMode: _parentDelivery, mode: parentMode, obligations: _parentObligations, codeExecution: parentCode, ...inherited } = structuredClone(parent)
     const codeExecution = parentCode === 'disabled' || configuredCode === 'disabled' ? 'disabled'
       : configuredCode ?? parentCode
     return { ...inherited, ...(context.work.conversation ? { conversation: structuredClone(context.work.conversation) } : {}),
