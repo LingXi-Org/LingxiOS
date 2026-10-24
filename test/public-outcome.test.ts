@@ -79,5 +79,5 @@ it('preserves cancellation between answer and metadata and usage on declaration 
 it('v2 protocol repair names the pinned wire and never replays completed or uncertain effects',()=>{
   const correction=(modelProtocolCorrection as (...args:unknown[])=>{content:string})({finishReasons:[],kind:'protocol',protocolCode:'public_text_invalid'},'disabled','purpose-json-v2')
   assert.match(correction.content,/purpose-json-v2/);assert.doesNotMatch(correction.content,/purpose-json-v1/)
-  assert.match(correction.content,/do not repeat completed or uncertain side effects/)
+  assert.match(correction.content,/Existing receipts remain the record of completed or uncertain actions\./)
 })

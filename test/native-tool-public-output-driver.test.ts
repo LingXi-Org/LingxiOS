@@ -179,7 +179,7 @@ for (const exposed of [false, true]) it(`rejects terminal null outcome and prese
     const correction = modelProtocolCorrection(diagnostics, 'disabled', 'purpose-json-v3')
     assert.match(correction.content, /trusted model driver/)
     assert.doesNotMatch(correction.content, /satisfied|"outcome"|Tool-turn assistant content example/)
-    assert.match(correction.content, /do not repeat completed or uncertain side effects/)
+    assert.match(correction.content, /Existing receipts remain the record of completed or uncertain actions\./)
     return true
   })
 })

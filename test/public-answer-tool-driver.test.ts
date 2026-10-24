@@ -32,7 +32,7 @@ it('public-answer terminal uses one generation, one output binding and byte-iden
   assert.deepEqual(result.output, [], 'the output binding is not a dispatchable business tool')
   assert.equal(result.publicTextPhase, undefined); assert.equal(f.requests.length, 1)
   const payload = f.requests[0]!, tools = payload['tools'] as Array<{ type: string; function: { name: string; parameters: Record<string, unknown> } }>
-  assert.equal(payload['stream'], true); assert.equal(payload['tool_choice'], 'required'); assert.equal(payload['parallel_tool_calls'], false)
+  assert.equal(payload['stream'], true); assert.equal(payload['tool_choice'], 'auto'); assert.equal(payload['parallel_tool_calls'], false)
   assert.equal(tools.length, 2)
   assert.deepEqual(tools.find(t => t.function.name === business.name)?.function.parameters, business.parameters)
   const output = tools.find(t => t.function.name === 'public_answer')!
@@ -147,27 +147,27 @@ it('quota/execution wrappers preserve output capability and meter one native out
   assert.deepEqual({ reservations, settlements, fetches: f.requests.length }, { reservations: 1, settlements: 1, fetches: 1 })
 })
 
-it('native output required policy keeps every business choice and never degrades an unsupported provider response', async () => {
+it('native output auto policy keeps every business choice and propagates a provider rejection without switching strategy', async () => {
   const requests: Array<Record<string, unknown>> = [], counted: string[] = []
-  const model = new OpenAIChatDriver('required-policy-fixture', { ...options, apiKey: 'synthetic-required-policy', maxAttempts: 3,
+  const model = new OpenAIChatDriver('auto-policy-fixture', { ...options, apiKey: 'synthetic-auto-policy', maxAttempts: 3,
     countTokens: text => { counted.push(text); return text.length },
     fetchImpl: async (_url, init) => {
       requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
-      return new Response(JSON.stringify({ error: { code: 'unsupported_tool_choice', message: 'Synthetic required mode unsupported.' } }), { status: 400 })
+      return new Response(JSON.stringify({ error: { code: 'synthetic_request_rejected', message: 'Synthetic auto request rejected.' } }), { status: 400 })
     } })
   counted.length = 0
   const estimate = model.generationInputTokens(request)
   assert.equal(counted.length, 1)
   assert.equal(estimate, counted[0]!.length)
   const estimatedPayload = JSON.parse(counted[0]!) as Record<string, unknown>
-  assert.equal(estimatedPayload['tool_choice'], 'required')
+  assert.equal(estimatedPayload['tool_choice'], 'auto')
   await assert.rejects(model.run(request), (error: unknown) => {
     assert.ok(error && typeof error === 'object' && 'diagnostics' in error)
     const diagnostics = error.diagnostics as { status?: number; attempts?: number }
     assert.equal(diagnostics.status, 400); assert.equal(diagnostics.attempts, 1); return true
   })
   assert.equal(requests.length, 1)
-  assert.equal(requests[0]!['tool_choice'], 'required')
+  assert.equal(requests[0]!['tool_choice'], 'auto')
   for (const key of ['messages', 'tools', 'tool_choice', 'parallel_tool_calls']) assert.deepEqual(estimatedPayload[key], requests[0]![key], `wire budget matches actual ${key}`)
   assert.deepEqual((requests[0]!['tools'] as Array<{function:{name:string}}>).map(tool => tool.function.name), [business.name, 'public_answer'])
 })
