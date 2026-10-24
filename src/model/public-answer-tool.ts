@@ -28,7 +28,7 @@ export const PUBLIC_ANSWER_TOOL = convertToOpenAITool(tool(() => {
 
 export const PUBLIC_ANSWER_TOOL_INSTRUCTIONS = `Public output wire contract (purpose-json-v3; publicAnswerTool native-v1):
 Use one native call per turn: public_answer for user-facing content, or a business tool with its exposed arguments. Assistant content and reasoning are private.
-public_answer arguments follow this order: operation, optional commentary, answer, outcome. operation is {kind:"append",supersedes:[]} for new text, or {kind:"replace",supersedes:[active source IDs]} for a revision. Append text includes its own spacing; replacements become active after delivery validation.
+public_answer arguments are operation, optional commentary, answer, outcome. operation is {kind:"append",supersedes:[]} for new text, or {kind:"replace",supersedes:[active source IDs]} for a revision. Append text includes its own spacing; replacements become active after delivery validation.
 answer is substantive public content; optional commentary is concise public status. outcome:null records a nonempty intermediate answer and continues the task.
 A terminal outcome has {status:"satisfied"|"partial"|"blocked",gaps:[...]}. satisfied represents the full delivered result with empty gaps; partial and blocked describe remaining gaps. A terminal answer may be null when sealed sources already contain the answer, or add the remaining content.
 Choose a business tool when more evidence or an action is needed. A simple answer can finish with one public_answer. The protocol acknowledgement confirms that a public message was recorded; business results and delivery have their own receipts.`

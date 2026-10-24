@@ -1,3 +1,4 @@
+import { PublicAnswerParser } from './public-answer-parser.js'
 import { PUBLIC_ANSWER_TOOL, PUBLIC_ANSWER_TOOL_INSTRUCTIONS } from './public-answer-tool.js'
 import { PUBLIC_ANSWER_TOOL_NAME, decodePublicAnswerCall, type PublicAnswerCall } from '../protocol/public-answer-call.js'
 import type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
@@ -279,7 +280,7 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
       ...(this.publicTextContinuation ? { publicTextContinuation: this.publicTextContinuation } : {}),
-      ...(this.publicAnswerTool ? { publicAnswerTool:this.publicAnswerTool, publicAnswerHistoryPolicy:'sealed-native-call-ack-v1', publicAnswerInstructionsHash:createHash('sha256').update(PUBLIC_ANSWER_TOOL_INSTRUCTIONS).digest('hex') } : {}),
+      ...(this.publicAnswerTool ? { publicAnswerTool:this.publicAnswerTool, publicAnswerHistoryPolicy:'sealed-native-call-ack-v1', publicAnswerParserPolicy:'streamparser-field-order-v1', publicAnswerToolChoice:'required-v1', publicAnswerInstructionsHash:createHash('sha256').update(PUBLIC_ANSWER_TOOL_INSTRUCTIONS).digest('hex') } : {}),
       ...(options.nativeToolPublicOutput ? { nativeToolPublicOutput: options.nativeToolPublicOutput,
         nativeToolIdentityPolicy: 'bounded-unambiguous-prefix-v1' } : {}),
     })).digest('hex')
@@ -505,7 +506,7 @@ export class OpenAIChatDriver implements ModelDriver {
     if (this.publicAnswerTool) {
       if (tools.some(tool => tool.function.name === PUBLIC_ANSWER_TOOL_NAME)) throw new Error('reserved public answer tool name')
       return this.countTokens(JSON.stringify({ messages: toWireMessages(this.generationInstructions(request.instructions, false), request.items),
-        tools: [...tools, PUBLIC_ANSWER_TOOL], tool_choice:'auto', parallel_tool_calls:false }))
+        tools: [...tools, PUBLIC_ANSWER_TOOL], tool_choice:'required', parallel_tool_calls:false }))
     }
     const nativeEnvelope = tools.length > 0
     return this.countTokens(JSON.stringify({ messages: toWireMessages(this.generationInstructions(request.instructions, nativeEnvelope),
@@ -534,7 +535,7 @@ export class OpenAIChatDriver implements ModelDriver {
     }
     if(this.publicTextProtocol&&!this.profile.jsonObject)throw new Error('public text protocol requires JSON object support')
     const purposeParser=this.publicTextProtocol?new PublicPurposeParser(this.publicTextProtocol):undefined
-    const publicCallParser=this.publicAnswerTool ? new PublicPurposeParser('purpose-json-v3') : undefined
+    const publicCallParser=this.publicAnswerTool ? new PublicAnswerParser() : undefined
     let publicCallIdentity: {id:string;name:string} | undefined
     let publicCallConsumed = 0
     let operationPublished=false
@@ -603,7 +604,7 @@ export class OpenAIChatDriver implements ModelDriver {
       model: this.modelId,
       messages: toWireMessages(this.generationInstructions(request.instructions, nativeEnvelope), request.items, nativeEnvelope),
       ...(!this.publicAnswerTool && purposeParser && (!tools.length || this.profile.jsonObjectWithTools !== false) ? { response_format: { type: 'json_object' } } : {}),
-      ...(tools.length ? { tools: wireTools, tool_choice: 'auto', parallel_tool_calls: this.profile.parallelTools } : {}),
+      ...(tools.length ? { tools: wireTools, tool_choice: this.publicAnswerTool ? 'required' : 'auto', parallel_tool_calls: this.profile.parallelTools } : {}),
       stream: true,
       stream_options: { include_usage: true },
     }, request.signal)

@@ -1,4 +1,5 @@
-import { PublicPurposeParser, publicPurposeError } from '../model/public-purpose.js'
+import { publicPurposeError } from '../model/public-purpose.js'
+import { PublicAnswerParser } from '../model/public-answer-parser.js'
 import type { ModelItem } from './types.js'
 import type { MemorySources } from '../memory/history.js'
 
@@ -12,9 +13,9 @@ export function decodePublicAnswerCall(value: PublicAnswerCall) {
     || typeof value.callId !== 'string' || !value.callId || value.callId.trim() !== value.callId || value.callId.length > 256
     || typeof value.arguments !== 'string' || value.arguments.length > 256_000
     || Object.keys(value).some(key => !['type', 'callId', 'name', 'arguments'].includes(key))) throw publicPurposeError()
-  const parser = new PublicPurposeParser('purpose-json-v3')
+  const parser = new PublicAnswerParser()
   parser.push(value.arguments); parser.finish()
-  const text = (JSON.parse(value.arguments) as { answer: string | null }).answer
+  const text = parser.answer
   if (!parser.operation || parser.outcome === undefined || parser.outcome === null && (text === null || !text.trim())) throw publicPurposeError()
   return { text, operation: parser.operation, outcome: parser.outcome }
 }
