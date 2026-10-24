@@ -10,16 +10,50 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('../', import.meta.url))
 const packageOnly = process.argv.includes('--package-only')
 const gates = []
+let releaseContext
+
+async function recordFailure(gate, exitCode, failedTests) {
+  if (!releaseContext) return
+  const directory = join(root, 'release-results', 'failures')
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, `${releaseContext.source.sha256}.json`), JSON.stringify({
+    version: 1, qualification: 'failed-release-gates', commit: releaseContext.commit,
+    sourceSha256: releaseContext.source.sha256, failedGate: { id: gate, exitCode, failedTests },
+  }, null, 2) + '\n')
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    const escape = value => value.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A')
+    console.error(`::error title=Release gate failed::${escape(JSON.stringify({ gate, exitCode, failedTests }))}`)
+  }
+}
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: root, env: { ...process.env, ...options.env }, windowsHide: true, shell: options.shell,
-      stdio: options.capture ? ['ignore', 'pipe', 'pipe'] : 'inherit' })
+      stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''
-    child.stdout?.on('data', data => { output += data })
-    child.stderr?.on('data', data => { output += data })
+    const failedTests = new Set()
+    for (const [stream, destination] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
+      let pending = ''
+      stream.on('data', data => {
+        if (options.capture) output += data
+        else destination.write(data)
+        if (!options.gateId) return
+        const lines = (pending + data.toString()).split(/\r?\n/)
+        pending = lines.pop()
+        for (const line of lines) {
+          const failure = /^\s*not ok \d+ - (.+)$/.exec(line)
+          if (failure) failedTests.add(failure[1])
+        }
+      })
+    }
     child.on('error', reject)
-    child.on('exit', code => code === 0 ? resolve(output) : reject(new Error(`${command} exited with ${code}${output ? `\n${output}` : ''}`)))
+    child.on('close', async code => {
+      if (code === 0) return resolve(output)
+      if (options.gateId) await recordFailure(options.gateId, code, [...failedTests]).catch(() => {
+        console.error('Could not persist the release gate failure report')
+      })
+      reject(new Error(`${command} exited with ${code}${output ? `\n${output}` : ''}`))
+    })
   })
 }
 
@@ -34,6 +68,7 @@ async function sourceSnapshot() {
 }
 const source = await sourceSnapshot()
 const commit = (await run('git', ['rev-parse', 'HEAD'], { capture: true })).trim()
+releaseContext = { commit, source }
 async function recordQualification() {
   assert.equal((await sourceSnapshot()).sha256, source.sha256, 'source changed during release checks; no qualification emitted')
   const { releaseVersions } = await import('../dist/src/versions.js')
@@ -47,9 +82,9 @@ async function recordQualification() {
   console.log(`Release qualification: ${path}`)
 }
 
-await run(process.execPath, ['scripts/build.mjs'])
+await run(process.execPath, ['scripts/build.mjs'], { gateId: 'typecheck-build' })
 gates.push({ id: 'typecheck-build', status: 'passed' })
-await run('npm', ['run', 'test:only'], { shell: process.platform === 'win32' })
+await run('npm', ['run', 'test:only'], { shell: process.platform === 'win32', gateId: 'unit-and-package-install' })
 gates.push({ id: 'unit-and-package-install', status: 'passed' })
 if (packageOnly) { await recordQualification(); process.exit(0) }
 
@@ -58,8 +93,8 @@ const password = randomUUID()
 let admin
 try {
   process.env.POSTGRES_PASSWORD = password
-  await run('docker', ['run', '-d', '--rm', '--name', container, '-e', 'POSTGRES_PASSWORD', '-p', '127.0.0.1::5432', 'postgres:16.4-bookworm'], { capture: true })
-  const binding = await run('docker', ['port', container, '5432/tcp'], { capture: true })
+  await run('docker', ['run', '-d', '--rm', '--name', container, '-e', 'POSTGRES_PASSWORD', '-p', '127.0.0.1::5432', 'postgres:16.4-bookworm'], { capture: true, gateId: 'postgres-start' })
+  const binding = await run('docker', ['port', container, '5432/tcp'], { capture: true, gateId: 'postgres-port' })
   const port = Number(binding.trim().split(':').at(-1))
   assert.ok(port > 0, 'Docker did not publish the PostgreSQL port')
   admin = new Pool({ host: '127.0.0.1', port, user: 'postgres', password, database: 'postgres', connectionTimeoutMillis: 1000 })
@@ -75,13 +110,13 @@ try {
     ['gate_operations', 'test-operation-context.mjs', 'LINGXIOS_OPERATION_TEST_DATABASE_URL'],
   ]) {
     await admin.query(`CREATE DATABASE ${database}`)
-    await run(process.execPath, [`scripts/${script}`], { env: { [variable]: `postgresql://postgres:${password}@127.0.0.1:${port}/${database}` } })
+    await run(process.execPath, [`scripts/${script}`], { env: { [variable]: `postgresql://postgres:${password}@127.0.0.1:${port}/${database}` }, gateId: script })
     gates.push({ id: script, status: 'passed' })
   }
   const image = `lingxios:release-check-${randomUUID()}`
   try {
-    await run('docker', ['build', '-t', image, '.'])
-    await run(process.execPath, ['scripts/test-worker-image.mjs', image])
+    await run('docker', ['build', '-t', image, '.'], { gateId: 'linux-worker-image-build' })
+    await run(process.execPath, ['scripts/test-worker-image.mjs', image], { gateId: 'linux-worker-image-and-sandbox' })
     gates.push({ id: 'linux-worker-image-and-sandbox', status: 'passed' })
   } finally {
     await run('docker', ['image', 'rm', '-f', image], { capture: true }).catch(() => {})
