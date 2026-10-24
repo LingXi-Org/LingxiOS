@@ -1,3 +1,4 @@
+import { explanationStageTools, explanationStageInstructions } from '../skills/explanation-stage.js'
 import { decodePublicAnswerCall, publicAnswerHistory } from '../protocol/public-answer-call.js'
 import { AnswerSegmentSet } from './answer-segments.js'
 import { snapshotPublicTextSources, type PublicTextSources } from '../protocol/answer-segments.js'
@@ -599,7 +600,7 @@ export class AgentRuntime {
       const execution = hop === 0 ? initialExecution : executionSnapshot(liveContext, this.policy)
       const { codeExecution } = execution
       liveContext.tools = execution.tools
-      const modelTools = exposedTools(execution.tools, liveContext.executionSteps ?? [], liveContext.discoveredTools)
+      const modelTools = await explanationStageTools(exposedTools(execution.tools, liveContext.executionSteps ?? [], liveContext.discoveredTools),liveContext.explanationStage)
       if (react) compileToolSchemas(modelTools) // Unsupported trusted schemas fail before a model call, never after an effect.
       session.promptContext = buildPromptContext(liveContext, this.policy, session.compactionEpoch, this.promptContractVersion, undefined, execution, this.promptCache)
       const preferenceItems = (session.promptContext.blocks ?? []).filter(block => block.trust !== 'platform' && block.trust !== 'product').map(contextItem)
@@ -620,8 +621,10 @@ export class AgentRuntime {
             revisionSources: [...(session.request.inheritedRevisions ?? []), ...session.request.revisions].map(revision => revision.id) }) }
         : protocolCorrection
       const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...restoredMessages, ...(currentCorrection ? [currentCorrection] : [])]
+      if (liveContext.explanationStage?.status === 'pending' && !liveContext.explanationStage.stale) supplementalItems.push({role:'user',
+        content:explanationStageInstructions(liveContext.explanationStage)+'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes)})
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
-        +'\nContinue with append and only new text. Revisions must explicitly replace the exact active revision IDs in source order. A final null answer confirms only the existing assembled body, not unperformed work.'})
+        +'\nAppend adds text; replace selects active revision IDs in source order. A terminal null answer uses the assembled body.'})
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
       const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
@@ -933,7 +936,9 @@ export class AgentRuntime {
             await publication.finish(turn.text)
             await publication.end(calls.length ? 'tool' : 'completed')
             const record=await publication.seal(turn.text,turn.publicAnswerCall
-              ?{version:2,phase:intermediate?'intermediate':'terminal',memorySources:derivedSources,publicAnswerCall:turn.publicAnswerCall}
+              ?{version:2,phase:intermediate?'intermediate':'terminal',memorySources:derivedSources,publicAnswerCall:turn.publicAnswerCall,
+                ...(intermediate&&turn.answerOperation.kind==='append'&&liveContext.explanationStage?.status==='pending'&&!liveContext.explanationStage.stale
+                  ?{explanationStageId:liveContext.explanationStage.id}:{})}
               :intermediate?{version:1,phase:'intermediate',memorySources:derivedSources}:undefined)
             answerSegments.seal(record)
             pendingReplacement ||= record.identity.operation==='replace'

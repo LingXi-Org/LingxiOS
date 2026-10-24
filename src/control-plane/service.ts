@@ -74,6 +74,7 @@ export interface ControlPlaneDeps {
   semanticReviewPolicy?: SemanticReviewPolicyIdentity & {
     resolve(work: Omit<WorkItem, 'leaseToken'>, candidate: Candidate): Promise<SemanticReviewScope | undefined>
   }
+  explanationStage?: (work: Omit<WorkItem, 'leaseToken'>, version: number) => Promise<import('../skills/explanation-stage.js').ExplanationStage | undefined>
   tools?: readonly ToolDefinition[]
   steps: import('./steps.js').StepStore
   work: WorkStore
@@ -547,11 +548,14 @@ export class ControlPlaneService {
     }
     if (typeof work.meta?.['text'] === 'string' && !grants.some(grant => grant.name === 'task')) grants.push({ name: 'task', methods: TASK_TOOLS.map(tool => tool.action.split('.')[1]!) })
     await this.requireLease(proof)
+    delete (context as Partial<TurnContext>).explanationStage
+    const explanationStage = await this.deps.explanationStage?.(work,requestVersion)
     delete (context as Partial<TurnContext>).semanticReviewPolicy
     const policy = this.deps.semanticReviewPolicy
       ? snapshotSemanticReviewPolicyIdentity({ id: this.deps.semanticReviewPolicy.id, version: this.deps.semanticReviewPolicy.version }) : undefined
     return { work: { ...work, leaseToken: proof.leaseToken }, ...context,
       ...(policy ? { semanticReviewPolicy: policy } : {}),
+      ...(explanationStage ? { explanationStage } : {}),
       snapshotVersion: { fence: work.fence, requestVersion, sessionRevision: snapshot.session?.revision ?? 0 },
       ...(includeSession ? { session: snapshot.session } : {}),
       executionSteps: steps, ...(checkpoint ? { executionCheckpoint: checkpoint.input as unknown as import('../runtime/corrections.js').ProgressCheckpoint } : {}), grants, dependencies, tools: grantedTools(this.deps.tools ?? TASK_TOOLS, grants).filter(tool => permitsTool(work, tool)), priorArtifacts: [...priorArtifacts.values()] }

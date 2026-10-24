@@ -4,6 +4,7 @@ import type { WorkItem } from '../protocol/types.js'
 import type { ActionContext, ToolDefinition } from '../tools/definition.js'
 import { candidateHash, type Candidate, type VerificationRecord } from '../outcome/verification.js'
 import { skillIndex, type SkillDefinition } from './definition.js'
+import { createExplanationStage, explanationDeclarationSchema, parseExplanationDeclaration, readExplanationStage, type ExplanationStage } from './explanation-stage.js'
 
 /** Authoritative intent only: activation does not prove delivery or numerical quality. */
 export interface SkillActivation {
@@ -13,6 +14,7 @@ export interface SkillActivation {
   requestVersion: number
   skill: { name: string; version: string; hash: string }
   checker: string
+  explanationStage?: ExplanationStage
 }
 /** A trusted product verifier must check current resource access and the actual candidate.
  * Unsupported/failed require an honest user-visible explanation; they never mean delivered. */
@@ -20,6 +22,18 @@ export interface SkillDeliveryDecision {
   activationId: string
   outcome: 'delivered' | 'unsupported' | 'failed' | 'pending'
   evidence: Record<string, unknown>
+}
+async function requireExplanationCapability(context: ActionContext): Promise<void> {
+  if (context.work.conversation?.internal) throw new Error('explanation workflow requires public answer publication')
+  const rows = (await context.database.query(`SELECT input FROM lingxios.agent_steps
+    WHERE work_id=$1 AND kind='runtime.binding' AND completed_at IS NOT NULL LIMIT 2`, [context.work.id])).rows
+  const binding = rows[0]?.['input'] as Record<string,unknown> | undefined
+  if (rows.length !== 1 || binding?.['publicAnswerTool'] !== 'native-v1'
+    || binding['publicTextContinuation'] !== 'typed-message-v1' || binding['publicTextProtocol'] !== 'purpose-json-v3'
+    || binding['fastProvider'] !== undefined && (binding['fastPublicAnswerTool'] !== 'native-v1'
+      || binding['fastPublicTextContinuation'] !== 'typed-message-v1' || binding['fastPublicTextProtocol'] !== 'purpose-json-v3')) {
+    throw new Error('explanation workflow requires the pinned native public answer capability')
+  }
 }
 const marker = 'skill-delivery:'
 const fields = `a.id,a.tenant_id,a.work_id,a.request_version,a.skill_name,a.skill_version,a.skill_hash,a.checker`
@@ -41,17 +55,23 @@ export function skillActivationTool(skills: readonly SkillDefinition[], allowed:
   }
   return {
     name: 'skills__activate', action: 'skills.activate', effect: 'transaction', approval: false,
-    description: 'Explicitly begin authoring a deliverable under an available skill delivery contract. Use the exact indexed name/version/hash. Reference reads, examples and exports alone must use skills.load without activation. Activation creates a current-request obligation, not delivery or permission. Only the trusted product verifier can confirm delivery or an honest unsupported/failure explanation; no model tool can resolve it.',
-    parameters: { type: 'object', properties: { name: { type: 'string' }, version: { type: 'string' }, hash: { type: 'string' } }, required: ['name','version','hash'], additionalProperties: false },
+    description: 'Begin authoring under the indexed skill delivery contract. For a supported explanation-before-authoring workflow with directly supplied facts, explanation selects exact current human request quotes for the explanation, authoring, facts and optional language requirement. Reference-only reading uses skills.load. Activation records the delivery obligation; the product verifier checks the delivered result.',
+    parameters: { type: 'object', properties: { name: { type: 'string' }, version: { type: 'string' }, hash: { type: 'string' },
+      ...(entries.some(entry => entry.skill.workflow?.explanationBeforeAuthoring) ? { explanation: explanationDeclarationSchema } : {}) }, required: ['name','version','hash'], additionalProperties: false },
     semanticVersion: textSha256(canonicalJson(entries.map(e => e.index))),
     parse(input) {
-      if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).sort().join(',') !== 'hash,name,version') throw new Error('invalid skill activation')
-      const value = input as Record<string, unknown>; entryFor(value); return value
+      if (!input || typeof input !== 'object' || Array.isArray(input) || !['hash,name,version','explanation,hash,name,version'].includes(Object.keys(input).sort().join(','))) throw new Error('invalid skill activation')
+      const value = input as Record<string, unknown>, entry = entryFor(value)
+      if (value['explanation'] !== undefined) {
+        if (!entry.skill.workflow?.explanationBeforeAuthoring) throw new Error('skill has no explanation workflow')
+        parseExplanationDeclaration(value['explanation'])
+      }
+      return value
     },
     async authorize(context, input) { await allowed(context, entryFor(input).index.actions) },
     async execute(context, input) {
       await this.authorize(context, input)
-      const { index } = entryFor(input), { work, requestVersion, database } = context
+      const { index, skill } = entryFor(input), { work, requestVersion, database } = context
       if (!Number.isSafeInteger(requestVersion) || requestVersion! < 1 || !work.principalId) throw new Error('skill activation requires a current authenticated request')
       const current = await database.query(`SELECT 1 FROM lingxios.agent_work_items WHERE id=$1 AND tenant_id=$2 AND principal_id=$3
         AND fence=$4 AND status='leased' AND lease_expires_at>NOW() AND cancel_requested_at IS NULL
@@ -60,18 +80,31 @@ export function skillActivationTool(skills: readonly SkillDefinition[], allowed:
       const active = await readSkillActivations(database, work, requestVersion!)
       const prior = active.find(a => a.skill.name === index.name)
       const id = textSha256(canonicalJson([work.tenantId,work.id,requestVersion,index.name,index.version,index.hash,index.delivery!.checker]))
+      const previousStage = await readExplanationStage(database,work,requestVersion!,skills)
+      if (input['explanation'] !== undefined) await requireExplanationCapability(context)
+      const declared = input['explanation'] === undefined ? undefined
+        : createExplanationStage(work,await context.requestSnapshot(),id,skill.workflow!.explanationBeforeAuthoring.authoringActions,input['explanation'],{name:index.name,version:index.version,hash:index.hash})
+      if (previousStage && previousStage.requestVersion === requestVersion) {
+        if (previousStage.activationId === id ? context.action.action === 'skills.activate'
+          && (!declared || declared.id !== previousStage.id) : !!declared) throw new Error('activated explanation stage is immutable')
+      } else if (previousStage && previousStage.skill.name === index.name && !declared) throw new Error('changed request requires a current explanation declaration')
+      if (prior && declared && !previousStage) throw new Error('activation cannot acquire a different explanation plan')
       if (prior && prior.id !== id) throw new Error('activated skill contract changed')
       if (!prior && active.length >= 32) throw new Error('too many activated skills')
       await database.query(`INSERT INTO lingxios.agent_skill_activations(id,work_id,tenant_id,principal_id,request_version,skill_name,skill_version,skill_hash,checker)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(work_id,request_version,skill_name) DO NOTHING`,
       [id,work.id,work.tenantId,work.principalId,requestVersion,index.name,index.version,index.hash,index.delivery!.checker])
-      return { ok: true, value: { activation: (await readSkillActivations(database, work, requestVersion!)).find(a => a.id === id)! } }
+      return { ok: true, value: { activation: { ...(await readSkillActivations(database, work, requestVersion!)).find(a => a.id === id)!,
+        ...(declared ? { explanationStage: declared } : {}) } } }
     },
     async verify(context, input, value) {
       await this.authorize(context, input)
       const expected = entryFor(input).index
       const activation = (await readSkillActivations(context.database, context.work, context.requestVersion!)).find(a => a.skill.name === expected.name)
-      const passed = activation && canonicalJson(value) === canonicalJson({ activation }) && activation.skill.hash === expected.hash
+      const stage = await readExplanationStage(context.database,context.work,context.requestVersion!,skills)
+      const recorded = stage?.activationId === activation?.id ? { ...stage,status:'pending' as const } : undefined
+      if (recorded) { delete recorded.provided; delete recorded.stale }
+      const passed = activation && canonicalJson(value) === canonicalJson({ activation:{...activation,...(recorded?{explanationStage:recorded}:{})} }) && activation.skill.hash === expected.hash
       return { status: passed ? 'passed' : 'inconclusive', evidence: { scope: 'authoring_activation_only', deliveryProven: false } }
     },
   }

@@ -30,7 +30,8 @@ async function allowed(policy:PublicTextPolicy|undefined, work:Omit<WorkItem,'le
   await authorizeConversationWork(context.database,work,'speak',true)
   return await abortable(Promise.resolve(policy(work,version,context)),context.signal)===true
 }
-export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undefined){
+export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undefined,
+  validateExplanationStage?: (database:SqlQueryable,work:Omit<WorkItem,'leaseToken'>,version:number,id:string)=>Promise<void>){
   return {
     async allowed(work:Omit<WorkItem,'leaseToken'>,version:number){
       if(!policy||work.conversation?.internal)return false
@@ -75,6 +76,10 @@ export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undef
           if(recovery?.version===2){
             const decoded=decodePublicAnswerCall(recovery.publicAnswerCall)
             if(decoded.text!==text || !isDeepStrictEqual(decoded.operation,{kind:data.operation,supersedes:data.supersedes}))throw new Error('answer seal recovery does not match durable text')
+            if(recovery.explanationStageId){
+              if(!validateExplanationStage || recovery.phase!=='intermediate' || data.operation!=='append' || !text.trim())throw new Error('invalid explanation stage publication')
+              await validateExplanationStage(database,current,data.requestVersion,recovery.explanationStageId)
+            }
           }
           const inserted=await append(database)
           if(!inserted)throw new Error('answer seal sequence already exists')

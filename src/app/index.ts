@@ -1,3 +1,5 @@
+import { NoEffectError } from '../tools/definition.js'
+import { readExplanationStage } from '../skills/explanation-stage.js'
 import { readRunTrace } from './run-trace.js'
 import { publicTextPublication, readPublicTextAttempts, type PublicTextAttempt } from './public-text.js'
 import { verifySealedAnswerSources } from './answer-sources.js'
@@ -309,6 +311,12 @@ export async function createLingxiOS(options: LingxiOSOptions) {
         const result = await activationTool.execute(context, activationTool.parse(selection))
         if (!result.ok) throw new Error('skill delivery activation failed')
         return (result.value as { activation: import('../skills/delivery.js').SkillActivation }).activation
+      }, async context => {
+        if (context.requestVersion === null) return
+        const stage = await readExplanationStage(context.database,context.work,context.requestVersion,skills)
+        if (stage?.status === 'pending' && stage.authoringActions.includes(context.action.action)) {
+          throw new NoEffectError('The selected workflow requires its explanation before authoring.', 'explanation_pending')
+        }
       }),
     capabilityResolver: { async resolve(work: Omit<WorkItem, 'leaseToken'>, context?: import('../control-plane/stores.js').CapabilityResolutionContext) {
       const database = context?.database ?? options.database
@@ -452,9 +460,14 @@ export async function createLingxiOS(options: LingxiOSOptions) {
     } finally { active = false; scope.dispose() }
   }
 
-  const publicText = publicTextPublication(options.database, options.realtime?.allowPublicText)
+  const publicText = publicTextPublication(options.database, options.realtime?.allowPublicText,
+    async (database,work,version,id) => {
+      const stage = await readExplanationStage(database,work,version,skills)
+      if (!stage || stage.status !== 'pending' || stage.stale || stage.id !== id) throw new Error('explanation source does not match the current workflow')
+    })
   const semanticReviewPolicy = options.semanticReviewPolicy
   const service = new ControlPlaneService({
+    explanationStage: (work,version) => readExplanationStage(options.database,work,version,skills),
     ...(options.responsePolicy ? { responsePolicy: options.responsePolicy } : {}),
     authorizeWork: async work => { await authorizeConversationWork(options.database, work) },
     ...memory ? { memory } : {},

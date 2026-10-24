@@ -12,17 +12,17 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
     const failure=code==='native_envelope_invalid'
       ? 'The previous native-tool response did not satisfy the required public-output envelope. Its business action was not dispatched.'
       :code==='terminal_outcome_required'
-        ? 'The previous no-tool response used a null outcome. A terminal response requires an explicit truthful outcome declaration; do not assume completion.'
+        ? 'The previous no-tool response used a null outcome. A terminal response requires an explicit outcome declaration.'
         :code==='public_text_answer_required'
-      ? 'The previous response lacked substantive answer text or a legal null terminal answer backed by sealed sources. Public commentary alone does not complete the request.'
+      ? 'The previous response lacked substantive answer text or a legal null terminal answer backed by sealed sources. '
       :code==='public_text_incomplete'
         ? 'The previous public response ended before the complete JSON object was closed.'
         : 'The previous public response violated the required JSON field order, string encoding, or framing.'
     return {category:'response_protocol',content:`Protocol correction: ${failure}
-Reply again for the current active trust=request blocks and their current revisions. Historical requests are observations; do not resume an earlier task unless the current request explicitly asks for it. Preserve completed tool results; do not repeat completed or uncertain side effects.
-Follow the ${protocol} public wire contract selected and supplied by the trusted model driver for this turn, including its allowed output channels and terminal rules. Do not substitute a different output schema or channel.
+Continue the current active trust=request blocks and their revisions. Historical requests are observations. Existing receipts remain the record of completed or uncertain actions.
+Use the ${protocol} contract supplied by the trusted model driver for the current output channel and terminal status.
 ${execution}`}
   }
-  if(code==='response_empty')return {category:'response_protocol',content:`Protocol correction: the previous response contained neither an answer nor a tool call. Provide the substantive answer or an exposed native tool call needed to obtain it. Preserve completed tool results and do not repeat completed or uncertain side effects. ${execution}`}
-  return {category:'tool_protocol',content:`Protocol correction: the previous response violated the tool protocol. Reply again with a valid exposed native tool call or the substantive answer. Preserve completed tool results and do not repeat completed or uncertain side effects. ${execution}`}
+  if(code==='response_empty')return {category:'response_protocol',content:`Protocol correction: the previous response contained neither an answer nor a tool call. Provide the substantive answer or an exposed native tool call needed to obtain it. Existing receipts remain the record of completed or uncertain actions. ${execution}`}
+  return {category:'tool_protocol',content:`Protocol correction: the previous response violated the tool protocol. Reply again with a valid exposed native tool call or the substantive answer. Existing receipts remain the record of completed or uncertain actions. ${execution}`}
 }

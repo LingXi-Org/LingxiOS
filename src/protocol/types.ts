@@ -318,6 +318,8 @@ export interface TurnContext {
   discoveredTools?: string[]
   harness?: import('../harness/profile.js').HarnessContext
   executionSteps?: import('../control-plane/steps.js').ExecutionStep[]
+  /** Host-derived scheduling, separate from authorization grants. */
+  explanationStage?: import('../skills/explanation-stage.js').ExplanationStage
   productRules?: string
   executionCheckpoint?: import('../runtime/corrections.js').ProgressCheckpoint
   dependencies?: Array<{ id: string; status: string; resultText: string | null; goalOutcome: import('./outcome.js').GoalOutcome | null | undefined }>

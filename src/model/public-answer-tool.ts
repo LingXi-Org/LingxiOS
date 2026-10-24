@@ -8,7 +8,7 @@ export const PUBLIC_ANSWER_TOOL = convertToOpenAITool(tool(() => {
   throw new Error('public_answer is a protocol output binding, not an executable tool')
 }, {
   name: PUBLIC_ANSWER_TOOL_NAME,
-  description: 'Publish useful public answer text, or finish the accumulated answer with a truthful outcome. Not a business action. Use this tool alone in its native turn.',
+  description: 'Publish public answer text or finish the accumulated answer with its outcome. This output binding is the single native call for its turn.',
   schema: {
     type: 'object', additionalProperties: false,
     properties: {
@@ -27,13 +27,8 @@ export const PUBLIC_ANSWER_TOOL = convertToOpenAITool(tool(() => {
 }))
 
 export const PUBLIC_ANSWER_TOOL_INSTRUCTIONS = `Public output wire contract (purpose-json-v3; publicAnswerTool native-v1):
-Use the native public_answer tool for public answers. Assistant content and reasoning channels remain private and are never public answers. Do not duplicate public text in assistant content.
-Its arguments are exactly one JSON object IN THIS ORDER: operation, optional commentary, answer, outcome. Example of encoding only: {"operation":{"kind":"append","supersedes":[]},"answer":"Useful known answer text","outcome":null}.
-operation precedes text. append adds only new useful content to the SAME answer; include necessary spaces/newlines yourself. replace names exact currently active source IDs in supersedes; it stays provisional until delivery validation. Never repeat prior text or invent source IDs.
-commentary is optional public status, never reasoning. answer contains substantive content grounded in available facts; do not claim a tool succeeded before its result exists.
-outcome:null seals a nonempty intermediate answer and continues this execution. Use it only when useful content is already known and work remains, never a status preamble. No introductory call is required.
-A terminal public_answer declares outcome with exactly status then gaps: satisfied only for the full delivered result and gaps:[]; partial or blocked require truthful nonempty gaps. Gaps have at most 16 strings, 1000 characters each, 8192 total. This declaration does not bypass authorization, receipts, resources or completion checks.
-answer:null is allowed only for a terminal outcome when the current answer-source context already has nonempty sealed text. Otherwise provide substantive answer text. Final output appends only missing results, never replays the accumulated answer.
-At most ONE native call is allowed per turn, counting public_answer itself. Never combine it with a business tool or another public_answer. Business tools keep their original exposed arguments. When you need unknown evidence, call the business tool first; do not fabricate a public preface.
-A simple question needing no business tool uses one public_answer with the complete answer and terminal outcome in ONE generation. Do not add a judge, router, review or obligatory extra call.
-No extra fields, duplicate keys, markdown fences or trailing prose. A protocol acknowledgement means only that the public message was recorded, not that a business action or task succeeded.`
+Use one native call per turn: public_answer for user-facing content, or a business tool with its exposed arguments. Assistant content and reasoning are private.
+public_answer arguments follow this order: operation, optional commentary, answer, outcome. operation is {kind:"append",supersedes:[]} for new text, or {kind:"replace",supersedes:[active source IDs]} for a revision. Append text includes its own spacing; replacements become active after delivery validation.
+answer is substantive public content; optional commentary is concise public status. outcome:null records a nonempty intermediate answer and continues the task.
+A terminal outcome has {status:"satisfied"|"partial"|"blocked",gaps:[...]}. satisfied represents the full delivered result with empty gaps; partial and blocked describe remaining gaps. A terminal answer may be null when sealed sources already contain the answer, or add the remaining content.
+Choose a business tool when more evidence or an action is needed. A simple answer can finish with one public_answer. The protocol acknowledgement confirms that a public message was recorded; business results and delivery have their own receipts.`

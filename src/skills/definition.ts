@@ -10,6 +10,8 @@ export interface SkillDefinition {
   actions: string[]
   /** Opt-in authoring obligation. Only the trusted host verifies delivery. */
   delivery?: { checker: string }
+  /** Optional bounded scheduling; authorization remains independent. */
+  workflow?: { explanationBeforeAuthoring: { authoringActions: string[] } }
 }
 export type SkillIndex = Omit<SkillDefinition, 'body'> & { hash: string }
 export function skillIndex(skill: SkillDefinition): SkillIndex {
@@ -18,6 +20,13 @@ export function skillIndex(skill: SkillDefinition): SkillIndex {
     || !Array.isArray(skill.actions) || skill.actions.some(action => !/^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$/.test(action))) throw new Error('invalid authored skill')
   if (skill.delivery !== undefined && (!skill.delivery || typeof skill.delivery !== 'object'
     || Object.keys(skill.delivery).join(',') !== 'checker' || !/^product:[A-Za-z0-9._:-]{1,128}$/.test(skill.delivery.checker))) throw new Error('invalid skill delivery contract')
+  if (skill.workflow !== undefined) {
+    const phase = skill.workflow.explanationBeforeAuthoring
+    if (!skill.delivery || Object.keys(skill.workflow).join(',') !== 'explanationBeforeAuthoring'
+      || !phase || Object.keys(phase).join(',') !== 'authoringActions' || !Array.isArray(phase.authoringActions)
+      || !phase.authoringActions.length || phase.authoringActions.length > 32 || new Set(phase.authoringActions).size !== phase.authoringActions.length
+      || phase.authoringActions.some(action => !skill.actions.includes(action))) throw new Error('invalid skill explanation workflow')
+  }
   const { body: _body, ...index } = skill
   return { ...structuredClone(index), hash: textSha256(canonicalJson(skill)) }
 }
