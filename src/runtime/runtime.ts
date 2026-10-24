@@ -1,6 +1,7 @@
 import { explanationStageTools, explanationStageInstructions } from '../skills/explanation-stage.js'
 import { decodePublicAnswerCall, publicAnswerHistory } from '../protocol/public-answer-call.js'
 import { AnswerSegmentSet } from './answer-segments.js'
+import { answerCorrectionOperation, assertAnswerCorrection, restoreAnswerCorrection } from './answer-correction.js'
 import { snapshotPublicTextSources, type PublicTextSources } from '../protocol/answer-segments.js'
 import { validateToolBatch, compileToolSchemas } from './tool-batch.js'
 import { snapshotOutcomeDeclaration, type OutcomeDeclaration } from '../model/outcome-declaration.js'
@@ -491,6 +492,7 @@ export class AgentRuntime {
     let finalPublicTextPartId: string | undefined
     let finalPublicTextSources: PublicTextSources | undefined
     let answerSegments = new AnswerSegmentSet(runId,(session.request?.revisions.length ?? 0)+1,work.fence,context.executionSteps)
+    let pendingAnswerCorrection = restoreAnswerCorrection(context.executionSteps,(session.request?.revisions.length ?? 0)+1,answerSegments.context.segmentIds)
     if((deepModel.publicTextContinuation==='typed-message-v1'||fastModel?.publicTextContinuation==='typed-message-v1')&&answerSegments.restoreMessageHistory(session,work.id))await host.saveSession(work,session)
     let pendingReplacement = false
     let lastGood: { text: string; envelope: ResponseEnvelope; publicTextPartId?: string; publicTextSources?: PublicTextSources } | undefined
@@ -564,6 +566,7 @@ export class AgentRuntime {
           })
         }
         answerSegments = new AnswerSegmentSet(runId,(session.request?.revisions.length ?? 0)+1,work.fence)
+        pendingAnswerCorrection = undefined
         pendingReplacement = false
       }
     }
@@ -625,6 +628,17 @@ export class AgentRuntime {
         content:explanationStageInstructions(liveContext.explanationStage)+'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes)})
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
         +'\nAppend adds text; replace selects active revision IDs in source order. A terminal null answer uses the assembled body.'})
+      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null, answerSegments.context.segmentIds) : undefined
+      if (requestedCorrection && canonicalJson(requestedCorrection) !== canonicalJson(pendingAnswerCorrection ?? null)) {
+        await host.saveStep(work,{id:'answer-correction:'+createHash('sha256').update(JSON.stringify([runId,(session.request?.revisions.length ?? 0)+1,requestedCorrection])).digest('hex'),
+          kind:'runtime.answer_correction',requestVersion:(session.request?.revisions.length ?? 0)+1,input:{operation:requestedCorrection},output:'{}',artifacts:[]})
+        pendingAnswerCorrection = requestedCorrection
+      }
+      const correctionOperation = react ? pendingAnswerCorrection : undefined
+      if (correctionOperation) supplementalItems.push({ role: 'user', content:
+        'This generation repairs an already sealed candidate. If you emit substantive answer text, return the complete corrected answer using exactly this operation: '
+        + JSON.stringify(correctionOperation) + '. Do not append a rewritten answer to the old candidate. Preserve fulfilled results and recorded effects. '
+        + 'You may still call necessary business tools. A terminal null answer may reuse the assembled body when no wording change is needed; normal outcome and delivery validation still apply.' })
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
       const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
@@ -728,7 +742,7 @@ export class AgentRuntime {
         ...(this.recordModelPayloads && sample ? { input: tracePayload(modelInput) } : {}), traceExpiresAt,
         sessionRevision: session.revision, compactionEpoch: session.compactionEpoch,
         prompt: session.promptContext.manifest, promptFingerprint: session.promptContext.fingerprint,
-        promptContractVersion: this.promptContractVersion, toolProtocol: 'ipython-v1', decision: protocolCorrection ? 'correction' : hop === 0 ? 'initial' : 'continue',
+        promptContractVersion: this.promptContractVersion, toolProtocol: 'ipython-v1', decision: protocolCorrection || correctionOperation ? 'correction' : hop === 0 ? 'initial' : 'continue',
       } })
       let turn: Awaited<ReturnType<ModelDriver['run']>>
       let parser = new CandidateBodyParser()
@@ -736,7 +750,7 @@ export class AgentRuntime {
       const preview = !publishes && liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
       let providerBegan = performance.now()
       let firstBody = false
-      const generationOperation = protocolCorrection ? 'correction' : 'generation'
+      const generationOperation = protocolCorrection || correctionOperation ? 'correction' : 'generation'
       try {
         protocolCorrection = null
         const generationSignal = signals.generationSignal()
@@ -789,6 +803,10 @@ export class AgentRuntime {
           onTextDelta: async (delta,metadata) => {
             if (publishes) {
               if (signals.hasSteer() || signals.lifecycle.signal.aborted) return
+              if (delta && metadata?.purpose !== 'commentary') {
+                const source = this.publications.get(runId)?.segmentIdentity
+                assertAnswerCorrection(source?.operation && source.supersedes ? { kind: source.operation, supersedes: source.supersedes } : undefined, correctionOperation)
+              }
               await this.publications.get(runId)?.push(delta,metadata)
               return
             }
@@ -931,6 +949,7 @@ export class AgentRuntime {
           }
           const publication=this.publications.get(runId)
           if (turn.text) {
+            assertAnswerCorrection(turn.answerOperation, correctionOperation)
             if (!turn.answerOperation || !publication?.segmentIdentity
               || canonicalJson(turn.answerOperation)!==canonicalJson({kind:publication.segmentIdentity.operation,supersedes:publication.segmentIdentity.supersedes})) throw new Error('answer operation changed after publication')
             await publication.finish(turn.text)
@@ -941,6 +960,7 @@ export class AgentRuntime {
                   ?{explanationStageId:liveContext.explanationStage.id}:{})}
               :intermediate?{version:1,phase:'intermediate',memorySources:derivedSources}:undefined)
             answerSegments.seal(record)
+            if (correctionOperation) pendingAnswerCorrection = undefined
             pendingReplacement ||= record.identity.operation==='replace'
           } else {
             if (!calls.length && (turn.answerIsNull!==true || !answerSegments.hasBody)) throw new Error('a null final answer requires sealed sources')
