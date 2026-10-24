@@ -72,7 +72,10 @@ for (const scenario of ['valid', 'bad-schema', 'truncated', 'typed-conflict', 's
             correctionPayloads.push({ correction: correction?.content, system: body.messages[0].content })
           }
           const valid = scenario === 'valid'
-          return new Response(frame({ content: JSON.stringify({ operation, commentary: '', answer: valid ? null : 'The synthetic action could not be completed.',
+          // A denied action can leave a sealed public prefix. Follow the runtime's
+          // durable repair intent instead of appending a rewritten full answer.
+          const repair = (await pool.query("SELECT input->'operation' AS operation FROM lingxios.agent_steps WHERE work_id=$1 AND request_version=1 AND kind='runtime.answer_correction' ORDER BY step_seq DESC LIMIT 1", [identity.runId])).rows[0]?.['operation']
+          return new Response(frame({ content: JSON.stringify({ operation: repair ?? operation, commentary: '', answer: valid ? null : (repair ? answer : '') + 'The synthetic action could not be completed.',
             outcome: { status: valid ? 'satisfied' : 'blocked', gaps: valid ? [] : ['Synthetic action unavailable.'] } }) }, 'stop') + ending)
         }
         const prefix = '{"public_output":{"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":"' + answer
@@ -138,7 +141,14 @@ for (const scenario of ['valid', 'bad-schema', 'truncated', 'typed-conflict', 's
         assert.equal(calls, before, 'completed/blocked work cannot silently resume generation')
       } else {
         assert.equal(calls, 2); assert.equal(state?.run.status, 'blocked')
-        if (scenario !== 'denied') assert.equal(state.message?.body, 'The synthetic action could not be completed.')
+        if (scenario === 'denied') {
+          assert.ok(authorized > 0, 'the permission boundary still rejects the action')
+          assert.equal(state.message?.body, answer + 'The synthetic action could not be completed.', 'a full replacement retains the already-known result')
+          const operations = events.events.filter(event => event.kind === 'public.text.operation')
+          assert.deepEqual(operations.map(event => event.data['operation']), ['append', 'replace'])
+          assert.deepEqual(operations[1]?.data['supersedes'], [first.data['partId']])
+          assert.equal(state.message?.publicTextSources?.segments.length, 1)
+        } else assert.equal(state.message?.body, 'The synthetic action could not be completed.')
       }
       assert.doesNotMatch(JSON.stringify(events), /Working now/)
     } finally { release(); await worker.stop(); await app.stop(); await db.close(); await rm(home, { recursive: true, force: true }) }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { createHash } from 'node:crypto'
-import { readFile, mkdtemp, rm } from 'node:fs/promises'
+import { readFile, mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PGlite } from '@electric-sql/pglite'
@@ -11,6 +11,8 @@ import { OpenAIChatDriver } from '../src/model/openai.js'
 import type { SqlPool } from '../src/control-plane/pg-store.js'
 import { LeaseLostError } from '../src/errors.js'
 import { nullLogger } from '../src/logging.js'
+import { DefaultRuntimePolicy } from '../src/runtime/policy.js'
+import type { RunState } from '../src/app/jobs.js'
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const ack = '{"status":"public_message_recorded"}'
@@ -19,7 +21,7 @@ type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean;
   | { business: true }
   | { invalid: 'mixed' | 'duplicate' | 'truncated' }
 type WireRequest = { stream?: boolean; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
-async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.') {
+async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.') {
   const db = new PGlite(), home = await mkdtemp(join(tmpdir(), 'public-answer-worker-'))
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
   let tail = Promise.resolve(), calls = 0, effects = 0, auxiliary = 0, seals = 0, faulted = false, strippedBindings = 0
@@ -39,10 +41,16 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
   const identity = { runId: 'public-answer-run', tenantId: 'tenant', principalId: 'human', agentId: 'agent', sessionId: 'room' }
   const connect = app.connectWorker.bind(app)
   app.connectWorker = options => {
-    const host = connect(options), emit = host.emitEvent.bind(host), saveSession = host.saveSession.bind(host)
+    const host = connect(options), emit = host.emitEvent.bind(host), saveSession = host.saveSession.bind(host), saveStep = host.saveStep.bind(host)
     const expire = async (workId: string) => {
       await pool.query("UPDATE lingxios.agent_work_items SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE id=$1", [workId])
       await pool.query("UPDATE lingxios.agent_os_session_leases SET expires_at=NOW()-INTERVAL '1 second' WHERE work_id=$1", [workId])
+    }
+    host.saveStep = async (work, step, ...rest) => {
+      await saveStep(work,step,...rest)
+      if (fault === 'repair-restart' && !faulted && step.kind === 'runtime.answer_correction') {
+        faulted = true; await expire(work.id); throw new LeaseLostError('synthetic lost correction intent acknowledgement')
+      }
     }
     host.saveSession = async (work, session, ...rest) => {
       const compactNow = fault === 'compacted-duplicate' && !faulted && Boolean(session.request?.publicTextHistory) && session.history.some(item => 'type' in item && item.type === 'function_call' && item.name === 'public_answer')
@@ -66,7 +74,7 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
       }
       await emit(work, event, signal)
       if (event.kind === 'public.text.sealed') { seals++; timeline.push('seal') }
-      if (fault && fault !== 'history' && fault !== 'tamper-call' && fault !== 'compacted-duplicate' && fault !== 'missing-binding' && !faulted && event.kind === 'public.text.sealed' && (fault !== 'second-seal' || seals === 2)) {
+      if (fault && fault !== 'history' && fault !== 'tamper-call' && fault !== 'compacted-duplicate' && fault !== 'missing-binding' && fault !== 'repair-answer' && fault !== 'repair-restart' && !faulted && event.kind === 'public.text.sealed' && (fault !== 'second-seal' || seals === 2)) {
         faulted = true
         if (fault === 'cancel') { await app.cancel(identity); return }
         await expire(work.id)
@@ -109,7 +117,9 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
     // this fault-injected single-attempt instance so the negative is exercised.
     model.singleAttempt = () => model
   }
-  const newWorker = (id: string) => createWorker({ controlPlane: app, model, modelBudget: { maxModelCalls: maxCalls }, logger: nullLogger, kernel: { homesRoot: home }, worker: { id, healthPort: 0 } })
+  const policy = new DefaultRuntimePolicy()
+  if (fault === 'repair-answer' || fault === 'repair-restart') policy.validateAssistantText = text => text.includes('Superseded synthetic answer.') ? 'Replace the superseded synthetic answer with the corrected result' : null
+  const newWorker = (id: string) => createWorker({ controlPlane: app, model, policy, modelBudget: { maxModelCalls: maxCalls }, logger: nullLogger, kernel: { homesRoot: home }, worker: { id, healthPort: 0 } })
   const worker = newWorker('public-output-worker')
   await app.enqueue({ id: identity.runId, ...identity, text, mode: 'execute', codeExecution: 'disabled', deliveryMode: 'auto' })
   return { app, pool, identity, requests, rawPublicCalls, timeline, get calls() { return calls }, get effects() { return effects }, get auxiliary() { return auxiliary }, get resourceChecks() { return resourceChecks }, get strippedBindings() { return strippedBindings },
@@ -125,6 +135,18 @@ function assertNativePair(request: WireRequest, original: { id: string; args: st
   assert.equal(request.messages.filter(message => message.role === 'assistant' && typeof message.content === 'string' && message.content.includes(known)).length, 0, 'do not add a duplicate free-text assistant message beside the native call')
 }
 
+async function recordCorrectionEvidence(name: string, f: Awaited<ReturnType<typeof fixture>>, state: RunState) {
+  const output = process.env['ISSUE406_EVIDENCE_DIR']
+  if (!output) return
+  const events = (await f.app.readEvents(f.identity)).events
+  const ledger = await f.pool.query("SELECT call_id,observation->>'status' AS status FROM lingxios.agent_model_budget_calls WHERE work_id=$1 ORDER BY call_id", [f.identity.runId])
+  await mkdir(output,{recursive:true})
+  await writeFile(join(output,`${name}.json`),JSON.stringify({ name, qualification:'synthetic real Worker and PGlite',
+    modelCalls:f.calls,businessEffects:f.effects,auxiliaryModelCalls:f.auxiliary,ledger:ledger.rows,
+    events:events.filter(event=>['public.text.operation','public.text.delta','public.text.sealed'].includes(event.kind)),
+    final:{status:state.run.status,body:state.message?.body,sources:state.message?.publicTextSources} },null,2)+'\n')
+}
+
 it('real Worker delivers terminal public arithmetic in one generation with zero business effect or judge', async () => {
   const f = await fixture([{ answer: '43' }], undefined, 8, 'What is 17 + 26? Reply with only the number.')
   try {
@@ -136,6 +158,53 @@ it('real Worker delivers terminal public arithmetic in one generation with zero 
     const actions = (await f.pool.query("SELECT intent->'action'->>'action' AS action FROM lingxios.agent_action_intents WHERE intent->>'workId'=$1", [f.identity.runId])).rows.map(row => row['action'])
     assert.deepEqual(actions.filter(action => action === 'public_answer' || action === 'public.answer' || action === 'probe.save'), [], JSON.stringify(actions))
     assert.equal((await f.app.readEvents(f.identity)).events.filter(event => event.kind === 'tool.started').length, 0)
+  } finally { await f.close() }
+})
+
+it('a requested correction replaces its sealed candidate instead of appending another full answer', async () => {
+  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-answer', 8, 'Explain only the supplied synthetic facts.')
+  try {
+    const state = await f.run()
+    assert.equal(state.run.status, 'succeeded')
+    assert.equal(state.message?.body, 'Corrected synthetic answer.')
+    assert.equal(state.message?.publicTextSources?.segments.length, 1)
+    assert.deepEqual([f.calls, f.effects, f.auxiliary], [2, 0, 0])
+    const operations = (await f.app.readEvents(f.identity)).events.filter(event => event.kind === 'public.text.operation')
+    assert.deepEqual(operations.map(event => event.data['operation']), ['append', 'replace'])
+    assert.deepEqual(operations[1]?.data['supersedes'], [operations[0]?.data['partId']])
+    await recordCorrectionEvidence('explicit-correction',f,state)
+  } finally { await f.close() }
+})
+
+it('an appended full rewrite during correction is rejected before public text or sealing, then explicitly replaced', async () => {
+  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { answer: 'Wrong appended rewrite.' }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-answer', 8, 'Explain only the supplied synthetic facts.')
+  try {
+    const state = await f.run(), events = (await f.app.readEvents(f.identity)).events
+    assert.equal(state.run.status, 'succeeded')
+    assert.equal(state.message?.body, 'Corrected synthetic answer.')
+    assert.equal(state.message?.publicTextSources?.segments.length, 1)
+    assert.deepEqual([f.calls, f.effects, f.auxiliary], [3, 0, 0])
+    assert.equal(events.some(event => event.kind === 'public.text.delta' && String(event.data['text']).includes('Wrong appended rewrite.')), false)
+    assert.equal(events.filter(event => event.kind === 'public.text.sealed').length, 2)
+    const ledger = await f.pool.query('SELECT * FROM lingxios.agent_model_budget_calls WHERE work_id=$1', [f.identity.runId])
+    assert.equal(ledger.rows.length, 3, 'the rejected generation remains metered')
+    await recordCorrectionEvidence('rejected-append-retry',f,state)
+  } finally { await f.close() }
+})
+
+it('repair intent survives a lost acknowledgement and a business tool before the corrected answer', async () => {
+  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { business: true }, { answer: 'Wrong appended rewrite.' }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-restart', 8, 'Explain the supplied facts, then save the synthetic record.')
+  try {
+    await f.run(); assert.equal(f.calls, 1, 'worker stops after persisting the repair intent')
+    const state = await f.restart(), events = (await f.app.readEvents(f.identity)).events
+    assert.equal(state.run.status, 'succeeded')
+    assert.equal(state.message?.body, 'Corrected synthetic answer.')
+    assert.equal(state.message?.publicTextSources?.segments.length, 1)
+    assert.deepEqual([f.calls, f.effects, f.auxiliary], [4, 1, 0])
+    assert.equal(events.some(event => event.kind === 'public.text.delta' && String(event.data['text']).includes('Wrong appended rewrite.')), false)
+    const intents = await f.pool.query("SELECT * FROM lingxios.agent_steps WHERE kind='runtime.answer_correction'")
+    assert.equal(intents.rows.length, 1, 'recovery reuses the durable intent')
+    await recordCorrectionEvidence('durable-repair-through-tool',f,state)
   } finally { await f.close() }
 })
 

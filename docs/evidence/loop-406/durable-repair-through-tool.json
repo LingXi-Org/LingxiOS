@@ -1,0 +1,199 @@
+{
+  "name": "durable-repair-through-tool",
+  "qualification": "synthetic real Worker and PGlite",
+  "modelCalls": 4,
+  "businessEffects": 1,
+  "auxiliaryModelCalls": 0,
+  "ledger": [
+    {
+      "call_id": "public-answer-run:1:model:1",
+      "status": "succeeded"
+    },
+    {
+      "call_id": "public-answer-run:2:model:1",
+      "status": "succeeded"
+    },
+    {
+      "call_id": "public-answer-run:2:model:2",
+      "status": "failed"
+    },
+    {
+      "call_id": "public-answer-run:2:model:3",
+      "status": "succeeded"
+    }
+  ],
+  "events": [
+    {
+      "runId": "public-answer-run",
+      "seq": 5,
+      "kind": "public.text.operation",
+      "stage": "started",
+      "visibility": "user",
+      "data": {
+        "fence": 1,
+        "partId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+        "purpose": "answer",
+        "version": 3,
+        "attemptId": "public-answer-run:1:model:1",
+        "messageId": "answer:public-answer-run:v1",
+        "operation": "append",
+        "partIndex": 1,
+        "segmentId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+        "supersedes": [],
+        "requestVersion": 1
+      }
+    },
+    {
+      "runId": "public-answer-run",
+      "seq": 6,
+      "kind": "public.text.delta",
+      "stage": "delta",
+      "visibility": "user",
+      "data": {
+        "text": "Superseded synthetic answer.",
+        "fence": 1,
+        "partId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+        "purpose": "answer",
+        "version": 3,
+        "attemptId": "public-answer-run:1:model:1",
+        "messageId": "answer:public-answer-run:v1",
+        "operation": "append",
+        "partIndex": 1,
+        "segmentId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+        "chunkIndex": 0,
+        "supersedes": [],
+        "requestVersion": 1
+      }
+    },
+    {
+      "runId": "public-answer-run",
+      "seq": 10,
+      "kind": "public.text.sealed",
+      "stage": "completed",
+      "visibility": "user",
+      "data": {
+        "fence": 1,
+        "partId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+        "purpose": "answer",
+        "version": 3,
+        "bodyHash": "36d3866f9c826cb893ef0bcfa563874502bd96de1cc7c8851aac690ef4f93a0e",
+        "attemptId": "public-answer-run:1:model:1",
+        "messageId": "answer:public-answer-run:v1",
+        "operation": "append",
+        "partIndex": 1,
+        "segmentId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+        "chunkCount": 1,
+        "supersedes": [],
+        "requestVersion": 1
+      }
+    },
+    {
+      "runId": "public-answer-run",
+      "seq": 100013,
+      "kind": "public.text.operation",
+      "stage": "started",
+      "visibility": "user",
+      "data": {
+        "fence": 2,
+        "partId": "public:2003eccc4de6dddc8761f2cd309c18c25281c76685d4796dae6364cc1c6ab53d:answer",
+        "purpose": "answer",
+        "version": 3,
+        "attemptId": "public-answer-run:2:model:2",
+        "messageId": "answer:public-answer-run:v1",
+        "operation": "append",
+        "partIndex": 1,
+        "segmentId": "public:2003eccc4de6dddc8761f2cd309c18c25281c76685d4796dae6364cc1c6ab53d:answer",
+        "supersedes": [],
+        "requestVersion": 1
+      }
+    },
+    {
+      "runId": "public-answer-run",
+      "seq": 100018,
+      "kind": "public.text.operation",
+      "stage": "started",
+      "visibility": "user",
+      "data": {
+        "fence": 2,
+        "partId": "public:9e3a5e2807afb81de3292e664834017943e57a658a7d1c552255ad64293c8206:answer",
+        "purpose": "answer",
+        "version": 3,
+        "attemptId": "public-answer-run:2:model:3",
+        "messageId": "answer:public-answer-run:v1",
+        "operation": "replace",
+        "partIndex": 1,
+        "segmentId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+        "supersedes": [
+          "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer"
+        ],
+        "requestVersion": 1
+      }
+    },
+    {
+      "runId": "public-answer-run",
+      "seq": 100019,
+      "kind": "public.text.delta",
+      "stage": "delta",
+      "visibility": "user",
+      "data": {
+        "text": "Corrected synthetic answer.",
+        "fence": 2,
+        "partId": "public:9e3a5e2807afb81de3292e664834017943e57a658a7d1c552255ad64293c8206:answer",
+        "purpose": "answer",
+        "version": 3,
+        "attemptId": "public-answer-run:2:model:3",
+        "messageId": "answer:public-answer-run:v1",
+        "operation": "replace",
+        "partIndex": 1,
+        "segmentId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+        "chunkIndex": 0,
+        "supersedes": [
+          "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer"
+        ],
+        "requestVersion": 1
+      }
+    },
+    {
+      "runId": "public-answer-run",
+      "seq": 100023,
+      "kind": "public.text.sealed",
+      "stage": "completed",
+      "visibility": "user",
+      "data": {
+        "fence": 2,
+        "partId": "public:9e3a5e2807afb81de3292e664834017943e57a658a7d1c552255ad64293c8206:answer",
+        "purpose": "answer",
+        "version": 3,
+        "bodyHash": "f9370ddf4517aa340ffbb627f81344e90b725bae76cb3f0b2b346dca3c021167",
+        "attemptId": "public-answer-run:2:model:3",
+        "messageId": "answer:public-answer-run:v1",
+        "operation": "replace",
+        "partIndex": 1,
+        "segmentId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+        "chunkCount": 1,
+        "supersedes": [
+          "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer"
+        ],
+        "requestVersion": 1
+      }
+    }
+  ],
+  "final": {
+    "status": "succeeded",
+    "body": "Corrected synthetic answer.",
+    "sources": {
+      "version": 3,
+      "bodyHash": "f9370ddf4517aa340ffbb627f81344e90b725bae76cb3f0b2b346dca3c021167",
+      "segments": [
+        {
+          "end": 27,
+          "start": 0,
+          "partId": "public:9e3a5e2807afb81de3292e664834017943e57a658a7d1c552255ad64293c8206:answer",
+          "bodyHash": "f9370ddf4517aa340ffbb627f81344e90b725bae76cb3f0b2b346dca3c021167",
+          "segmentId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer"
+        }
+      ],
+      "messageId": "answer:public-answer-run:v1"
+    }
+  }
+}

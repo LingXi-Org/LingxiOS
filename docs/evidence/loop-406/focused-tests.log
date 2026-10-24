@@ -1,0 +1,113 @@
+✔ only an explicit runtime correction with active sealed sources requires replacement (1.380599ms)
+✔ repair intent restores only for its exact request and still-active sources (0.374726ms)
+✔ a repair cannot append, partially replace, reorder or guess its candidate sources (4.291782ms)
+{"ts":"2026-10-24T08:59:20.509Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:20.510Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:20.510Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:20.510Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+✔ real Worker delivers terminal public arithmetic in one generation with zero business effect or judge (3177.320689ms)
+{"ts":"2026-10-24T08:59:23.004Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:23.005Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:23.005Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:23.005Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:23.005Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:23.005Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:23.005Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+✔ a requested correction replaces its sealed candidate instead of appending another full answer (2472.030552ms)
+{"ts":"2026-10-24T08:59:25.356Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:25.356Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:25.357Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:25.357Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:25.357Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+✔ an appended full rewrite during correction is rejected before public text or sealing, then explicitly replaced (2347.779073ms)
+{"ts":"2026-10-24T08:59:28.043Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:28.043Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:28.043Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:28.043Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:28.043Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+✔ repair intent survives a lost acknowledgement and a business tool before the corrected answer (2682.864827ms)
+{"ts":"2026-10-24T08:59:30.549Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:30.549Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:30.549Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:30.549Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+✔ real Worker seals known facts before business execution and appends only missing final text (2507.816288ms)
+{"ts":"2026-10-24T08:59:33.045Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:33.046Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:33.046Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:33.046Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:33.046Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:33.046Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:33.046Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+✔ durable native call and protocol ACK recover after lost seal response without text or business replay (2498.883959ms)
+{"ts":"2026-10-24T08:59:35.521Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:35.521Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:35.521Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:35.521Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:35.521Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:35.522Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:35.522Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+✔ durable native call and protocol ACK recover after lost second-seal response without text or business replay (2475.469305ms)
+{"ts":"2026-10-24T08:59:38.036Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:38.036Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:38.036Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:38.036Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:38.036Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:38.036Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:38.036Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+✔ durable native call and protocol ACK recover after lost history response without text or business replay (2515.400517ms)
+{"ts":"2026-10-24T08:59:40.077Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:40.078Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:40.078Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:40.078Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:40.078Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:40.078Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:40.078Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+✔ invalid mixed public turn has no seal or business dispatch before truthful correction (2032.074364ms)
+{"ts":"2026-10-24T08:59:42.149Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:42.149Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:42.149Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:42.149Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:42.149Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:42.149Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:42.150Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+✔ invalid duplicate public turn has no seal or business dispatch before truthful correction (2071.121222ms)
+{"ts":"2026-10-24T08:59:44.254Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:44.254Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:44.254Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:44.254Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:44.254Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:44.254Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:44.254Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+✔ invalid truncated public turn has no seal or business dispatch before truthful correction (2107.062136ms)
+{"ts":"2026-10-24T08:59:46.847Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:46.847Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:46.847Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:46.847Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:46.847Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:46.847Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:46.847Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:46.847Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+✔ failed replacement retains the prior answer and its original source without repeating the business action (2590.602237ms)
+✔ cancellation after durable public seal prevents subsequent model or business dispatch (1888.114854ms)
+{"ts":"2026-10-24T08:59:51.014Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:51.015Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:51.015Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:51.015Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:51.015Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:51.015Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:51.015Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+{"ts":"2026-10-24T08:59:51.015Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+✔ a new run in the same conversation may reuse a provider call ID without reviving old output or actions (2277.90668ms)
+✔ seal transaction rejects recovery call/body tampering instead of installing a false native history (1949.17018ms)
+{"ts":"2026-10-24T08:59:55.259Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_delivery_outbox"}
+{"ts":"2026-10-24T08:59:55.259Z","level":"warn","msg":"outbox acknowledgement failed; durable rows retain the delivery intent","table":"agent_run_events"}
+✔ compacted native history cannot admit a repeated sealed call ID or poison durable recovery (2295.470183ms)
+✔ custom native-v1 driver cannot replace the required output binding with unbound streamed answer text (2148.093838ms)
+ℹ tests 20
+ℹ suites 0
+ℹ pass 20
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 40744.715427
