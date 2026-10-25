@@ -85,6 +85,7 @@ import { CandidateBodyParser } from '../model/preview.js'
 import { PreviewBuffer, uploadPreview } from './preview.js'
 import { checkedWorkspaceEntries, workspaceLimits, type WorkspaceState } from '../protocol/workspace.js'
 import type { ExecutionStep } from '../control-plane/steps.js'
+import { projectRuntimeFailure, validateDeploymentVersion, type RuntimeFailureLocation } from './failure-diagnostics.js'
 
 export interface WorkProcessorContext {
   host: HostPort
@@ -99,6 +100,8 @@ export interface WorkProcessor {
 }
 
 export interface AgentRuntimeOptions {
+  /** Optional immutable deployment identity; unknown or a full Git commit SHA. */
+  deploymentVersion?: string
   /** Explicit, currently authorized route; never inferred from provider availability. */
   fallbackModel?: import('../model/execution.js').ApprovedModelFallback
   /** Optional non-reasoning configuration for host-authorized automatic response routing. */
@@ -160,6 +163,7 @@ export class AgentRuntime {
   private readonly rootModelBudget: Required<RootModelBudgetOptions>
   private readonly additionalContentCorrections: number
   private readonly semanticReview: 'disabled' | 'selective' | 'required'
+  private readonly deploymentVersion: string | undefined
   private readonly processors = new Map<string, WorkProcessor | 'conversation'>()
   private readonly eventSeqByRun = new Map<string, number>()
   private readonly eventTails = new Map<string, Promise<void>>()
@@ -211,6 +215,7 @@ export class AgentRuntime {
     private readonly kernels: KernelExecutor,
     options: AgentRuntimeOptions = {},
   ) {
+    this.deploymentVersion = validateDeploymentVersion(options.deploymentVersion)
     this.additionalContentCorrections = options.additionalContentCorrections === undefined ? 0 : options.additionalContentCorrections
     if (!Number.isSafeInteger(this.additionalContentCorrections) || this.additionalContentCorrections < 0 || this.additionalContentCorrections > 3) {
       throw new Error('additionalContentCorrections must be a safe integer between 0 and 3')
@@ -337,6 +342,7 @@ export class AgentRuntime {
     this.hostsByRun.set(runId,deadlineHost(this.checkpointDedup ? checkpointHost(this.host, this.metrics) : this.host,
       signals.lifecycle.signal,30_000,this.metrics))
     let activeSession: SessionRecord | null = null
+    const failureLocation: RuntimeFailureLocation = { phase: 'recovery', bindingState: 'unknown', requestVersion: work.requestVersion ?? 1 }
     const log = this.logger.child({ runId, workId: work.id, agentId: work.agentId, fence: work.fence })
     const model = executionModel(this.hostFor(work), this.model, work, this.rootModelBudget, event => this.event(work, runId, event),'model',this.fallbackModel,
       ()=>this.memoryAdmissionRuns.get(runId),()=>this.traceRequestVersions.get(runId))
@@ -346,6 +352,7 @@ export class AgentRuntime {
       if (await this.hostFor(work).recoverWork?.(work)) return
       this.metrics?.histogram('agentos_claim_recovery_seconds', 'Per-run recovery after heartbeat registration', LATENCY_BUCKETS)
         .observe((performance.now() - recoveryStarted) / 1000)
+      failureLocation.phase = 'run_start'
       await this.event(work, runId, {
         kind: 'run.started', stage: 'started', visibility: 'user',
         data: {
@@ -358,6 +365,7 @@ export class AgentRuntime {
       const processor = work.kind === 'turn' || work.kind === 'resume' ? 'conversation' : this.processors.get(work.kind)
       if (!processor) throw new Error(`no processor registered for work kind '${work.kind}'`)
       if (processor !== 'conversation') {
+        failureLocation.phase = 'processor'
         await processor.process(work, {
           host: this.hostFor(work),
           model,
@@ -369,7 +377,7 @@ export class AgentRuntime {
         return
       }
 
-      const sessionRef: { session: SessionRecord | null; compaction?: ReturnType<typeof prepareCompaction> } = { session: null }
+      const sessionRef: { session: SessionRecord | null; compaction?: ReturnType<typeof prepareCompaction>; failureLocation: RuntimeFailureLocation } = { session: null, failureLocation }
       try {
         await this.runTurn(work, runId, signals, log, sessionRef, model)
       } finally {
@@ -383,7 +391,7 @@ export class AgentRuntime {
         await this.hostFor(work).yieldWork(work).catch(() => {})
         return
       }
-      await this.finishWithError(work, runId, signals, activeSession, error)
+      await this.finishWithError(work, runId, signals, activeSession, error, failureLocation)
       return
     } finally {
       this.publications.get(runId)?.dispose(); this.publications.delete(runId); this.modelAttempts.delete(runId); this.traceRequestVersions.delete(runId)
@@ -414,12 +422,17 @@ export class AgentRuntime {
 
   private async runTurn(
     work: WorkItem, runId: string, signals: AttemptSignals, log: Logger,
-    sessionRef: { session: SessionRecord | null; compaction?: ReturnType<typeof prepareCompaction> },
+    sessionRef: { session: SessionRecord | null; compaction?: ReturnType<typeof prepareCompaction>; failureLocation: RuntimeFailureLocation },
     deepModel: ModelDriver,
   ): Promise<void> {
     const host = this.hostFor(work)
+    const failureLocation = sessionRef.failureLocation
+    failureLocation.phase = 'context_load'
     const contextBegan = performance.now()
     const context = await (host.loadInitialContext?.(work) ?? host.loadContext(work))
+    failureLocation.requestVersion = context.snapshotVersion?.requestVersion ?? work.requestVersion ?? 1
+    failureLocation.bindingState = context.executionSteps?.some(step => step.kind === 'runtime.binding') ? 'restored' : 'not_started'
+    failureLocation.phase = 'model_selection'
     // Select once from trusted authorization, before provider admission/binding.
     // Private/delegated work keeps the existing strict v2 contract. This is not
     // error recovery and never opens the public streaming permission gate.
@@ -440,16 +453,20 @@ export class AgentRuntime {
 
     if (context.memory?.admission) this.memoryAdmissionRuns.set(runId,context.memory.admissionRequestVersion ?? 0)
     if(context.memory || context.capabilities.includes('memory') || context.tools?.some(tool=>tool.action.startsWith('memory.'))) this.privateMemoryRuns.add(runId)
+    failureLocation.phase = 'input_loaded'
     await this.event(work, runId, {
       kind: 'input.loaded', stage: 'completed', visibility: 'internal',
       data: { triggerRef: work.triggerRef, durationMs: performance.now() - contextBegan, responseProfile: context.responseProfile ?? 'deep' },
     })
 
+    failureLocation.phase = 'execution_snapshot'
     const initialExecution = executionSnapshot(context, this.policy)
+    failureLocation.phase = 'session_restore'
     const session = await this.restoreSession(work, { ...context, tools: initialExecution.tools }, initialExecution)
     if (!session) return
     sessionRef.session = session
     this.traceRequestVersions.set(runId,(session.request?.revisions.length ?? 0)+1)
+    failureLocation.phase = 'request_refresh'
     // A queued request can already have human revisions when it is first
     // claimed. Admit those revisions before the first version-fenced step.
     await signals.refresh()
@@ -459,6 +476,8 @@ export class AgentRuntime {
       session.request.revisions.push(steer)
       delete session.request.contract
     }
+    failureLocation.requestVersion = (session.request?.revisions.length ?? 0) + 1
+    failureLocation.phase = 'binding_prepare'
     const semanticReviewPolicy = context.semanticReviewPolicy === undefined ? undefined : snapshotSemanticReviewPolicyIdentity(context.semanticReviewPolicy)
     const priorBinding = context.executionSteps?.find(step => step.kind === 'runtime.binding')
     {
@@ -479,11 +498,18 @@ export class AgentRuntime {
         ...(this.additionalContentCorrections ? { additionalContentCorrections: this.additionalContentCorrections } : {}),
         ...(fastModel ? { fastProvider: fastModel.configurationFingerprint ?? null } : {}) }
       if (priorBinding && canonicalJson(priorBinding.input) !== canonicalJson(binding)) throw new Error('run behavior version changed; restore the pinned worker configuration')
-      if (!priorBinding) await this.hostFor(work).saveStep(work, { id: 'runtime:binding', kind: 'runtime.binding',
-        requestVersion: (session.request?.revisions.length ?? 0) + 1, input: binding, output: '{}', artifacts: [] })
+      if (!priorBinding) {
+        failureLocation.phase = 'binding_save'
+        failureLocation.bindingState = 'saving'
+        await this.hostFor(work).saveStep(work, { id: 'runtime:binding', kind: 'runtime.binding',
+          requestVersion: (session.request?.revisions.length ?? 0) + 1, input: binding, output: '{}', artifacts: [] })
+        failureLocation.bindingState = 'saved'
+      }
     }
     sessionRef.session = session
+    failureLocation.phase = 'session_save'
     await this.hostFor(work).saveSession(work, session)
+    failureLocation.phase = 'turn_execution'
     const budget = new CorrectionBudget(context.executionCheckpoint,this.additionalContentCorrections)
     let nextStreamPartIndex = 0
     let streamedText = ''
@@ -1798,7 +1824,7 @@ export class AgentRuntime {
 
   private async finishWithError(
     work: WorkItem, runId: string, signals: AttemptSignals,
-    session: SessionRecord | null, error: unknown,
+    session: SessionRecord | null, error: unknown, failureLocation: RuntimeFailureLocation,
   ): Promise<void> {
     const log = this.logger.child({ runId })
     if (signals.preemptRequested()) {
@@ -1826,6 +1852,22 @@ export class AgentRuntime {
       || error instanceof RunCancelledError
       || error instanceof KernelCancelledError
     const status = cancelled ? 'cancelled' : 'failed'
+    // Preserve bounded operator evidence before publicFailure intentionally
+    // discards the original exception. A failed diagnostic write must never
+    // change the existing cancellation/completion behavior.
+    if (!cancelled) {
+      let diagnostic: ReturnType<typeof projectRuntimeFailure> | undefined
+      try {
+        const location = session?.request
+          ? { ...failureLocation, requestVersion: session.request.revisions.length + 1 } : failureLocation
+        diagnostic = projectRuntimeFailure(error, { runId, fence: work.fence }, location, this.deploymentVersion)
+        await this.event(work, runId, { kind: 'runtime.failure', stage: 'failed', visibility: 'internal',
+          data: { ...diagnostic } })
+      } catch {
+        try { log.warn('runtime failure diagnostic unavailable', { code: 'runtime_failure_diagnostic_unavailable',
+          ...(diagnostic ? { diagnostic } : {}) }) } catch { /* Preserve terminal handling. */ }
+      }
+    }
     if (error instanceof HardLimitExceededError && error.diagnostics) {
       log.warn('context compaction failed', error.diagnostics)
     }

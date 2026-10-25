@@ -2,6 +2,7 @@ import type { SqlQueryable } from '../control-plane/pg-store.js'
 import type { MetricsRegistry } from '../metrics.js'
 import { readRun, runSnapshot, type RunIdentity, type RunSnapshot } from './jobs.js'
 import { readTerminalFeedback } from './terminal.js'
+import { readRuntimeFailureDiagnostic } from '../runtime/failure-diagnostics.js'
 
 export interface RunListQuery {
   tenantId?: string
@@ -127,7 +128,7 @@ export async function readOperations(database: SqlQueryable) {
 export async function readDiagnostics(database: SqlQueryable, identity: RunIdentity) {
   const run = await readRun(database, identity)
   if (!run) return null
-  const [actions, delivery, execution, terminal] = await Promise.all([
+  const [actions, delivery, execution, terminal, failures] = await Promise.all([
     database.query(`SELECT intent.idempotency_key,intent.intent->'action'->>'action' AS action,
       COALESCE(resolved.result,receipt.result) AS result FROM lingxios.agent_action_intents intent
       LEFT JOIN lingxios.agent_action_ledger receipt USING(idempotency_key)
@@ -143,6 +144,12 @@ export async function readDiagnostics(database: SqlQueryable, identity: RunIdent
       (SELECT COUNT(*) FROM lingxios.agent_model_budget_calls WHERE work_id=$1 AND failed_at IS NOT NULL) AS failed_usage,
       (SELECT COUNT(*) FROM lingxios.agent_verifications WHERE work_id=$1 AND request_version=$2 AND status='failed') AS failed_checks`, [run.id,run.requestVersion]),
     readTerminalFeedback(database,identity),
+    database.query(`SELECT event.data FROM lingxios.agent_run_events event
+      JOIN lingxios.agent_work_items work ON work.id=event.run_id
+      WHERE event.run_id=$1 AND event.kind='runtime.failure' AND event.visibility='internal'
+        AND event.data->>'requestVersion'=$2::text AND event.data->>'fence'=$3::text
+        AND work.fence=$3::bigint AND jsonb_array_length(work.steer_inputs)+1=$2::integer
+      ORDER BY event.seq DESC LIMIT 1`, [run.id, run.requestVersion, run.fence]),
   ])
   const row = execution.rows[0]!, now = Date.now()
   const age = (date: string | null) => date ? Math.max(0,(now-Date.parse(date))/1000) : null
@@ -152,7 +159,8 @@ export async function readDiagnostics(database: SqlQueryable, identity: RunIdent
     failedEvents: Number(row['failed_events']), failedUsageDeliveries: Number(row['failed_usage']),
     actions: actions.rows.slice(0,64).map(row => ({ actionKey: String(row['idempotency_key']), action: String(row['action']),
       result: row['result'] as import('../protocol/types.js').HostActionResult | null })), actionsTruncated: actions.rows.length > 64,
-    delivery: delivery.rows[0] ?? null, terminal }
+    delivery: delivery.rows[0] ?? null, terminal,
+    runtimeFailure: readRuntimeFailureDiagnostic(failures.rows[0]?.['data']) }
 }
 
 export async function retryDelivery(database: SqlQueryable, identity: RunIdentity, channel: 'message' | 'events' | 'usage' | 'terminal') {

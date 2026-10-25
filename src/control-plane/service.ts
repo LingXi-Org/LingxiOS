@@ -8,6 +8,7 @@ import { readRequestAttachment } from '../context/request.js'
 import { readEvidence } from '../context/evidence.js'
 import { NoEffectError } from '../tools/definition.js'
 import { permitsTool, executionMode } from '../runtime/execution-policy.js'
+import { readRuntimeFailureDiagnostic } from '../runtime/failure-diagnostics.js'
 import { canonicalJson } from '../context/compiler.js'
 import { observationRef } from '../context/observations.js'
 import { toolContractHash, enforceWaitContract } from '../tools/contracts.js'
@@ -878,6 +879,13 @@ export class ControlPlaneService {
       throw new ControlPlaneError(400, 'invalid run event envelope')
     }
     if(event.publicTextRecovery!==undefined && event.kind!=='public.text.sealed')throw new ControlPlaneError(400,'recovery metadata requires a public seal')
+    if (event.kind === 'runtime.failure') {
+      const diagnostic = readRuntimeFailureDiagnostic(event.data)
+      if (event.visibility !== 'internal' || event.stage !== 'failed' || !diagnostic
+        || diagnostic.runId !== work.id || diagnostic.fence !== work.fence || diagnostic.requestVersion !== (work.requestVersion ?? 1))
+        throw new ControlPlaneError(400, 'invalid runtime failure diagnostic')
+      event = { ...event, data: { ...diagnostic } }
+    }
     if (event.kind === 'response.committed') throw new ControlPlaneError(400, 'response.committed is reserved for the result transaction')
     // Attempt-range fencing: an event must land inside its own attempt's
     // sequence range so retried attempts can never shadow one another.
