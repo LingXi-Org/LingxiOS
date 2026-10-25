@@ -1856,11 +1856,16 @@ export class AgentRuntime {
     // discards the original exception. A failed diagnostic write must never
     // change the existing cancellation/completion behavior.
     if (!cancelled) {
+      let diagnostic: ReturnType<typeof projectRuntimeFailure> | undefined
       try {
+        const location = session?.request
+          ? { ...failureLocation, requestVersion: session.request.revisions.length + 1 } : failureLocation
+        diagnostic = projectRuntimeFailure(error, { runId, fence: work.fence }, location, this.deploymentVersion)
         await this.event(work, runId, { kind: 'runtime.failure', stage: 'failed', visibility: 'internal',
-          data: { ...projectRuntimeFailure(error, { runId, fence: work.fence }, failureLocation, this.deploymentVersion) } })
+          data: { ...diagnostic } })
       } catch {
-        try { log.warn('runtime failure diagnostic unavailable', { code: 'runtime_failure_diagnostic_unavailable' }) } catch { /* Preserve terminal handling. */ }
+        try { log.warn('runtime failure diagnostic unavailable', { code: 'runtime_failure_diagnostic_unavailable',
+          ...(diagnostic ? { diagnostic } : {}) }) } catch { /* Preserve terminal handling. */ }
       }
     }
     if (error instanceof HardLimitExceededError && error.diagnostics) {

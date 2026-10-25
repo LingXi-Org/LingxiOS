@@ -27,6 +27,8 @@ internal diagnostic for the run's **current request version and fence**. Earlier
 attempts and requests are excluded. Applications must authorize this operator
 API separately from ordinary conversation access; it is not a user-event API.
 The diagnostic types are exported from `@lyyzka/lingxios`.
+When a running session has accepted steering, the failure uses that session's
+current request version rather than the earlier binding's version.
 
 `phase` identifies the runtime operation in progress. Before a first binding is
 saved, the relevant phases are `execution_snapshot`, `session_restore`,
@@ -49,6 +51,8 @@ are never copied. Worker input is validated before persistence and stored data
 is validated again before operator reads.
 
 Diagnostic writes are best effort. A write or logging failure cannot replace the
-original terminal outcome. Cancellation, preemption, shutdown yielding and
+original terminal outcome. If event persistence fails, the existing logger
+receives the same projected diagnostic, including its correlation ID; the
+original exception and raw stack are never passed to that logger. Cancellation, preemption, shutdown yielding and
 lost-lease behavior are unchanged and do not produce a new terminal-failure
 diagnostic.

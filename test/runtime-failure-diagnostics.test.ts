@@ -27,7 +27,7 @@ function failure() {
       + `    at spoof (/private/${secret}/src/runtime/runtime.js:1:2)\n    at query (${sourceRoot}runtime/runtime.js?token=${secret}:1:2)` })
 }
 
-async function fixture(mode: 'execution_snapshot' | 'session_restore' | 'binding_save' | 'diagnostic_write' | 'cancelled') {
+async function fixture(mode: 'execution_snapshot' | 'session_restore' | 'binding_save' | 'diagnostic_write' | 'cancelled' | 'revision') {
   const db = new PGlite(), home = await mkdtemp(join(tmpdir(), 'runtime-failure-'))
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
   let tail = Promise.resolve()
@@ -36,6 +36,7 @@ async function fixture(mode: 'execution_snapshot' | 'session_restore' | 'binding
   const pool: SqlPool = { async query(sql, params) { const release = await acquire(); try { return await query(sql, params) } finally { release() } },
     async connect() { return { query, release: await acquire() } } }
   const logs: string[] = []
+  let rejectedDiagnostic: Record<string, unknown> | undefined, revised = false
   const app = await createLingxiOS({ database: pool, homesRoot: home, background: { role: 'passive' }, logger: nullLogger,
     contextProvider: { loadContext: async work => ({ persona: { name: 'Fixture', role: 'assistant', instructions: '' }, capabilities: ['memory'],
       messages: [{ ref: work.triggerRef, authorId: work.principalId!, authorName: 'Fixture', authorKind: 'human', body: 'Hello', createdAt: 'now' }] }) } })
@@ -52,15 +53,20 @@ async function fixture(mode: 'execution_snapshot' | 'session_restore' | 'binding
   }
   const identity = { runId: `failure-${mode}`, tenantId: 'tenant', principalId: 'human', agentId: 'agent', sessionId: 'session' }
   const worker = createWorker({ controlPlane: { connectWorker(input) {
-    const host = app.connectWorker(input), save = host.saveStep.bind(host), emit = host.emitEvent.bind(host)
+    const host = app.connectWorker(input), save = host.saveStep.bind(host), emit = host.emitEvent.bind(host), saveSession = host.saveSession.bind(host)
     return { ...host,
+      saveSession: async (work, session, signal) => {
+        if (mode === 'revision' && session.request?.revisions.length === 1) throw failure()
+        await saveSession(work, session, signal)
+        if (mode === 'revision' && !revised) { revised = true; assert.equal(await app.revise(identity, 'Hello again'), true) }
+      },
       saveStep: async (work, step, signal) => {
         if (mode === 'binding_save' && step.kind === 'runtime.binding') { await Promise.resolve(); throw failure() }
         await save(work, step, signal)
       },
       emitEvent: async (work, event, signal) => {
         if (event.kind === 'runtime.failure') {
-          if (mode === 'diagnostic_write') throw new Error(secret)
+          if (mode === 'diagnostic_write') { rejectedDiagnostic = structuredClone(event.data); throw new Error(secret) }
           await assert.rejects(emit(work, { ...event, visibility: 'user' }, signal), /invalid runtime failure diagnostic/)
           await assert.rejects(emit(work, { ...event, data: { ...event.data, message: secret } }, signal), /invalid runtime failure diagnostic/)
           await assert.rejects(emit(work, { ...event, data: { ...event.data, fence: work.fence + 1 } }, signal), /invalid runtime failure diagnostic/)
@@ -71,7 +77,8 @@ async function fixture(mode: 'execution_snapshot' | 'session_restore' | 'binding
     kernelFactory: () => ({ execute: unexpected, close() {}, size: 0 }),
     model: { modelId: 'fixture', run: unexpected, structured: unexpected, compact: unexpected } })
   await app.enqueue({ id: identity.runId, ...identity, text: 'Hello', mode: 'chat', codeExecution: 'disabled' })
-  return { app, worker, identity, pool, logs, async close() { await worker.stop(); await app.stop(); await db.close(); await rm(home, { recursive: true, force: true }) } }
+  return { app, worker, identity, pool, logs, rejectedDiagnostic: () => rejectedDiagnostic,
+    async close() { await worker.stop(); await app.stop(); await db.close(); await rm(home, { recursive: true, force: true }) } }
 }
 
 for (const phase of ['execution_snapshot', 'session_restore', 'binding_save'] as const)
@@ -123,9 +130,32 @@ it('a failed diagnostic sink preserves failure completion, and cancellation rema
       await f.worker.runNext()
       assert.equal((await f.app.readRun(f.identity))?.status, mode === 'cancelled' ? 'cancelled' : 'failed')
       assert.equal((await f.app.readDiagnostics(f.identity))!.runtimeFailure, null)
+      if (mode === 'diagnostic_write') {
+        const fallback = f.logs.map(line => JSON.parse(line)).find(line => line.code === 'runtime_failure_diagnostic_unavailable')
+        assert.ok(fallback)
+        assert.deepEqual(fallback.diagnostic, f.rejectedDiagnostic(), 'logging retains the same safe diagnostic and correlation ID')
+        assert.ok(readRuntimeFailureDiagnostic(fallback.diagnostic))
+      }
       assert.doesNotMatch(JSON.stringify(f.logs), /PRIVATE_/)
     } finally { await f.close() }
   }
+})
+
+it('a failure after accepting steering is persisted and readable for the current request version', async () => {
+  const f = await fixture('revision')
+  try {
+    assert.equal(await f.worker.runNext(), true)
+    const diagnostics = (await f.app.readDiagnostics(f.identity))!
+    assert.equal(diagnostics.run.status, 'failed')
+    assert.equal(diagnostics.run.requestVersion, 2)
+    assert.equal(diagnostics.runtimeFailure?.requestVersion, 2)
+    assert.equal(diagnostics.runtimeFailure.phase, 'turn_execution')
+    assert.equal(diagnostics.runtimeFailure.bindingState, 'saved')
+    const stored = (await f.pool.query("SELECT data FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='runtime.failure'", [f.identity.runId])).rows
+    assert.deepEqual(stored[0]?.['data'], diagnostics.runtimeFailure)
+    assert.equal((await f.app.readEvents(f.identity)).events.some(event => event.kind === 'runtime.failure'), false)
+    assert.doesNotMatch(JSON.stringify({ stored, logs: f.logs }), /PRIVATE_/)
+  } finally { await f.close() }
 })
 
 it('diagnostic projection and stored validation reject arbitrary names, codes, paths and secrets', () => {
