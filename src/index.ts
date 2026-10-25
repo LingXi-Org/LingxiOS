@@ -64,6 +64,7 @@ export type { KernelExecutor, ManagedKernelExecutor, KernelHostBridge } from './
 export { DefaultRuntimePolicy, type RuntimePolicy } from './runtime/policy.js'
 export { executionSnapshot, type ExecutionSnapshot, type HarnessMode } from './runtime/execution-policy.js'
 export type { ModelCallObservation, ModelCallObserver } from './runtime/runtime.js'
+export type { RuntimeFailureDiagnostic, RuntimeFailurePhase, RuntimeBindingState, RuntimeFailureFrame } from './runtime/failure-diagnostics.js'
 export type { CapabilityGrant, CodeExecutionMode, ContextMessage, ModelItem, PromptContext, TurnContext, WorkItem } from './protocol/types.js'
 export type { MemoryIdentity, MemoryScope, MemoryLayer, MemorySource, MemoryDocument, MemoryEntry, MemoryPage, MemoryListQuery,
   MemorySearchQuery, MemoryHit, MemoryHistoryHit, MemorySearchResult, MemoryContent, MemoryChange, MemoryApplyInput,
