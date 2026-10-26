@@ -19,7 +19,7 @@ const ack = '{"status":"public_message_recorded"}'
 const known = 'Gather collects the items. Check reviews them. '
 type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; callId?: string }
   | { business: true }
-  | { invalid: 'mixed' | 'duplicate' | 'truncated' }
+  | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' }
 type WireRequest = { stream?: boolean; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
 async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.') {
   const db = new PGlite(), home = await mkdtemp(join(tmpdir(), 'public-answer-worker-'))
@@ -95,7 +95,10 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
     if ('business' in reply) wire = frame({ tool_calls: [call('probe__save', '{ "key" : "synthetic-record" }')] }, 'tool_calls')
     else if ('invalid' in reply) {
       const args = JSON.stringify({ operation: { kind: 'append', supersedes: [] }, answer: 'Provisional only.', outcome: null })
-      wire = frame({ tool_calls: [call('public_answer', reply.invalid === 'truncated' ? args.slice(0, -1) : args),
+      const invalidArgs = reply.invalid === 'missing-outcome'
+        ? JSON.stringify({ operation: { kind: 'append', supersedes: [] }, answer: 'Provisional only.' })
+        : reply.invalid === 'truncated' ? args.slice(0, -1) : args
+      wire = frame({ tool_calls: [call('public_answer', invalidArgs),
         ...(reply.invalid === 'mixed' ? [call('probe__save', '{"key":"synthetic-record"}', 1, 'second')]
           : reply.invalid === 'duplicate' ? [call('public_answer', args, 1, 'second')] : [])] }, 'tool_calls')
     } else {
@@ -158,6 +161,40 @@ it('real Worker delivers terminal public arithmetic in one generation with zero 
     const actions = (await f.pool.query("SELECT intent->'action'->>'action' AS action FROM lingxios.agent_action_intents WHERE intent->>'workId'=$1", [f.identity.runId])).rows.map(row => row['action'])
     assert.deepEqual(actions.filter(action => action === 'public_answer' || action === 'public.answer' || action === 'probe.save'), [], JSON.stringify(actions))
     assert.equal((await f.app.readEvents(f.identity)).events.filter(event => event.kind === 'tool.started').length, 0)
+  } finally { await f.close() }
+})
+
+for (const failures of [1, 2]) it(`protocol correction terminates after ${failures} invalid native public outputs`, async t => {
+  const invalid = failures === 1 ? 'missing-outcome' as const : 'truncated' as const
+  const f = await fixture([...Array.from({ length: failures }, () => ({ invalid })), { answer: '43' }], undefined, 8, 'What is 17 + 26? Only the number.')
+  try {
+    const state = await f.run(), events = (await f.app.readEvents(f.identity)).events
+    assert.equal(state.run.status, 'succeeded'); assert.equal(state.message?.body, '43')
+    assert.equal(state.message?.publicTextSources?.segments.length, 1)
+    assert.deepEqual([f.calls, f.effects, f.auxiliary], [failures + 1, 0, 0])
+    const diagnostics = await f.pool.query("SELECT data->'modelDiagnostics'->>'protocolCode' AS code FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='model.failed' ORDER BY seq", [f.identity.runId])
+    assert.deepEqual(diagnostics.rows.map(row => row['code']), Array(failures).fill(invalid === 'truncated' ? 'public_text_incomplete' : 'public_text_invalid'))
+    const correction = f.requests[1]!.messages.find(message => message.role === 'user' && typeof message.content === 'string' && message.content.startsWith('Protocol correction:'))?.content
+    assert.equal(typeof correction, 'string')
+    assert.match(String(correction), /fully answered.*terminal outcome/)
+    assert.match(String(correction), /outcome:null.*unfinished work/)
+    assert.equal(events.filter(event => event.kind === 'public.text.ended' && event.data['reason'] === 'failed').length, invalid === 'truncated' ? failures : 0,
+      'a complete malformed chunk is rejected before publication; truncated streamed text retains failed endings')
+    const ledger = await f.pool.query("SELECT call_id,observation->>'status' AS status FROM lingxios.agent_model_budget_calls WHERE work_id=$1 ORDER BY call_id", [f.identity.runId])
+    assert.equal(ledger.rows.length, failures + 1)
+    assert.equal(ledger.rows.filter(row => row['status'] === 'failed').length, failures)
+    t.diagnostic(JSON.stringify({ invalid, modelCalls: f.calls, ledger: ledger.rows, operations: events.filter(event => event.kind === 'public.text.operation').map(event => event.data), sources: state.message?.publicTextSources, finalBody: state.message?.body }))
+  } finally { await f.close() }
+})
+
+it('protocol correction can continue real work and finish sealed text without repeating it', async () => {
+  const f = await fixture([{ invalid: 'truncated' }, { answer: known, intermediate: true }, { business: true }, { answer: null }])
+  try {
+    const state = await f.run()
+    assert.equal(state.run.status, 'succeeded'); assert.equal(state.message?.body, known.trim())
+    assert.equal(state.message?.publicTextSources?.segments.length, 1)
+    assert.deepEqual([f.calls, f.effects, f.auxiliary], [4, 1, 0])
+    assert.equal(f.resourceChecks, 1)
   } finally { await f.close() }
 })
 

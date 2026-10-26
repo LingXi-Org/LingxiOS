@@ -1,0 +1,123 @@
+{
+  "kind": "synthetic-worker-replay",
+  "cases": [
+    {
+      "invalid": "missing-outcome",
+      "modelCalls": 2,
+      "ledger": [
+        {
+          "call_id": "public-answer-run:1:model:1",
+          "status": "failed"
+        },
+        {
+          "call_id": "public-answer-run:1:model:2",
+          "status": "succeeded"
+        }
+      ],
+      "operations": [
+        {
+          "fence": 1,
+          "partId": "public:3bed544c84b9e1c8a13cb777965ca658616c038a35ca9bfaa4d0d5f7a8f246b1:answer",
+          "purpose": "answer",
+          "version": 3,
+          "attemptId": "public-answer-run:1:model:2",
+          "messageId": "answer:public-answer-run:v1",
+          "operation": "append",
+          "partIndex": 1,
+          "segmentId": "public:3bed544c84b9e1c8a13cb777965ca658616c038a35ca9bfaa4d0d5f7a8f246b1:answer",
+          "supersedes": [],
+          "requestVersion": 1
+        }
+      ],
+      "sources": {
+        "version": 3,
+        "bodyHash": "44cb730c420480a0477b505ae68af508fb90f96cf0ec54c6ad16949dd427f13a",
+        "segments": [
+          {
+            "end": 2,
+            "start": 0,
+            "partId": "public:3bed544c84b9e1c8a13cb777965ca658616c038a35ca9bfaa4d0d5f7a8f246b1:answer",
+            "bodyHash": "44cb730c420480a0477b505ae68af508fb90f96cf0ec54c6ad16949dd427f13a",
+            "segmentId": "public:3bed544c84b9e1c8a13cb777965ca658616c038a35ca9bfaa4d0d5f7a8f246b1:answer"
+          }
+        ],
+        "messageId": "answer:public-answer-run:v1"
+      },
+      "finalBody": "43"
+    },
+    {
+      "invalid": "truncated",
+      "modelCalls": 3,
+      "ledger": [
+        {
+          "call_id": "public-answer-run:1:model:1",
+          "status": "failed"
+        },
+        {
+          "call_id": "public-answer-run:1:model:2",
+          "status": "failed"
+        },
+        {
+          "call_id": "public-answer-run:1:model:3",
+          "status": "succeeded"
+        }
+      ],
+      "operations": [
+        {
+          "fence": 1,
+          "partId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+          "purpose": "answer",
+          "version": 3,
+          "attemptId": "public-answer-run:1:model:1",
+          "messageId": "answer:public-answer-run:v1",
+          "operation": "append",
+          "partIndex": 1,
+          "segmentId": "public:23c726db3c8d1c5047e7886add80562162e604bb6bff01157c9dfd271366b5c0:answer",
+          "supersedes": [],
+          "requestVersion": 1
+        },
+        {
+          "fence": 1,
+          "partId": "public:3bed544c84b9e1c8a13cb777965ca658616c038a35ca9bfaa4d0d5f7a8f246b1:answer",
+          "purpose": "answer",
+          "version": 3,
+          "attemptId": "public-answer-run:1:model:2",
+          "messageId": "answer:public-answer-run:v1",
+          "operation": "append",
+          "partIndex": 1,
+          "segmentId": "public:3bed544c84b9e1c8a13cb777965ca658616c038a35ca9bfaa4d0d5f7a8f246b1:answer",
+          "supersedes": [],
+          "requestVersion": 1
+        },
+        {
+          "fence": 1,
+          "partId": "public:788adf044d9eb558e2af4ea8eafcecc8c5b85946633516c620c1ee248a7daa94:answer",
+          "purpose": "answer",
+          "version": 3,
+          "attemptId": "public-answer-run:1:model:3",
+          "messageId": "answer:public-answer-run:v1",
+          "operation": "append",
+          "partIndex": 1,
+          "segmentId": "public:788adf044d9eb558e2af4ea8eafcecc8c5b85946633516c620c1ee248a7daa94:answer",
+          "supersedes": [],
+          "requestVersion": 1
+        }
+      ],
+      "sources": {
+        "version": 3,
+        "bodyHash": "44cb730c420480a0477b505ae68af508fb90f96cf0ec54c6ad16949dd427f13a",
+        "segments": [
+          {
+            "end": 2,
+            "start": 0,
+            "partId": "public:788adf044d9eb558e2af4ea8eafcecc8c5b85946633516c620c1ee248a7daa94:answer",
+            "bodyHash": "44cb730c420480a0477b505ae68af508fb90f96cf0ec54c6ad16949dd427f13a",
+            "segmentId": "public:788adf044d9eb558e2af4ea8eafcecc8c5b85946633516c620c1ee248a7daa94:answer"
+          }
+        ],
+        "messageId": "answer:public-answer-run:v1"
+      },
+      "finalBody": "43"
+    }
+  ]
+}

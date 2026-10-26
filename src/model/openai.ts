@@ -3,7 +3,7 @@ import { PUBLIC_ANSWER_TOOL, PUBLIC_ANSWER_TOOL_INSTRUCTIONS } from './public-an
 import { PUBLIC_ANSWER_TOOL_NAME, decodePublicAnswerCall, type PublicAnswerCall } from '../protocol/public-answer-call.js'
 import type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
 import { publicPurposeInstructions, PublicPurposeParser, publicPurposeError } from './public-purpose.js'
-import { ToolCompanionBoundary, completeCompanionTurn, companionHasJsonFraming } from './tool-companion.js'
+import { ToolCompanionBoundary, completeCompanionIdentity, completeCompanionTurn, companionHasJsonFraming } from './tool-companion.js'
 import { NativeToolPublicOutput, NATIVE_TOOL_PUBLIC_OUTPUT_INSTRUCTIONS, wrapNativeToolSchema, wrapNativeToolArguments } from './native-tool-public-output.js'
 import { compileToolSchemas, validateToolBatch } from '../runtime/tool-batch.js'
 /**
@@ -640,7 +640,9 @@ export class OpenAIChatDriver implements ModelDriver {
     if(this.publicAnswerTool) {
       if(!accumulator.toolCalls.size)throw new ModelDriverError('public answer requires the declared output tool',{
         ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_text_answer_required'})
-      if(!completeCompanionTurn({text:'',calls:accumulator.toolCalls,finishReasons:accumulator.finishReasons,
+      // Validate identities first. The public-output parser below owns its JSON
+      // completion diagnostics; truncation is not a malformed tool identity.
+      if(!completeCompanionIdentity({text:'',calls:accumulator.toolCalls,finishReasons:accumulator.finishReasons,
         ...(accumulator.malformedToolCalls?{malformed:true}:{})},tools.map(tool=>tool.function.name),false))throw new ModelDriverError('invalid original native output batch',{
         ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid'})
       const call=accumulator.toolCalls.get(0)!
