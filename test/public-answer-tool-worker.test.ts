@@ -21,7 +21,7 @@ type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean;
   | { business: true }
   | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' }
 type WireRequest = { stream?: boolean; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
-async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.') {
+async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart' | 'publication-reject', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.') {
   const db = new PGlite(), home = await mkdtemp(join(tmpdir(), 'public-answer-worker-'))
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
   let tail = Promise.resolve(), calls = 0, effects = 0, auxiliary = 0, seals = 0, faulted = false, strippedBindings = 0
@@ -66,6 +66,9 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
       }
     }
     host.emitEvent = async (work, event, signal) => {
+      if (fault === 'publication-reject' && event.kind === 'public.text.sealed' && seals === 1) {
+        throw Object.assign(new Error('PRIVATE_518_STORAGE_BODY_TOKEN'), { code: '23514' })
+      }
       if (fault === 'tamper-call' && event.publicTextRecovery?.version === 2) {
         const recovery = event.publicTextRecovery
         const args = JSON.parse(recovery.publicAnswerCall.arguments) as Record<string, unknown>
@@ -74,7 +77,7 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
       }
       await emit(work, event, signal)
       if (event.kind === 'public.text.sealed') { seals++; timeline.push('seal') }
-      if (fault && fault !== 'history' && fault !== 'tamper-call' && fault !== 'compacted-duplicate' && fault !== 'missing-binding' && fault !== 'repair-answer' && fault !== 'repair-restart' && !faulted && event.kind === 'public.text.sealed' && (fault !== 'second-seal' || seals === 2)) {
+      if (fault && fault !== 'history' && fault !== 'tamper-call' && fault !== 'compacted-duplicate' && fault !== 'missing-binding' && fault !== 'repair-answer' && fault !== 'repair-restart' && fault !== 'publication-reject' && !faulted && event.kind === 'public.text.sealed' && (fault !== 'second-seal' || seals === 2)) {
         faulted = true
         if (fault === 'cancel') { await app.cancel(identity); return }
         await expire(work.id)
@@ -195,6 +198,41 @@ it('protocol correction can continue real work and finish sealed text without re
     assert.equal(state.message?.publicTextSources?.segments.length, 1)
     assert.deepEqual([f.calls, f.effects, f.auxiliary], [4, 1, 0])
     assert.equal(f.resourceChecks, 1)
+  } finally { await f.close() }
+})
+
+it('first successful intermediate answer followed by protocol and publication failures remains failed with safe diagnostics', async t => {
+  const f = await fixture([{ answer: known, intermediate: true }, { invalid: 'truncated' }, { answer: 'Revised answer.', replace: true }], 'publication-reject')
+  try {
+    const state = await f.run(), diagnostics = await f.app.readDiagnostics(f.identity)
+    assert.equal(state.run.status, 'failed'); assert.equal(state.run.resultId, null); assert.equal(state.message, null)
+    assert.match(state.run.error ?? '', /could not be safely published/)
+    assert.deepEqual([f.calls, f.effects, f.auxiliary], [3, 0, 0])
+    assert.deepEqual(diagnostics?.runtimeFailure?.publicationFailure, { stage: 'seal', code: 'persistence_rejected' })
+    assert.equal(diagnostics?.runtimeFailure?.continuationReason, 'intermediate_outcome_null')
+    assert.equal(diagnostics?.runtimeFailure?.sqlState, '23514')
+    const events = (await f.app.readEvents(f.identity)).events
+    assert.equal(events.some(event => event.kind === 'runtime.failure' || event.kind === 'response.continued'), false)
+    const continued = await f.pool.query("SELECT data FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='response.continued'", [f.identity.runId])
+    assert.equal(continued.rows.length, 1)
+    assert.equal((continued.rows[0]?.['data'] as Record<string, unknown>)['reason'], 'intermediate_outcome_null')
+    const ledger = await f.pool.query("SELECT call_id,observation->>'status' AS status FROM lingxios.agent_model_budget_calls WHERE work_id=$1 ORDER BY call_id", [f.identity.runId])
+    assert.deepEqual(ledger.rows.map(row => row['status']), ['succeeded', 'failed', 'succeeded'])
+    assert.doesNotMatch(JSON.stringify({ diagnostics, events, continued }), /PRIVATE_518_STORAGE_BODY_TOKEN/)
+    t.diagnostic(JSON.stringify({ scenario: '518-first-success-publication-failure', ledger: ledger.rows, continuation: continued.rows,
+      publicationFailure: diagnostics?.runtimeFailure?.publicationFailure, finalStatus: state.run.status, resultId: state.run.resultId }))
+  } finally { await f.close() }
+})
+
+it('a verified save survives later protocol exhaustion as partial without replaying the effect', async () => {
+  const f = await fixture([{ answer: known, intermediate: true }, { business: true },
+    { invalid: 'truncated' }, { invalid: 'truncated' }, { invalid: 'truncated' }])
+  try {
+    const state = await f.run()
+    assert.equal(state.run.status, 'partial'); assert.equal(state.message?.body, known.trim())
+    assert.equal(state.message?.envelope.goalOutcome.status, 'partial')
+    assert.equal(f.effects, 1); assert.equal(f.calls, 5)
+    assert.equal(state.message?.publicTextSources?.segments.length, 1)
   } finally { await f.close() }
 })
 

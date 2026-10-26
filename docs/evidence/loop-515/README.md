@@ -1,4 +1,4 @@
-# Loop #515: protocol correction boundaries
+# Loop #515 / #518: protocol correction boundaries
 
 Product companion: https://github.com/LingXi-Org/LingxiLoop/pull/517.
 Base: `88cf667` (formal 3.8.13 source, including OS PR68 diagnostics).
@@ -72,3 +72,53 @@ and exact release CI owned by that coordinator, coordinated with #491's 3.8.13
 adoption. No local package is substituted into the product. Production acceptance
 needs actual runtime identity and the authorized run's protocol/phase evidence;
 do not resend a student message or mutate an old run to obtain it.
+
+## #518 continuation and publication evidence
+
+Read the new #518 issue and its notification comment. Its discarded-draft
+projection is shared with #515-B and fixed by product PR517; its first-success
+then publication-failure chain is a separate boundary from a first protocol
+failure. No timeout or correction-limit change follows from a roughly 30-second
+failed call. The issue provides source/tag metadata for OS3.8.12, not original
+wire declarations or independently inspected container bytes.
+
+The native runtime now records `response.continued` internally only when it
+actually takes the intermediate-outcome branch. It carries the fixed reason
+`intermediate_outcome_null` and request/fence/attempt identity, no text. A later
+fatal error carries that observed continuation reason in the existing restricted
+runtimeFailure diagnostic (reset on request revision). Recovery does not invent
+a reason for a branch not observed by the new attempt; previous internal events
+remain the audit record.
+
+PublicTextPublicationError now names its fixed stage/code. Existing safe failure
+projection preserves this pair and allowlisted SQL/system classification from
+the in-memory cause, never its message, query, token or arbitrary fields. These
+fields remain inside runtimeFailure, which #491 already removes wholesale from
+company-admin responses. No schema migration, new user-visible error or provider
+retry is introduced. Actual internal model.failed protocolCode records remain
+available; they are not reconstructed for the old production runs.
+
+Two added Worker regressions:
+
+1. First intermediate answer succeeds/seals, next native public output truncates,
+   corrected replacement succeeds at the model but the controlled seal write is
+   rejected. Ledger remains succeeded/failed/succeeded; run remains failed with
+   no result. Restricted diagnostics report seal/persistence_rejected and the
+   actual continuation reason. Public events contain neither diagnostic nor
+   original cause. [Machine report](publication-failure-518.json).
+2. A sealed explanation and one verified synthetic save precede exhausted
+   protocol corrections. The save is not replayed; useful text is committed with
+   truthful partial status. This is not a real visualize.save or browser check.
+
+`npm run build` passed after these additions. Exactly the affected Worker,
+writer, failure-diagnostic and model-execution suites were rerun: **42/42 pass,
+zero skips**, 55.75 seconds; [full output](issue-518-focused.log). This includes
+cross-tenant rejection, strict diagnostic revalidation, raw-secret exclusion,
+nonretryable publication causes, cancellation, recovery and effect idempotency.
+Earlier 136-case driver/Worker results apply to the unchanged protocol/driver
+portion; they are not represented as a rerun of the final whole source.
+
+These fixtures establish the controlled branch and preserve failure semantics,
+not the historical publication cause, skill-activation delay, exact TTFT or
+complete visualization acceptance. No browser or live-provider run was made;
+the user's explicit no-browser instruction overrides those issue checkboxes.
