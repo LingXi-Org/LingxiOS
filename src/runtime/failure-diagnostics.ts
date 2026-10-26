@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { classifyToolFailure, sanitizeToolFailureDiagnostics, type ToolFailureDiagnostics } from '../tools/failure.js'
 import { releaseVersions } from '../versions.js'
+import { PublicTextPublicationError, readPublicationFailure, type PublicationFailure } from './public-text.js'
 
 const phases = ['recovery', 'run_start', 'processor', 'context_load', 'model_selection', 'input_loaded',
   'execution_snapshot', 'session_restore', 'request_refresh', 'binding_prepare', 'binding_save', 'session_save', 'turn_execution'] as const
@@ -60,8 +61,10 @@ export interface RuntimeFailureDiagnostic {
   systemCode?: typeof systemCodes[number]
   httpStatus?: number
   frames: RuntimeFailureFrame[]
+  publicationFailure?: PublicationFailure
+  continuationReason?: 'intermediate_outcome_null'
 }
-export interface RuntimeFailureLocation { phase: RuntimeFailurePhase; bindingState: RuntimeBindingState; requestVersion: number }
+export interface RuntimeFailureLocation { phase: RuntimeFailurePhase; bindingState: RuntimeBindingState; requestVersion: number; continuationReason?: 'intermediate_outcome_null' }
 
 export function validateDeploymentVersion(value: string | undefined): string | undefined {
   if (value !== undefined && (typeof value !== 'string' || !deployment.test(value)))
@@ -95,9 +98,11 @@ export function projectRuntimeFailure(error: unknown, identity: { runId: string;
   location: RuntimeFailureLocation, deploymentVersion?: string): RuntimeFailureDiagnostic {
   const failure = classifyToolFailure(error, 'execution'), name = field(error, 'name')
   let sql: string | undefined, system: RuntimeFailureDiagnostic['systemCode'], http: number | undefined
+  let publicationFailure: PublicationFailure | undefined
   const seen = new Set<unknown>()
   for (let current = error, depth = 0; current && depth < 8 && !seen.has(current); depth++) {
     seen.add(current)
+    if(current instanceof PublicTextPublicationError)publicationFailure??=readPublicationFailure({stage:current.stage,code:current.rejection})
     const code = field(current, 'code'), status = field(current, 'status') ?? field(current, 'statusCode')
     if (sqlState(code)) sql ??= code
     if (includes(systemCodes, code)) system ??= code
@@ -110,7 +115,7 @@ export function projectRuntimeFailure(error: unknown, identity: { runId: string;
     reason: includes(reasons, failure.code) ? failure.code : 'native_rejected', category: failure.diagnostics.category,
     retryable: failure.diagnostics.retryable, ...(failure.diagnostics.causeCode ? { causeCode: failure.diagnostics.causeCode } : {}),
     ...(sql ? { sqlState: sql } : {}), ...(system ? { systemCode: system } : {}), ...(http === undefined ? {} : { httpStatus: http }),
-    frames: frames(error) }
+    ...(publicationFailure?{publicationFailure}:{}),frames: frames(error) }
 }
 
 /** Revalidate persisted/worker-supplied data before it crosses the operator API. */
@@ -119,7 +124,7 @@ export function readRuntimeFailureDiagnostic(input: unknown): RuntimeFailureDiag
     if (!input || typeof input !== 'object' || Array.isArray(input)) return null
     const value = input as RuntimeFailureDiagnostic
     const keys = ['schemaVersion', 'correlationId', 'runId', 'requestVersion', 'fence', 'runtimeVersion', 'deploymentVersion', 'phase',
-      'bindingState', 'errorName', 'reason', 'category', 'retryable', 'causeCode', 'sqlState', 'systemCode', 'httpStatus', 'frames']
+      'bindingState', 'errorName', 'reason', 'category', 'retryable', 'causeCode', 'sqlState', 'systemCode', 'httpStatus', 'frames', 'publicationFailure', 'continuationReason']
     if (Object.keys(value).some(key => !keys.includes(key)) || value.schemaVersion !== 1
       || typeof value.correlationId !== 'string' || !uuid.test(value.correlationId)
       || typeof value.runId !== 'string' || !value.runId || value.runId.length > 200
@@ -135,6 +140,8 @@ export function readRuntimeFailureDiagnostic(input: unknown): RuntimeFailureDiag
     if (value.sqlState !== undefined && !sqlState(value.sqlState)) return null
     if (value.systemCode !== undefined && !includes(systemCodes, value.systemCode)) return null
     if (value.httpStatus !== undefined && (typeof value.httpStatus !== 'number' || !Number.isInteger(value.httpStatus) || value.httpStatus < 400 || value.httpStatus > 599)) return null
+    if (value.publicationFailure !== undefined && !readPublicationFailure(value.publicationFailure)) return null
+    if (value.continuationReason !== undefined && value.continuationReason !== 'intermediate_outcome_null') return null
     if (!Array.isArray(value.frames) || value.frames.length > 4 || value.frames.some(frame => !frame || typeof frame !== 'object'
       || Object.keys(frame).some(key => !['module', 'line', 'column'].includes(key)) || !nativeModules.has(frame.module)
       || !positive(frame.line) || frame.column !== undefined && !positive(frame.column))) return null
@@ -145,6 +152,8 @@ export function readRuntimeFailureDiagnostic(input: unknown): RuntimeFailureDiag
       ...(value.deploymentVersion === undefined ? {} : { deploymentVersion: value.deploymentVersion }),
       ...(value.causeCode === undefined ? {} : { causeCode: value.causeCode }), ...(value.sqlState === undefined ? {} : { sqlState: value.sqlState }),
       ...(value.systemCode === undefined ? {} : { systemCode: value.systemCode }), ...(value.httpStatus === undefined ? {} : { httpStatus: value.httpStatus }),
+      ...(value.publicationFailure === undefined ? {} : { publicationFailure: readPublicationFailure(value.publicationFailure)! }),
+      ...(value.continuationReason === undefined ? {} : { continuationReason: value.continuationReason }),
       frames: value.frames.map(frame => ({ module: frame.module, line: frame.line, ...(frame.column === undefined ? {} : { column: frame.column }) })) }
   } catch { return null }
 }

@@ -8,7 +8,23 @@ import { AIMessageChunk } from '@langchain/core/messages'
 
 /** Persistence failure never retries the provider or exposes an uncommitted buffer. */
 export class PublicTextPublicationError extends ModelDriverError {
-  constructor(){super('public text could not be persisted',{kind:'provider',category:'unknown',finishReasons:[]})}
+  constructor(readonly stage: PublicationFailure['stage']='unknown', readonly rejection: PublicationFailure['code']='unknown', cause?: unknown){
+    super('public text could not be persisted',{kind:'provider',category:'unknown',finishReasons:[]},cause===undefined?undefined:{cause})
+  }
+}
+export interface PublicationFailure {
+  stage: 'unknown'|'push'|'operation'|'delta'|'seal'
+  code: 'unknown'|'closed'|'content_type'|'operation_state'|'missing_operation'|'source_state'|'persistence_rejected'
+}
+/** Closed codes only. Original causes stay in memory for the existing safe
+ * SQL/system classification, never in public events or persisted diagnostics. */
+export function readPublicationFailure(value: unknown): PublicationFailure | undefined {
+  if(!value||typeof value!=='object'||Array.isArray(value))return undefined
+  const stage=Reflect.get(value,'stage'),code=Reflect.get(value,'code')
+  if(Object.keys(value).some(key=>!['stage','code'].includes(key))
+    ||!['unknown','push','operation','delta','seal'].includes(stage)
+    ||!['unknown','closed','content_type','operation_state','missing_operation','source_state','persistence_rejected'].includes(code))return undefined
+  return {stage,code}
 }
 /** Only a closed code crosses the boundary; never retain a policy exception or rejected text. */
 export class PublicTextSafetyError extends ModelDriverError {
@@ -84,12 +100,12 @@ export class PublicTextWriter {
     if(this.failure)throw this.failure
     await this.tail
     if(this.suspended)return
-    if(this.closed||this.finished)throw new PublicTextPublicationError()
+    if(this.closed||this.finished)throw new PublicTextPublicationError('push','closed')
     this.receivedBytes+=Buffer.byteLength(delta)
     if(this.receivedBytes>MAX_RECEIVED_BYTES){await this.suspend();return}
     const chunk=new AIMessageChunk({id:this.identity.partId,content:delta})
     this.receivedMessage=this.receivedMessage?this.receivedMessage.concat(chunk):chunk
-    if(typeof this.receivedMessage.content!=='string')throw new PublicTextPublicationError()
+    if(typeof this.receivedMessage.content!=='string')throw new PublicTextPublicationError('push','content_type')
     this.received=this.receivedMessage.content
     // Run the cumulative policy once at the first delta and then at bounded
     // coalescing boundaries, not once per provider token.
@@ -171,7 +187,7 @@ export class PublicTextWriter {
       }
       for(const point of pending){const size=Buffer.byteLength(point);if(bytes+size>4096)await append();chunk+=point;bytes+=size}
       await append()
-    }).catch(()=>{this.failure=new PublicTextPublicationError();throw this.failure})
+    }).catch(error=>{this.failure=new PublicTextPublicationError('delta','persistence_rejected',error);throw this.failure})
     this.tail=task
     void task.catch(()=>{})
     return task
@@ -213,7 +229,7 @@ export class PublicTextAttemptWriter {
       operation:this.operation.kind,supersedes:[...this.operation.supersedes]}
   }
   async begin(operation:PublicTextOperation,segmentId?:string){
-    if(this.protocol!=='purpose-json-v3'||this.operation)throw new PublicTextPublicationError()
+    if(this.protocol!=='purpose-json-v3'||this.operation)throw new PublicTextPublicationError('operation','operation_state')
     this.operation=snapshotPublicTextOperation(operation)
     if(segmentId)this.identity.segmentId=segmentId
     this.signal.throwIfAborted()
@@ -223,7 +239,7 @@ export class PublicTextAttemptWriter {
     const key=this.protocol?metadata?.purpose:'legacy'
     if(!key||!['legacy','commentary','answer'].includes(key)||!this.protocol&&metadata
       ||key==='commentary'&&this.answerStarted)throw new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',finishReasons:[]})
-    if(this.protocol==='purpose-json-v3'&&key==='answer'&&!this.operation)throw new PublicTextPublicationError()
+    if(this.protocol==='purpose-json-v3'&&key==='answer'&&!this.operation)throw new PublicTextPublicationError('push','missing_operation')
     if(key==='answer'&&!this.answerStarted){
       this.answerStarted=true
       await this.writers.get('commentary')?.end('completed')
@@ -244,7 +260,7 @@ export class PublicTextAttemptWriter {
   async end(reason:PublicTextEndReason){for(const writer of this.writers.values())await writer.end(reason)}
   async seal(text:string,publicTextRecovery?:import('../protocol/public-text-recovery.js').PublicTextRecovery){
     const writer=this.writers.get('answer'),identity=this.segmentIdentity
-    if(!identity||!writer?.partId||this.sealed)throw new PublicTextPublicationError()
+    if(!identity||!writer?.partId||this.sealed)throw new PublicTextPublicationError('seal','source_state')
     this.signal.throwIfAborted()
     const bodyHash=createHash('sha256').update(text).digest('hex')
     try {
@@ -253,7 +269,7 @@ export class PublicTextAttemptWriter {
       if(error instanceof LeaseLostError||error instanceof RunCancelledError||this.signal.aborted)throw error
       // A storage/authorization rejection is not a model-format correction.
       // Never continue into a business tool after failing to persist its output.
-      throw new PublicTextPublicationError()
+      throw new PublicTextPublicationError('seal','persistence_rejected',error)
     }
     this.sealed=true
     return {identity,text,bodyHash,...(publicTextRecovery?{recovery:publicTextRecovery}:{})}

@@ -1,0 +1,38 @@
+{
+  "kind": "synthetic-worker-replay",
+  "cases": [
+    {
+      "scenario": "518-first-success-publication-failure",
+      "ledger": [
+        {
+          "call_id": "public-answer-run:1:model:1",
+          "status": "succeeded"
+        },
+        {
+          "call_id": "public-answer-run:1:model:2",
+          "status": "failed"
+        },
+        {
+          "call_id": "public-answer-run:1:model:3",
+          "status": "succeeded"
+        }
+      ],
+      "continuation": [
+        {
+          "data": {
+            "fence": 1,
+            "reason": "intermediate_outcome_null",
+            "attemptId": "public-answer-run:1:model:1",
+            "requestVersion": 1
+          }
+        }
+      ],
+      "publicationFailure": {
+        "stage": "seal",
+        "code": "persistence_rejected"
+      },
+      "finalStatus": "failed",
+      "resultId": null
+    }
+  ]
+}

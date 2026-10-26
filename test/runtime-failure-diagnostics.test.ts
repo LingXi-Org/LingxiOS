@@ -13,12 +13,31 @@ import { projectRuntimeFailure, readRuntimeFailureDiagnostic } from '../src/runt
 import { createLogger, nullLogger } from '../src/logging.js'
 import { RunCancelledError } from '../src/errors.js'
 import { releaseVersions } from '../src/versions.js'
+import { PublicTextPublicationError } from '../src/runtime/public-text.js'
+import { modelFailure } from '../src/model/recovery.js'
 import type { SqlPool } from '../src/control-plane/pg-store.js'
 
 const secret = 'PRIVATE_BODY_QUERY_TOKEN_SENTINEL'
 const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url))
 const mappedRoot = sourceRoot.endsWith('/dist/src/') ? sourceRoot.slice(0, -'dist/src/'.length) + 'src/' : sourceRoot
 const unexpected = async (): Promise<never> => { throw new Error('unexpected model/kernel invocation') }
+
+it('publication diagnostics retain only closed stage/code and safe cause classification without enabling retries', () => {
+  const error = new PublicTextPublicationError('delta', 'persistence_rejected', Object.assign(new Error(secret), { code: '23514', token: secret }))
+  const projected = projectRuntimeFailure(error, { runId: 'synthetic-publication', fence: 1 },
+    { phase: 'turn_execution', bindingState: 'saved', requestVersion: 1, continuationReason: 'intermediate_outcome_null' })
+  assert.deepEqual(projected.publicationFailure, { stage: 'delta', code: 'persistence_rejected' })
+  assert.equal(projected.sqlState, '23514')
+  assert.equal(modelFailure(error).retryable, false)
+  assert.equal(modelFailure(new PublicTextPublicationError('delta', 'persistence_rejected', Object.assign(new Error(secret), { code: 'ECONNRESET' }))).retryable, false)
+  assert.deepEqual(readRuntimeFailureDiagnostic(projected), projected)
+  assert.doesNotMatch(JSON.stringify(projected), /PRIVATE_BODY_QUERY_TOKEN_SENTINEL/)
+  for (const publicationFailure of [{ stage: secret, code: 'persistence_rejected' }, { stage: 'seal', code: secret },
+    { stage: 'seal', code: 'persistence_rejected', message: secret }]) {
+    assert.equal(readRuntimeFailureDiagnostic({ ...projected, publicationFailure }), null)
+  }
+  assert.equal(readRuntimeFailureDiagnostic({ ...projected, continuationReason: secret }), null)
+})
 function failure() {
   return Object.assign(new TypeError(secret), { code: '42P01', query: secret,
     cause: { code: 'ETIMEDOUT', status: 503, message: secret, token: secret },

@@ -577,6 +577,7 @@ export class AgentRuntime {
         terminalError = undefined
         acceptanceGaps = []
         protocolCorrection = null // Findings and candidate identity belong to the superseded request version.
+        delete failureLocation.continuationReason
         if (session.request) {
           for (const steer of steers) {
             if (!session.request.revisions.some((item) => item.id === steer.id)) {
@@ -1027,6 +1028,10 @@ export class AgentRuntime {
           await host.saveSession(work,session)
         }
         protocolCorrection=null
+        failureLocation.continuationReason='intermediate_outcome_null'
+        await this.event(work,runId,{kind:'response.continued',stage:'completed',visibility:'internal',
+          data:{reason:'intermediate_outcome_null',requestVersion:(session.request?.revisions.length??0)+1,
+            fence:work.fence,attemptId:this.modelAttempts.get(runId)}})
         continue // next loop refreshes cancellation, permissions and global budget
       }
 

@@ -26,7 +26,7 @@ export class ToolCompanionBoundary {
 
 export const companionHasJsonFraming = (text: string): boolean => /^\s*(?:null|true|false)(?![\p{L}\p{N}_])/u.test(text)
 
-export function completeCompanionTurn(input: {
+export function completeCompanionIdentity(input: {
   text: string
   calls: Map<number, { id: string; name: string; arguments: string }>
   finishReasons: string[]; malformed?: boolean
@@ -39,6 +39,13 @@ export function completeCompanionTurn(input: {
     if (!Number.isSafeInteger(index) || index < 0 || !call.id || call.id.trim() !== call.id
       || identities.has(call.id) || !exposed.includes(call.name)) return false
     identities.add(call.id)
+  }
+  return true
+}
+
+export function completeCompanionTurn(input: Parameters<typeof completeCompanionIdentity>[0], exposed: readonly string[], parallel: boolean): boolean {
+  if (!completeCompanionIdentity(input, exposed, parallel)) return false
+  for (const call of input.calls.values()) {
     try {
       const args: unknown = JSON.parse(call.arguments)
       if (!args || typeof args !== 'object' || Array.isArray(args)) return false

@@ -8,6 +8,9 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
     ? 'Use only exposed native tools or an allowed ipython call when needed.'
     : 'Python execution is disabled for this request. Use only exposed native tools when needed.'
   const code=diagnostics.protocolCode
+  const completion=protocol==='purpose-json-v3'
+    ? '\nIf the current request is fully answered, declare its terminal outcome in this corrected response; do not add another full-answer round. Use outcome:null only for unfinished work. When sealed sources already contain the answer, finish with answer:null and a terminal outcome; revise their content only with explicit replace and their active source IDs. Never append a restatement of sealed text.'
+    : ''
   if(code==='native_envelope_invalid'||code==='terminal_outcome_required'||code==='public_text_invalid'||code==='public_text_incomplete'||code==='public_text_answer_required'){
     const failure=code==='native_envelope_invalid'
       ? 'The previous native-tool response did not satisfy the required public-output envelope. Its business action was not dispatched.'
@@ -21,8 +24,8 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
     return {category:'response_protocol',content:`Protocol correction: ${failure}
 Continue the current active trust=request blocks and their revisions. Historical requests are observations. Existing receipts remain the record of completed or uncertain actions.
 Use the ${protocol} contract supplied by the trusted model driver for the current output channel and terminal status.
-${execution}`}
+${execution}${completion}`}
   }
-  if(code==='response_empty')return {category:'response_protocol',content:`Protocol correction: the previous response contained neither an answer nor a tool call. Provide the substantive answer or an exposed native tool call needed to obtain it. Existing receipts remain the record of completed or uncertain actions. ${execution}`}
-  return {category:'tool_protocol',content:`Protocol correction: the previous response violated the tool protocol. Reply again with a valid exposed native tool call or the substantive answer. Existing receipts remain the record of completed or uncertain actions. ${execution}`}
+  if(code==='response_empty')return {category:'response_protocol',content:`Protocol correction: the previous response contained neither an answer nor a tool call. Provide the substantive answer or an exposed native tool call needed to obtain it. Existing receipts remain the record of completed or uncertain actions. ${execution}${completion}`}
+  return {category:'tool_protocol',content:`Protocol correction: the previous response violated the tool protocol. Reply again with a valid exposed native tool call or the substantive answer. Existing receipts remain the record of completed or uncertain actions. ${execution}${completion}`}
 }
