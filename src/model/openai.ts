@@ -280,7 +280,7 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
       ...(this.publicTextContinuation ? { publicTextContinuation: this.publicTextContinuation } : {}),
-      ...(this.publicAnswerTool ? { publicAnswerTool:this.publicAnswerTool, publicAnswerHistoryPolicy:'sealed-native-call-ack-v1', publicAnswerParserPolicy:'streamparser-field-order-v1', publicAnswerToolChoice:'auto-v1', publicAnswerInstructionsHash:createHash('sha256').update(this.publicAnswerInstructions).digest('hex') } : {}),
+      ...(this.publicAnswerTool ? { publicAnswerTool:this.publicAnswerTool, publicAnswerHistoryPolicy:'sealed-native-call-ack-v1', publicAnswerParserPolicy:'streamparser-partial-null-v2', publicAnswerToolChoice:'auto-v1', publicAnswerInstructionsHash:createHash('sha256').update(this.publicAnswerInstructions).digest('hex') } : {}),
       ...(options.nativeToolPublicOutput ? { nativeToolPublicOutput: options.nativeToolPublicOutput,
         nativeToolIdentityPolicy: 'bounded-unambiguous-prefix-v1' } : {}),
     })).digest('hex')

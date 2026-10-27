@@ -42,7 +42,10 @@ export class PublicAnswerParser {
       keys.add(key); this.keys.set(parent, keys)
     }
     if (stack.length === 1 && (key === 'answer' || key === 'commentary') && value !== undefined) {
-      if (value === null && key === 'answer' && !partial) this.answerIsNull = true
+      if (value === null && key === 'answer') {
+        // The upstream tokenizer also emits null while its literal is incomplete.
+        if (!partial) this.answerIsNull = true
+      }
       else {
         if (typeof value !== 'string') throw publicPurposeError()
         let safe = value

@@ -14,7 +14,7 @@ const frame=(delta:unknown,finish:string|null=null)=>`data: ${JSON.stringify({ch
 const call=(args:string,name='public_answer',id='output-id',index=0)=>({index,id,type:'function',function:{name,arguments:args}})
 const done='data: [DONE]\n\n'
 let fixtureIndex=0
-function driver(fetchImpl:typeof fetch){return new OpenAIChatDriver('public-answer-order',{apiKey:`synthetic-order-${++fixtureIndex}`,maxAttempts:1,publicTextProtocol:'purpose-json-v3',publicTextContinuation:'typed-message-v1',publicAnswerTool:'native-v1',capabilities:{parallelTools:false,jsonObjectWithTools:false},fetchImpl})}
+function driver(fetchImpl:typeof fetch,publicAnswerTool:'native-v1'|'native-v2'='native-v1'){return new OpenAIChatDriver('public-answer-order',{apiKey:`synthetic-order-${++fixtureIndex}`,maxAttempts:1,publicTextProtocol:'purpose-json-v3',publicTextContinuation:'typed-message-v1',publicAnswerTool,capabilities:{parallelTools:publicAnswerTool==='native-v2',jsonObjectWithTools:false},fetchImpl})}
 function run(args:string,extra:Partial<ModelTurnRequest>={}){
   return driver(async()=>new Response(frame({tool_calls:[call(args)]},'tool_calls')+done)).run({...request,...extra})
 }
@@ -73,6 +73,41 @@ it('streams partial Unicode strings before closure with commentary later in the 
 })
 
 const rawOperation=JSON.stringify(operation),rawOutcome=JSON.stringify(outcome)
+it('finishes sealed answers with null at every argument split and with single-character deltas',async()=>{
+  for(const binding of ['native-v1','native-v2'] as const)for(const keys of permutations(['operation','answer','outcome'])){
+    const args=object(keys,{operation,answer:null,outcome})
+    const fragments=[...[...args].map((_,index)=>[args.slice(0,index+1),args.slice(index+1)]),args.split('')]
+    for(const chunks of fragments){
+      const wire=chunks.map((arguments_,index)=>frame({tool_calls:[index===0?call(arguments_):{index:0,function:{arguments:arguments_}}]})).join('')+frame({},'tool_calls')+done
+      const seen:string[]=[]
+      const result=await driver(async()=>new Response(wire),binding).run({...request,
+        answerContext:{messageId:'sealed-answer',segmentIds:['sealed-segment']},onTextDelta:text=>{seen.push(text)},
+      })
+      assert.deepEqual({text:result.text,outcome:result.outcomeDeclaration,arguments:result.publicAnswerCall?.arguments,seen},
+        {text:'',outcome,arguments:args,seen:[]})
+    }
+  }
+})
+
+it('keeps null completion guards and malformed split arguments rejected without public text',async()=>{
+  const terminal=JSON.stringify({operation,answer:null,outcome})
+  for(const binding of ['native-v1','native-v2'] as const)for(const [args,sealed] of [
+    [terminal,false],
+    [JSON.stringify({operation,answer:null,outcome:null}),true],
+    [JSON.stringify({operation,commentary:null,answer:null,outcome}),true],
+    [terminal.slice(0,terminal.indexOf('null')+3),true],
+    [terminal.replace('null','null,"answer":null'),true],
+    [terminal.replace('null','false'),true],
+  ] as const){
+    const wire=args.split('').map((arguments_,index)=>frame({tool_calls:[index===0?call(arguments_):{index:0,function:{arguments:arguments_}}]})).join('')+frame({},'tool_calls')+done
+    const seen:string[]=[]
+    await assert.rejects(driver(async()=>new Response(wire),binding).run({...request,
+      ...(sealed?{answerContext:{messageId:'sealed-answer',segmentIds:['sealed-segment']}}:{}),onTextDelta:text=>{seen.push(text)},
+    }))
+    assert.deepEqual(seen,[])
+  }
+})
+
 const invalid:Record<string,string>={
   'duplicate answer':'{"operation":'+rawOperation+',"answer":"first","answer":"second","outcome":'+rawOutcome+'}',
   'escaped duplicate answer':'{"operation":'+rawOperation+',"answer":"first","answ\\u0065r":"second","outcome":'+rawOutcome+'}',
