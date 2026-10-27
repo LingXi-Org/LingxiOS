@@ -1,0 +1,22 @@
+{
+  "node": "24.19.0",
+  "sdkBase": "f24784b1c91a8591eeb4a921b9ac4db7bab4cb2c",
+  "build": "passed",
+  "driverTests": {
+    "passed": 31,
+    "failed": 0
+  },
+  "workerTests": {
+    "passed": 28,
+    "failed": 0
+  },
+  "workerDurationMs": 50498.142648,
+  "realProvider": {
+    "nativeV1": "protocol failure; one request; no business tools",
+    "nativeV2": "completed; two requests; two synthetic read tools"
+  },
+  "publication": "not performed",
+  "production": "not accessed",
+  "browser": "not performed",
+  "oldTaskChanges": "not migrated"
+}

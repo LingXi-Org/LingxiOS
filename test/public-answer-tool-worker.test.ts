@@ -17,16 +17,18 @@ import type { RunState } from '../src/app/jobs.js'
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const ack = '{"status":"public_message_recorded"}'
 const known = 'Gather collects the items. Check reviews them. '
-type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; callId?: string }
-  | { business: true }
+type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; callId?: string; reads?: boolean; save?: boolean }
+  | { business: true; read?: string }
   | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' }
 type WireRequest = { stream?: boolean; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
-async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart' | 'publication-reject', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.') {
+async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart' | 'publication-reject' | 'read-partial', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.', nativeV2 = false, requireApproval = false) {
   const db = new PGlite(), home = await mkdtemp(join(tmpdir(), 'public-answer-worker-'))
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
   let tail = Promise.resolve(), calls = 0, effects = 0, auxiliary = 0, seals = 0, faulted = false, strippedBindings = 0
   const saved = new Map<string, string>()
-  let resourceChecks = 0
+  let epoch = performance.now()
+  const timings: Array<{kind:string;atMs:number}> = []
+  let resourceChecks = 0, activeReads = 0, maxActiveReads = 0
   const requests: WireRequest[] = [], rawPublicCalls: Array<{ id: string; args: string }> = [], timeline: string[] = []
   const acquire = async () => { let release!: () => void; const previous = tail; tail = new Promise<void>(r => { release = r }); await previous; return release }
   const query: SqlPool['query'] = async (sql, params) => { const result = await db.query<Record<string, unknown>>(sql, params); return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length } }
@@ -34,9 +36,15 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
   const app = await createLingxiOS({ database: pool, homesRoot: home, logger: nullLogger,
     delivery: { onEvent: async () => {}, deliverMessage: async () => ({ messageId: 'synthetic-public-output-receipt' }) },
     realtime: { allowPublicText: () => true },
-    tools: [{ name: 'probe__save', action: 'probe.save', effect: 'idempotent', approval: false, description: 'Save a synthetic artifact with independent readback.',
+    tools: [{ name: 'probe__read', action: 'probe.read', effect: 'read', approval: false, description: 'Read one synthetic observation.',
       parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'], additionalProperties: false },
-      parse: args => args as Record<string, unknown>, authorize: async () => {}, execute: async context => { effects++; timeline.push('business'); saved.set(context.work.id, 'Gather and Check'); return { ok: true, value: { saved: 'Gather and Check' } } },
+      parse: args => args as Record<string, unknown>, authorize: async () => {}, execute: async (_context, input) => {
+        activeReads++; maxActiveReads = Math.max(maxActiveReads, activeReads); timeline.push('read-start');
+        try { await new Promise(resolve => setTimeout(resolve, 35)); return fault==='read-partial'&&input['key']==='two' ? {ok:false,error:'Synthetic read unavailable'} : { ok: true, value: { observed: 'synthetic observation' } } }
+        finally { timeline.push('read-end'); activeReads-- }
+      } }, { name: 'probe__save', action: 'probe.save', effect: 'idempotent', approval: requireApproval, description: 'Save a synthetic artifact with independent readback.',
+      parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'], additionalProperties: false },
+      parse: args => args as Record<string, unknown>, authorize: async () => {}, preview: async (_context,input) => ({key:input['key']}), execute: async context => { effects++; timeline.push('business'); saved.set(context.work.id, 'Gather and Check'); return { ok: true, value: { saved: 'Gather and Check' } } },
       verify: async (context, _input, value) => { resourceChecks++; const stored = saved.get(context.work.id); const matches = stored === 'Gather and Check' && (value as { saved?: unknown }).saved === stored; return { status: matches ? 'passed' : 'failed', evidence: { stored: stored ?? null, matches } } } }] })
   const identity = { runId: 'public-answer-run', tenantId: 'tenant', principalId: 'human', agentId: 'agent', sessionId: 'room' }
   const connect = app.connectWorker.bind(app)
@@ -76,8 +84,9 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
         event = { ...event, publicTextRecovery: { ...recovery, publicAnswerCall: { ...recovery.publicAnswerCall, arguments: JSON.stringify(args) } } }
       }
       await emit(work, event, signal)
+      if(event.visibility==='user')timings.push({kind:event.kind,atMs:performance.now()-epoch})
       if (event.kind === 'public.text.sealed') { seals++; timeline.push('seal') }
-      if (fault && fault !== 'history' && fault !== 'tamper-call' && fault !== 'compacted-duplicate' && fault !== 'missing-binding' && fault !== 'repair-answer' && fault !== 'repair-restart' && fault !== 'publication-reject' && !faulted && event.kind === 'public.text.sealed' && (fault !== 'second-seal' || seals === 2)) {
+      if (fault && fault !== 'history' && fault !== 'tamper-call' && fault !== 'compacted-duplicate' && fault !== 'missing-binding' && fault !== 'repair-answer' && fault !== 'repair-restart' && fault !== 'publication-reject' && fault !== 'read-partial' && !faulted && event.kind === 'public.text.sealed' && (fault !== 'second-seal' || seals === 2)) {
         faulted = true
         if (fault === 'cancel') { await app.cancel(identity); return }
         await expire(work.id)
@@ -95,7 +104,7 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
     const frame = (delta: unknown, finish: string | null = null) => `data: ${JSON.stringify({ choices: [{ delta, finish_reason: finish }], usage: { prompt_tokens: 20, completion_tokens: 10 } })}\n\n`
     const call = (name: string, args: string, index = 0, id = `call-${calls}`) => ({ index, id, type: 'function', function: { name, arguments: args } })
     let wire: string
-    if ('business' in reply) wire = frame({ tool_calls: [call('probe__save', '{ "key" : "synthetic-record" }')] }, 'tool_calls')
+    if ('business' in reply) wire = frame({ tool_calls: [call(reply.read ? 'probe__read' : 'probe__save', JSON.stringify({key:reply.read??'synthetic-record'}))] }, 'tool_calls')
     else if ('invalid' in reply) {
       const args = JSON.stringify({ operation: { kind: 'append', supersedes: [] }, answer: 'Provisional only.', outcome: null })
       const invalidArgs = reply.invalid === 'missing-outcome'
@@ -107,15 +116,18 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
     } else {
       const steps = reply.replace ? await pool.query("SELECT input FROM lingxios.agent_steps WHERE kind='runtime.answer_segment' AND work_id=$1 ORDER BY step_seq", [identity.runId]) : { rows: [] }
       const args = JSON.stringify({ operation: { kind: reply.replace ? 'replace' : 'append', supersedes: steps.rows.map(row => String((row['input'] as Record<string, unknown>)['partId'])) },
+        ...(nativeV2 ? {commentary:reply.reads ? 'I will read both independent observations.' : reply.save ? 'Both observations were received; I will save the synthetic record.' : ''} : {}),
         answer: reply.answer, outcome: reply.intermediate ? null : { status: reply.partial ? 'partial' : 'satisfied', gaps: reply.partial ? ['Synthetic limitation.'] : [] } })
       const id = reply.callId ?? `call-${calls}`
       rawPublicCalls.push({ id, args })
-      wire = frame({ content: 'Private ordinary tool companion.', reasoning_content: 'Private synthetic reasoning.', tool_calls: [call('public_answer', args, 0, id)] }, 'tool_calls')
+      wire = frame({ content: 'Private ordinary tool companion.', reasoning_content: 'Private synthetic reasoning.', tool_calls: [call('public_answer', args, 0, id),
+        ...(reply.reads ? [call('probe__read', '{"key":"one"}', 1, `read-one-${calls}`), call('probe__read', '{"key":"two"}', 2, `read-two-${calls}`)] : []),
+        ...(reply.save ? [call('probe__save', '{"key":"synthetic-record"}', 1, `save-${calls}`)] : [])] }, 'tool_calls')
     }
     return new Response(wire + 'data: [DONE]\n\n')
   }
-  const model = new OpenAIChatDriver('public-output-worker-fixture', { apiKey: 'synthetic', publicTextProtocol: 'purpose-json-v3', publicTextContinuation: 'typed-message-v1', publicAnswerTool: 'native-v1',
-    maxAttempts: 1, capabilities: { parallelTools: false, jsonObjectWithTools: false }, fetchImpl })
+  const model = new OpenAIChatDriver('public-output-worker-fixture', { apiKey: 'synthetic', publicTextProtocol: 'purpose-json-v3', publicTextContinuation: 'typed-message-v1', publicAnswerTool: nativeV2 ? 'native-v2' : 'native-v1',
+    maxAttempts: 1, capabilities: { parallelTools: nativeV2, jsonObjectWithTools: false }, fetchImpl })
   if (fault === 'missing-binding') {
     const run = model.run.bind(model)
     model.run = async request => { const result = await run(request); assert.ok(result.publicAnswerCall); strippedBindings++; delete result.publicAnswerCall; return result }
@@ -128,8 +140,8 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
   const newWorker = (id: string) => createWorker({ controlPlane: app, model, policy, modelBudget: { maxModelCalls: maxCalls }, logger: nullLogger, kernel: { homesRoot: home }, worker: { id, healthPort: 0 } })
   const worker = newWorker('public-output-worker')
   await app.enqueue({ id: identity.runId, ...identity, text, mode: 'execute', codeExecution: 'disabled', deliveryMode: 'auto' })
-  return { app, pool, identity, requests, rawPublicCalls, timeline, get calls() { return calls }, get effects() { return effects }, get auxiliary() { return auxiliary }, get resourceChecks() { return resourceChecks }, get strippedBindings() { return strippedBindings },
-    async run() { await worker.runNext(); return (await app.readRunState(identity))! },
+  return { app, pool, identity, requests, rawPublicCalls, timeline, timings, get maxActiveReads() { return maxActiveReads }, get calls() { return calls }, get effects() { return effects }, get auxiliary() { return auxiliary }, get resourceChecks() { return resourceChecks }, get strippedBindings() { return strippedBindings },
+    async run() { epoch=performance.now(); await worker.runNext(); return (await app.readRunState(identity))! },
     async restart() { await worker.stop(); const next = newWorker('recovered-public-output-worker'); try { await next.runNext(); return (await app.readRunState(identity))! } finally { await next.stop() } },
     async nextRun(runId: string) { const nextIdentity = { ...identity, runId }; await app.enqueue({ id: runId, ...nextIdentity, text: 'What is 17 + 26? Only the number.', mode: 'execute', codeExecution: 'disabled', deliveryMode: 'auto' }); await worker.runNext(); return (await app.readRunState(nextIdentity))! },
     async close() { await worker.stop(); await app.stop(); await db.close(); await rm(home, { recursive: true, force: true }) } }
@@ -402,4 +414,85 @@ it('custom native-v1 driver cannot replace the required output binding with unbo
     assert.equal(events.filter(event => event.kind === 'public.text.sealed').length, 0)
     assert.equal(events.filter(event => event.kind === 'tool.started').length, 0)
   } finally { await f.close() }
+})
+
+
+it('native-v2 real Worker persists useful text before overlapping reads and observation-based next batch', async () => {
+  const stage = 'Both independent reads returned the synthetic observation. ', final = 'The synthetic artifact is saved.'
+  const f = await fixture([{ answer: known, intermediate: true, reads: true }, { answer: stage, intermediate: true, save: true }, { answer: final }], undefined, 3, undefined, true)
+  try {
+    const state = await f.run(), events = (await f.app.readEvents(f.identity)).events
+    assert.equal(state.run.status, 'succeeded', JSON.stringify(state))
+    assert.equal(state.message?.body, known + stage + final)
+    assert.deepEqual([f.calls, f.effects, f.auxiliary, f.maxActiveReads], [3, 1, 0, 2])
+    assert.ok(f.timeline.indexOf('seal') < f.timeline.indexOf('read-start'))
+    assert.ok(f.timeline.lastIndexOf('read-end') < f.timeline.indexOf('business'))
+    const starts = events.filter(event => event.kind === 'tool.started')
+    const seals = events.filter(event => event.kind === 'public.text.sealed')
+    assert.equal(starts.length, 3); assert.equal(seals.length, 3)
+    assert.ok(seals[0]!.seq < starts[0]!.seq && seals[1]!.seq < starts[2]!.seq)
+    assert.equal(state.message?.publicTextSources?.segments.length, 3)
+    const observed = f.requests[1]!.messages.filter(message => message.role === 'tool' && message.tool_call_id?.startsWith('read-'))
+    assert.equal(observed.length, 2); assert.ok(observed.every(message => String(message.content).includes('synthetic observation')))
+    for (const original of f.rawPublicCalls.slice(0, 2)) assertNativePair(f.requests[2]!, original)
+    assert.doesNotMatch(JSON.stringify(events.filter(event => event.visibility === 'user')), /Private ordinary|Private synthetic/)
+    await recordToolRoundEvidence('native-v2',f,state)
+  } finally { await f.close() }
+})
+
+it('native-v2 cancellation after durable text prevents the accompanying write', async () => {
+  const f = await fixture([{ answer: known, intermediate: true, save: true }], 'cancel', 1, undefined, true)
+  try {
+    const state = await f.run()
+    assert.equal(state.run.status, 'cancelled'); assert.equal(f.effects, 0)
+    assert.ok(f.timeline.includes('seal'))
+    assert.equal((await f.app.readEvents(f.identity)).events.filter(event => event.kind === 'tool.started').length, 0)
+  } finally { await f.close() }
+})
+
+
+async function recordToolRoundEvidence(name:string, f:Awaited<ReturnType<typeof fixture>>, state:RunState) {
+  const directory=process.env['ISSUE533_EVIDENCE_DIR']; if(!directory)return
+  await mkdir(directory,{recursive:true})
+  const events=(await f.app.readEvents(f.identity)).events.filter(event=>event.visibility==='user')
+  await writeFile(join(directory,name+'.json'),JSON.stringify({qualification:'synthetic real Worker/PGlite, fixed SSE provider responses; no browser or provider latency claim',
+    modelCalls:f.calls,auxiliaryCalls:f.auxiliary,businessWrites:f.effects,maxConcurrentReads:f.maxActiveReads,timings:f.timings,
+    events,finalState:state,final:{status:state.run.status,body:state.message?.body,sources:state.message?.publicTextSources}},null,2)+'\n')
+}
+
+it('native-v1 comparison uses six generations for the same fixed observations and final sources', async () => {
+  const stage='Both independent reads returned the synthetic observation. ',final='The synthetic artifact is saved.'
+  const f=await fixture([{answer:known,intermediate:true},{business:true,read:'one'},{business:true,read:'two'},
+    {answer:stage,intermediate:true},{business:true},{answer:final}],undefined,6)
+  try {
+    const state=await f.run();assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,known+stage+final)
+    assert.deepEqual([f.calls,f.effects,f.auxiliary,f.maxActiveReads],[6,1,0,1])
+    await recordToolRoundEvidence('native-v1',f,state)
+  } finally {await f.close()}
+})
+
+it('native-v2 waits for approval before the mixed write', async () => {
+  const f=await fixture([{answer:known,intermediate:true,save:true}],undefined,1,undefined,true,true)
+  try {
+    const state=await f.run();assert.equal(state.run.status,'waiting',JSON.stringify(state));assert.equal(f.effects,0)
+    assert.equal(state.run.goalOutcome?.status,'awaiting_approval');assert.equal(f.calls,1)
+  } finally {await f.close()}
+})
+
+it('native-v2 passes a failed read observation to the next decision and honestly completes partial', async () => {
+  const f=await fixture([{answer:known,intermediate:true,reads:true},{answer:'One read failed; no artifact was created.',partial:true}],'read-partial',2,undefined,true)
+  try {
+    const state=await f.run();assert.equal(state.run.status,'partial',JSON.stringify(state));assert.equal(f.effects,0)
+    assert.equal(f.calls,2);assert.match(JSON.stringify(f.requests[1]!.messages),/Synthetic read unavailable/)
+    assert.equal((await f.pool.query("SELECT * FROM lingxios.agent_steps WHERE kind='runtime.answer_correction'")).rows.length,0)
+    assert.match(state.message?.body??'',/One read failed/,'Failure summary must remain beside the useful first body')
+  } finally {await f.close()}
+})
+
+it('native-v2 directly answers without tools in one generation', async () => {
+  const f=await fixture([{answer:'43'}],undefined,1,'What is 17 + 26? Only the number.',true)
+  try {
+    const state=await f.run();assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'43')
+    assert.deepEqual([f.calls,f.effects,f.auxiliary],[1,0,0]);assert.deepEqual(f.timeline,['seal'])
+  } finally {await f.close()}
 })

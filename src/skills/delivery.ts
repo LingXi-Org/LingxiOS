@@ -28,9 +28,9 @@ async function requireExplanationCapability(context: ActionContext): Promise<voi
   const rows = (await context.database.query(`SELECT input FROM lingxios.agent_steps
     WHERE work_id=$1 AND kind='runtime.binding' AND completed_at IS NOT NULL LIMIT 2`, [context.work.id])).rows
   const binding = rows[0]?.['input'] as Record<string,unknown> | undefined
-  if (rows.length !== 1 || binding?.['publicAnswerTool'] !== 'native-v1'
+  if (rows.length !== 1 || !binding || !['native-v1','native-v2'].includes(String(binding?.['publicAnswerTool']))
     || binding['publicTextContinuation'] !== 'typed-message-v1' || binding['publicTextProtocol'] !== 'purpose-json-v3'
-    || binding['fastProvider'] !== undefined && (binding['fastPublicAnswerTool'] !== 'native-v1'
+    || binding['fastProvider'] !== undefined && (!['native-v1','native-v2'].includes(String(binding['fastPublicAnswerTool']))
       || binding['fastPublicTextContinuation'] !== 'typed-message-v1' || binding['fastPublicTextProtocol'] !== 'purpose-json-v3')) {
     throw new Error('explanation workflow requires the pinned native public answer capability')
   }

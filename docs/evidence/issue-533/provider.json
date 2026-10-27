@@ -1,0 +1,78 @@
+[
+  {
+    "version": "native-v1",
+    "qualification": "controlled real provider; synthetic read-only observations; no Worker or browser",
+    "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+    "requests": 1,
+    "firstPublicMs": 4566.9922209999995,
+    "toolStarts": [],
+    "rounds": [],
+    "usage": [],
+    "cost": "not measured; no provider billing receipt",
+    "status": "failed",
+    "failure": {
+      "name": "ModelDriverError",
+      "kind": "protocol",
+      "category": "protocol",
+      "protocolCode": "public_text_invalid",
+      "status": null
+    },
+    "totalMs": 8592.663937
+  },
+  {
+    "version": "native-v2",
+    "qualification": "controlled real provider; synthetic read-only observations; no Worker or browser",
+    "model": "deepseek-ai/DeepSeek-V4.1-Flash",
+    "requests": 2,
+    "firstPublicMs": 2058.941971,
+    "toolStarts": [
+      {
+        "name": "demo__tcp",
+        "atMs": 5054.877424
+      },
+      {
+        "name": "demo__udp",
+        "atMs": 5054.882401000001
+      }
+    ],
+    "rounds": [
+      {
+        "durationMs": 5054.270826,
+        "publicText": "TCP 与 UDP 的核心差异在于服务模型：TCP 提供面向连接的可靠有序字节流——先建立连接，数据以字节流形式传输，接收端按发送顺序重组，丢失或损坏的段会被重传，并有流量控制与拥塞控制；UDP 提供无连接的独立数据报服务——每个数据报自带边界、独立路由，不保证到达、不保证顺序、不保证不重复，也没有内置重传与拥塞控制，开销更小、时延特性更可预测。简言之：TCP 换可靠性与顺序性付出握手、确认与重传的代价；UDP 换取低开销与灵活性，把可靠性留给应用层。下面读取 demo__tcp 与 demo__udp 的固定演示观察，用于给出简短对比。",
+        "callNames": [
+          "demo__tcp",
+          "demo__udp"
+        ],
+        "outcome": null
+      },
+      {
+        "durationMs": 4346.691398999999,
+        "publicText": "两个固定演示观察已确认读取成功：demo__tcp 显示「一个段丢失后被重传，应用按顺序收到字节」；demo__udp 显示「一个数据报缺失，后续数据报仍可独立被接收」。两者分别印证了上面的要点——TCP 丢失数据会自动重传并维持有序字节流，UDP 不填补缺失的数据报、也不影响其余数据报的独立到达。需要说明的是，这只是固定演示观察，并非真实网络性能基准，不能据此推断吞吐、时延或丢包率等实际指标（这部分是本轮未覆盖的空白）。",
+        "callNames": [],
+        "outcome": {
+          "status": "satisfied",
+          "gaps": []
+        }
+      }
+    ],
+    "usage": [
+      {
+        "available": true,
+        "inputTokens": 1023,
+        "outputTokens": 327,
+        "cachedInputTokens": 0,
+        "reasoningTokens": 0
+      },
+      {
+        "available": true,
+        "inputTokens": 1432,
+        "outputTokens": 242,
+        "cachedInputTokens": 0,
+        "reasoningTokens": 0
+      }
+    ],
+    "cost": "not measured; no provider billing receipt",
+    "status": "completed",
+    "totalMs": 9401.761455
+  }
+]
