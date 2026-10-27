@@ -107,7 +107,7 @@ export interface ModelDriver {
   /** Explicit public text generation protocol; absent means unknown purpose. */
   readonly publicTextProtocol?: PublicTextProtocol | undefined
   readonly publicTextContinuation?: 'typed-message-v1' | undefined
-  readonly publicAnswerTool?: 'native-v1' | undefined
+  readonly publicAnswerTool?: 'native-v1' | 'native-v2' | undefined
   readonly profile?: ModelProfile
   /** A provider tokenizer or calibrated upper bound; never a fixed bytes/constant guess. */
   countTokens?(text: string): number

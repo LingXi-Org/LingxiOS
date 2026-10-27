@@ -526,6 +526,9 @@ export class AgentRuntime {
     let acceptanceGaps: string[] = []
     const artifacts: KernelArtifact[] = [...context.priorArtifacts ?? []]
     const evidence = () => session.request?.evidence ?? snapshotEvidence(`${work.id}:evidence:1`, [])
+    // A failed tool is a new observation, not a request to replace useful public text.
+    // native-v1 retains its original correction/replacement behavior.
+    let toolObservationCorrection = false
     let protocolCorrection: ModelItem | null = null
     let pendingCompaction: ReturnType<typeof prepareCompaction> | undefined
     const repairContext = (body: string, targets: unknown) => {
@@ -655,7 +658,7 @@ export class AgentRuntime {
         content:explanationStageInstructions(liveContext.explanationStage)+'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes)})
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
         +'\nAppend adds text; replace selects active revision IDs in source order. A terminal null answer uses the assembled body.'})
-      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null, answerSegments.context.segmentIds) : undefined
+      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection), answerSegments.context.segmentIds) : undefined
       if (requestedCorrection && canonicalJson(requestedCorrection) !== canonicalJson(pendingAnswerCorrection ?? null)) {
         await host.saveStep(work,{id:'answer-correction:'+createHash('sha256').update(JSON.stringify([runId,(session.request?.revisions.length ?? 0)+1,requestedCorrection])).digest('hex'),
           kind:'runtime.answer_correction',requestVersion:(session.request?.revisions.length ?? 0)+1,input:{operation:requestedCorrection},output:'{}',artifacts:[]})
@@ -777,9 +780,10 @@ export class AgentRuntime {
       const preview = !publishes && liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
       let providerBegan = performance.now()
       let firstBody = false
-      const generationOperation = protocolCorrection || correctionOperation ? 'correction' : 'generation'
+      const generationOperation = protocolCorrection && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection) || correctionOperation ? 'correction' : 'generation'
       try {
         protocolCorrection = null
+        toolObservationCorrection = false
         const generationSignal = signals.generationSignal()
         turn = await model.run({
           operation: generationOperation,
@@ -939,7 +943,7 @@ export class AgentRuntime {
       if (model.publicTextProtocol === 'purpose-json-v2' || react || turn.outcomeDeclaration !== undefined || turn.publicTextPhase!==undefined) {
         try {
           if ((!react && model.publicTextProtocol !== 'purpose-json-v2') || turn.finalCandidate !== undefined) throw new Error('outcome declaration requires an explicit outcome protocol')
-          if(turn.publicTextPhase!==undefined && (!intermediate || !react || model.publicTextContinuation!=='typed-message-v1' || calls.length || !turn.text.trim() || !turn.answerOperation || turn.answerIsNull===true || turn.outcomeDeclaration!==undefined))throw new Error('invalid intermediate public message')
+          if(turn.publicTextPhase!==undefined && (!intermediate || !react || model.publicTextContinuation!=='typed-message-v1' || calls.length && model.publicAnswerTool!=='native-v2' || !turn.text.trim() || !turn.answerOperation || turn.answerIsNull===true || turn.outcomeDeclaration!==undefined))throw new Error('invalid intermediate public message')
           if (calls.length) { if (turn.outcomeDeclaration !== undefined) throw new Error('tool turns cannot declare a terminal outcome') }
           else if(!intermediate) declaration = snapshotOutcomeDeclaration(turn.outcomeDeclaration)
         } catch {
@@ -961,13 +965,15 @@ export class AgentRuntime {
         try {
           // Validate the entire batch before sealing any candidate or dispatching any effect.
           validateToolBatch(calls,modelTools,codeExecution,model.profile?.parallelTools)
+          if(model.publicAnswerTool==='native-v2'&&!turn.publicAnswerCall)throw new Error('mixed batch requires public output binding')
           if(model.publicAnswerTool==='native-v1'&&!turn.publicAnswerCall
             &&(!calls.length||turn.text!==''||turn.answerOperation!==undefined||turn.answerIsNull!==undefined
               ||turn.publicTextPhase!==undefined||turn.outcomeDeclaration!==undefined
               ||turn.output.some(item=>'role' in item||item.type!=='function_call')))throw new Error('public output requires its native call binding')
           if(turn.publicAnswerCall){
             const decoded=decodePublicAnswerCall(turn.publicAnswerCall)
-            if(model.publicAnswerTool!=='native-v1'||calls.length||turn.output.length
+            if(!model.publicAnswerTool||(model.publicAnswerTool==='native-v1'&&(calls.length||turn.output.length))
+              ||model.publicAnswerTool==='native-v2'&&(turn.output.length!==calls.length||calls.length>0&&!intermediate||calls.some(call=>call.callId===turn.publicAnswerCall!.callId))
               || decoded.text!==(turn.answerIsNull?null:turn.text)
               || canonicalJson(decoded.operation)!==canonicalJson(turn.answerOperation)
               || canonicalJson(decoded.outcome)!==canonicalJson(intermediate?null:turn.outcomeDeclaration))throw new Error('invalid public output binding')
@@ -1020,7 +1026,7 @@ export class AgentRuntime {
         await host.saveSession(work,session)
       }
 
-      if(intermediate){
+      if(intermediate&&!calls.length){
         // The existing seal transaction is the recovery authority. A lost ACK
         // before session save is reconciled from that exact record on restart.
         if(!turn.publicAnswerCall){
@@ -1293,7 +1299,7 @@ export class AgentRuntime {
         }
         for (const outcome of outcomes) {
           nextStreamPartIndex = Math.max(nextStreamPartIndex, outcome.nextStreamPartIndex)
-          if (outcome.correction) protocolCorrection = outcome.correction
+          if (outcome.correction) { protocolCorrection = outcome.correction; toolObservationCorrection = true }
           terminal ||= outcome.terminal
         }
         if (terminal) return
