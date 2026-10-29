@@ -4,7 +4,6 @@ import type { RunEvent } from '../protocol/types.js'
 import { LeaseLostError, ModelDriverError, RunCancelledError } from '../errors.js'
 import { createHash } from 'node:crypto'
 import { snapshotPublicTextOperation, type PublicTextOperation } from '../protocol/answer-segments.js'
-import { AIMessageChunk } from '@langchain/core/messages'
 
 /** Persistence failure never retries the provider or exposes an uncommitted buffer. */
 export class PublicTextPublicationError extends ModelDriverError {
@@ -53,7 +52,6 @@ const lowSurrogate=(code:number)=>code>=0xDC00&&code<=0xDFFF
 export class PublicTextWriter {
   private text=''
   private received=''
-  private receivedMessage:AIMessageChunk|undefined
   private receivedBytes=0
   private approvedThrough=0
   private approvedBytes=0
@@ -101,12 +99,10 @@ export class PublicTextWriter {
     await this.tail
     if(this.suspended)return
     if(this.closed||this.finished)throw new PublicTextPublicationError('push','closed')
+    if(typeof delta!=='string')throw new PublicTextPublicationError('push','content_type')
     this.receivedBytes+=Buffer.byteLength(delta)
     if(this.receivedBytes>MAX_RECEIVED_BYTES){await this.suspend();return}
-    const chunk=new AIMessageChunk({id:this.identity.partId,content:delta})
-    this.receivedMessage=this.receivedMessage?this.receivedMessage.concat(chunk):chunk
-    if(typeof this.receivedMessage.content!=='string')throw new PublicTextPublicationError('push','content_type')
-    this.received=this.receivedMessage.content
+    this.received+=delta
     // Run the cumulative policy once at the first delta and then at bounded
     // coalescing boundaries, not once per provider token.
     if(!this.assessments||this.receivedBytes-this.assessedBytes>=4096)await this.assessBuffer()
@@ -163,12 +159,12 @@ export class PublicTextWriter {
       if(approved)await this.publish(approved)
       await this.flush()
     }
-    this.received='';this.receivedMessage=undefined;this.finished=true
+    this.received='';this.finished=true
   }
   private clearHeldTimer(){if(this.heldTimer)clearTimeout(this.heldTimer);this.heldTimer=undefined}
   private async suspend():Promise<void>{
     if(this.suspended||this.closed)return
-    this.suspended=true;this.received='';this.receivedMessage=undefined;this.text='';this.clearHeldTimer()
+    this.suspended=true;this.received='';this.text='';this.clearHeldTimer()
     if(this.timer)clearTimeout(this.timer);this.timer=undefined
     await this.close('interrupted')
   }
@@ -201,13 +197,13 @@ export class PublicTextWriter {
   async end(reason:PublicTextEndReason):Promise<void>{
     this.clearHeldTimer()
     if(this.timer){clearTimeout(this.timer);this.timer=undefined}
-    if(this.signal.aborted){this.text='';this.received='';this.receivedMessage=undefined;await this.tail.catch(()=>{});this.closed=true;return}
+    if(this.signal.aborted){this.text='';this.received='';await this.tail.catch(()=>{});this.closed=true;return}
     if(this.closed)return
     if(reason==='completed'||reason==='tool')await this.finish()
     else{this.text='';this.received=''}
     await this.close(reason)
   }
-  dispose(){this.closed=true;this.text='';this.received='';this.receivedMessage=undefined;this.clearHeldTimer();if(this.timer)clearTimeout(this.timer);this.timer=undefined}
+  dispose(){this.closed=true;this.text='';this.received='';this.clearHeldTimer();if(this.timer)clearTimeout(this.timer);this.timer=undefined}
 }
 
 /** One attempt, two ordered public purposes. Legacy drivers keep one unknown-purpose part. */

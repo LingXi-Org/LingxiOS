@@ -10,6 +10,11 @@ export type DocumentFormat = 'docx' | 'pdf' | 'html' | 'source' | 'text' | 'json
 export async function extractDocumentText(bytes: Uint8Array, format: DocumentFormat, signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted()
   if (bytes.byteLength > 16 * 1024 * 1024) throw new Error('Document input exceeds 16 MiB')
+  const parser = format === 'pdf' ? 'pdfjs-dist/legacy/build/pdf.mjs' : format === 'docx' ? 'mammoth' : undefined
+  if (parser) {
+    try { import.meta.resolve(parser) }
+    catch { throw new Error(`Install the optional ${format === 'pdf' ? 'pdfjs-dist' : 'mammoth'} peer dependency to extract ${format.toUpperCase()} text`) }
+  }
   const release = inputs.acquire('parsers', bytes.byteLength)
   return parsers.run(() => new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, ['--max-old-space-size=128', fileURLToPath(new URL('./document-worker.js', import.meta.url)), format],

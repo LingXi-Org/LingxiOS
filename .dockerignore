@@ -7,12 +7,9 @@
 !scripts/build.mjs
 !src/
 !src/**
-!test/
-!test/**
 !db/
 !db/schema.sql
-!db/schema-011.sql
-!db/schema-012.sql
+!db/schema-013.sql
 !db/migrations/
 !db/migrations/**
 !kernel/

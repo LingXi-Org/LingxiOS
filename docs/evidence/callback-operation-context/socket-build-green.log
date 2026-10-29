@@ -1,8 +1,0 @@
-(node:823685) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
-(Use `node --trace-warnings ...` to show where the warning was created)
-
-> @lyyzka/lingxios@3.5.6 build
-> node scripts/build.mjs
-
-(node:823698) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental, expect them to change at any time.
-(Use `node --trace-warnings ...` to show where the warning was created)

@@ -1,15 +1,10 @@
-import { tool } from '@langchain/core/tools'
-import { convertToOpenAITool } from '@langchain/core/utils/function_calling'
 import { PUBLIC_ANSWER_TOOL_NAME } from '../protocol/public-answer-call.js'
 
-/** OutputToolBinding: use the actual upstream schema adapter, never its executor.
- * The host's parser/seal/outcome transaction is the only implementation. */
-export const PUBLIC_ANSWER_TOOL = convertToOpenAITool(tool(() => {
-  throw new Error('public_answer is a protocol output binding, not an executable tool')
-}, {
+/** The host's parser/seal/outcome transaction is the only implementation. */
+export const PUBLIC_ANSWER_TOOL = { type: 'function', function: {
   name: PUBLIC_ANSWER_TOOL_NAME,
   description: 'Publish public answer text or finish the accumulated answer with its outcome. This output binding is the single native call for its turn.',
-  schema: {
+  parameters: {
     type: 'object', additionalProperties: false,
     properties: {
       operation: { type: 'object', additionalProperties: false, properties: {
@@ -24,7 +19,7 @@ export const PUBLIC_ANSWER_TOOL = convertToOpenAITool(tool(() => {
       }, required: ['status', 'gaps'] }] },
     }, required: ['operation', 'answer', 'outcome'],
   },
-}))
+} }
 
 export const PUBLIC_ANSWER_TOOL_INSTRUCTIONS = `Public output wire contract (purpose-json-v3; publicAnswerTool native-v1):
 Use one native call per turn: public_answer for user-facing content, or a business tool with its exposed arguments. Assistant content and reasoning are private.

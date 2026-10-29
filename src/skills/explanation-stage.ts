@@ -1,4 +1,3 @@
-import { RunnableBranch } from '@langchain/core/runnables'
 import { canonicalJson, textSha256 } from '../context/compiler.js'
 import type { RequestSnapshot } from '../context/request.js'
 import { requestSnapshot } from '../app/jobs.js'
@@ -126,14 +125,8 @@ export async function readExplanationStage(database: SqlQueryable, work: Pick<Wo
   return stage
 }
 
-type Schedule = { tools: readonly ToolDefinition[]; stage?: ExplanationStage }
-/** Reuse the upstream branch combinator only for routing; the existing runtime owns the loop. */
-const schedule = RunnableBranch.from<Schedule, ToolDefinition[]>([
-  [input => input.stage?.status === 'pending', input => input.tools.filter(tool => !input.stage!.authoringActions.includes(tool.action))],
-  input => [...input.tools],
-])
-export function explanationStageTools(tools: readonly ToolDefinition[], stage?: ExplanationStage): Promise<ToolDefinition[]> {
-  return schedule.invoke({ tools, ...(stage ? { stage } : {}) })
+export async function explanationStageTools(tools: readonly ToolDefinition[], stage?: ExplanationStage): Promise<ToolDefinition[]> {
+  return stage?.status === 'pending' ? tools.filter(tool => !stage.authoringActions.includes(tool.action)) : [...tools]
 }
 export function explanationStageInstructions(stage: ExplanationStage): string {
   if (stage.status !== 'pending') return ''

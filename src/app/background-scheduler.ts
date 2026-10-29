@@ -95,7 +95,7 @@ export class BackgroundScheduler {
       this.signal.throwIfAborted()
       const busy = await abortable(job.operation(this.signal), this.signal)
       job.delay = busy ? job.minimum : Math.min(job.maximum, job.delay * 2)
-    }).catch(error => {
+    }).catch(() => {
       job.delay = Math.min(job.maximum, job.delay * 2)
       if (!this.signal.aborted) this.options.onError?.(name, new Error('Background operation failed'))
     }).finally(() => {

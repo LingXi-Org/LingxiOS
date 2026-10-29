@@ -1,8 +1,0 @@
-{
-  "kind": "actual-openai-driver-runtime-serializer-local-fetch-only",
-  "providerCalls": 1,
-  "events": [],
-  "serializedEvents": [],
-  "loggerSentinelCount": 0,
-  "ledgerSentinelCount": 0
-}

@@ -3,8 +3,6 @@ import type {ModelItem,SessionRecord} from '../protocol/types.js'
 import {appendRequestHistory} from '../context/request-history.js'
 import { isDeepStrictEqual } from 'node:util'
 import { createHash } from 'node:crypto'
-import { AIMessage, RemoveMessage, type BaseMessage } from '@langchain/core/messages'
-import { messagesStateReducer } from '@langchain/langgraph/web'
 import { answerMessageId, assemblePublicTextSources, snapshotPublicTextOperation, type PublicTextOperation } from '../protocol/answer-segments.js'
 import type { PublicTextIdentity } from '../protocol/public-text.js'
 import type { ExecutionStep } from '../control-plane/steps.js'
@@ -13,9 +11,9 @@ import { decodePublicAnswerCall, publicAnswerHistory } from '../protocol/public-
 export interface SealedAnswerSegment { identity:PublicTextIdentity; text:string; bodyHash:string; recovery?:PublicTextRecovery }
 const sha=(text:string)=>createHash('sha256').update(text).digest('hex')
 
-/** Trusted adapter over LangGraph's public ID reducer. Sealed revisions remain immutable. */
+/** Active revisions retain source order; sealed history remains immutable. */
 export class AnswerSegmentSet {
-  private active:BaseMessage[]=[]
+  private active:string[]=[]
   private readonly revisions=new Map<string,SealedAnswerSegment>()
   readonly messageId:string
   constructor(readonly runId:string,readonly requestVersion:number,private readonly fence:number,steps:readonly ExecutionStep[]=[]){
@@ -48,7 +46,7 @@ export class AnswerSegmentSet {
     return changed
   }
   get records():readonly SealedAnswerSegment[]{
-    return this.active.map(item=>this.revisions.get(String(item.additional_kwargs['partId']))!)
+    return this.active.map(partId=>this.revisions.get(partId)!)
   }
   get hasBody(){return this.records.some(item=>item.text.trim().length>0)}
   /** Sealed revisions outlive compaction of their model-history representation. */
@@ -85,12 +83,10 @@ export class AnswerSegmentSet {
     }
     const segmentId=this.prepare(operation,identity.partId)
     if(identity.segmentId!==segmentId)throw new Error('answer logical identity changed')
-    const update=new AIMessage({id:segmentId,content:text,additional_kwargs:{partId:identity.partId}})
-    const removals=operation.supersedes.slice(1).map(partId=>new RemoveMessage({id:this.revisions.get(partId)!.identity.segmentId!}))
-    // Only host-created typed messages reach the upstream reducer: no coercion,
-    // auto-ID, REMOVE_ALL or unvalidated provider extension fields.
-    const next=messagesStateReducer(this.active,[update,...removals])
-    if(next.length>128||next.reduce((size,item)=>size+String(item.content).length,0)>200_000)throw new Error('answer source collection exceeds bounds')
+    const next=operation.kind==='append' ? [...this.active,identity.partId]
+      : this.active.filter(partId=>!operation.supersedes.slice(1).includes(partId))
+        .map(partId=>partId===operation.supersedes[0]?identity.partId:partId)
+    if(next.length>128||next.reduce((size,partId)=>size+(partId===identity.partId?text:this.revisions.get(partId)!.text).length,0)>200_000)throw new Error('answer source collection exceeds bounds')
     this.revisions.set(identity.partId,structuredClone(record));this.active=next
   }
   assemble(){

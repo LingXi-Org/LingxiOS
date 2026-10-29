@@ -4,8 +4,7 @@ import { isInputQuestion } from '../protocol/input-wait.js'
  * object with `query` and `connect`, e.g. `pg.Pool`). Keeping the driver out
  * of this package's dependency tree lets deployments pin their own.
  *
- * Semantics mirror the in-memory test fixture, which is the executable specification;
- * the schema lives in `db/schema.sql`.
+ * The schema lives in `db/schema.sql`.
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'

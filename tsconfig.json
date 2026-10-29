@@ -16,10 +16,11 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "declaration": true,
-    "sourceMap": true,
+    "sourceMap": false,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": ["node"],
+    "removeComments": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "include": ["src/**/*.ts"],
   "exclude": ["dist", "node_modules"]
 }

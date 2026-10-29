@@ -722,7 +722,7 @@ export class AgentRuntime {
       if (pendingCompaction?.ready) pendingCompaction = undefined
       let compacted = prepared
       if (!this.asyncCompaction || estimateTokens(projectHistory(session.history), model) + overheadTokens >= hardLimit) {
-        const recovered = await compactIfNeeded(session, instructions, model, this.compaction, signals.generationSignal(), overheadTokens, false, projectHistory)
+        const recovered = await compactIfNeeded(session, model, this.compaction, signals.generationSignal(), overheadTokens, false, projectHistory)
           .catch((error): CompactionOutcome => {
             if (!signals.hasSteer() && (!memoryForModel || !(error instanceof HardLimitExceededError))) throw error
             return { compacted: false }

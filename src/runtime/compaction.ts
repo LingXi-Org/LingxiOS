@@ -85,7 +85,6 @@ export function summaryItem(summary: string): ModelItem {
  */
 export async function compactIfNeeded(
   session: SessionRecord,
-  instructions: string,
   model: ModelDriver,
   options: CompactionOptions,
   signal?: AbortSignal,
@@ -237,7 +236,7 @@ export function prepareCompaction(session: SessionRecord, model: ModelDriver, op
   const copy = { ...session, history: structuredClone(base.history) }
   const stop = new AbortController()
   let outcome: CompactionOutcome | undefined
-  const settled = compactIfNeeded(copy, '', model, options,
+  const settled = compactIfNeeded(copy, model, options,
     AbortSignal.any([stop.signal, ...(signal ? [signal] : [])]), overheadTokens, true, project)
     .then(result => { outcome = result }, () => { outcome = { compacted: false } })
   return {

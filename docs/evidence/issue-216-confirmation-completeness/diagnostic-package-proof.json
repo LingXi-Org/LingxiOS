@@ -1,9 +1,0 @@
-{
-  "name": "@lyyzka/lingxios",
-  "version": "3.5.8",
-  "shasum": "2291f235675bdabfb5d12f77c8efce7acb14c1e3",
-  "integrity": "sha512-3Ws/r1/2PRHOwgwo94EFitLjQB8MmCKPrhd09eJHSs7Wot54reWbyugTYkUk3mLajp6vUB6PoSoxRveL+Uuc1A==",
-  "baseCommit": "7c9bc943ee42870f450926fda8d3ebb7447a024e",
-  "processorGitBlob": "ec11bea30f9177d98f2bab15808f67c890f9a75a",
-  "qualification": "local diagnostic candidate, not published; full product qualification remains failed"
-}

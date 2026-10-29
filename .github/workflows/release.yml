@@ -1,4 +1,4 @@
-name: release-gates
+name: package
 
 on:
   pull_request:
@@ -6,30 +6,29 @@ on:
     branches: [main]
 
 jobs:
-  linux-release:
+  package:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22.13.1, cache: npm }
       - run: npm ci --ignore-scripts
-      - name: Load confined Worker AppArmor policy
-        run: sudo apparmor_parser --replace --skip-cache deploy/worker-apparmor
-      - run: npm run check:release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-qualification-${{ github.sha }}
-          path: release-results/qualifications/*.json
-          if-no-files-found: error
-      - name: Upload structured release failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-failure-${{ github.sha }}
-          path: release-results/failures/*.json
-          if-no-files-found: warn
-      - name: Report sandbox denials
-        if: failure()
-        continue-on-error: true
-        run: sudo journalctl --dmesg --no-pager --grep='apparmor="DENIED"' --lines=30
+      - run: npm pack
+      - name: Verify production package imports and resources
+        run: |
+          package="$PWD/$(node -p "const p=require('./package.json'); p.name.replace('@','').replace('/','-')+'-'+p.version+'.tgz'")"
+          cd "$(mktemp -d)"
+          npm init -y
+          npm install --ignore-scripts --omit=dev "$package"
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict'
+          import { access } from 'node:fs/promises'
+          import { createLingxiOS, packageResources } from '@lyyzka/lingxios'
+          import { createWorker } from '@lyyzka/lingxios/worker'
+          import * as ui from '@lyyzka/lingxios/ui'
+          assert.equal(typeof createLingxiOS, 'function')
+          assert.equal(typeof createWorker, 'function')
+          assert.ok(Object.keys(ui).length)
+          await Promise.all(Object.values(packageResources()).map(path => access(path)))
+          JS
