@@ -18,8 +18,9 @@ import { modelFailure } from '../src/model/recovery.js'
 import type { SqlPool } from '../src/control-plane/pg-store.js'
 
 const secret = 'PRIVATE_BODY_QUERY_TOKEN_SENTINEL'
-const sourceRoot = fileURLToPath(new URL('../src/', import.meta.url))
-const mappedRoot = sourceRoot.endsWith('/dist/src/') ? sourceRoot.slice(0, -'dist/src/'.length) + 'src/' : sourceRoot
+const sourceUrl = new URL('../src/', import.meta.url)
+const sourceRoot = fileURLToPath(sourceUrl)
+const mappedRoot = sourceUrl.pathname.endsWith('/dist/src/') ? fileURLToPath(new URL('../../src/', sourceUrl)) : sourceRoot
 const unexpected = async (): Promise<never> => { throw new Error('unexpected model/kernel invocation') }
 
 it('publication diagnostics retain only closed stage/code and safe cause classification without enabling retries', () => {
@@ -41,8 +42,8 @@ it('publication diagnostics retain only closed stage/code and safe cause classif
 function failure() {
   return Object.assign(new TypeError(secret), { code: '42P01', query: secret,
     cause: { code: 'ETIMEDOUT', status: 503, message: secret, token: secret },
-    stack: `TypeError: ${secret}\n    at ${secret} (${sourceRoot}runtime/runtime.js:88:19)\n`
-      + `    at mapped (${mappedRoot}context/request.ts:42:7)\n`
+    stack: `TypeError: ${secret}\n    at ${secret} (${join(sourceRoot, 'runtime', 'runtime.js')}:88:19)\n`
+      + `    at mapped (${join(mappedRoot, 'context', 'request.ts')}:42:7)\n`
       + `    at spoof (/private/${secret}/src/runtime/runtime.js:1:2)\n    at query (${sourceRoot}runtime/runtime.js?token=${secret}:1:2)` })
 }
 

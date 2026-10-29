@@ -26,6 +26,3 @@ export const MAX_TOOL_OUTPUT_CHARS = 8_000 as const
 
 /** Name of the Python execution tool alongside structured business tools. */
 export const IPYTHON_TOOL_NAME = 'ipython' as const
-
-/** Name of the in-kernel SDK module the model calls (`host.<capability>.<method>`). */
-export const KERNEL_SDK_MODULE = 'host' as const

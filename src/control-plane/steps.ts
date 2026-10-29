@@ -89,21 +89,3 @@ export function fromRow(row: Record<string, unknown>): ExecutionStep {
     input: row['input'] as Record<string, unknown>, ...(row['output'] === null ? {} : { output: String(row['output']) }),
     artifacts: row['artifacts'] as KernelArtifact[], ...(row['workspace_checkpoint'] ? { workspace: row['workspace_checkpoint'] as WorkspaceCheckpoint } : {}) }
 }
-
-export class MemoryStepStore implements StepStore {
-  private readonly entries = new Map<string, ExecutionStep>()
-  async save(proof: StoreLeaseProof, step: ExecutionStep) {
-    const key = JSON.stringify([proof.workId, step.id]), prior = this.entries.get(key)
-    if (prior && (!isDeepStrictEqual(prior.input, step.input) || prior.kind !== step.kind || prior.requestVersion !== step.requestVersion
-      || prior.output !== undefined && !isDeepStrictEqual(prior, step))) throw new Error('step identity changed')
-    this.entries.set(key, structuredClone(step))
-  }
-  async get(workId: string, id: string, version: number) {
-    const step = this.entries.get(JSON.stringify([workId, id]))
-    return step?.requestVersion === version ? structuredClone(step) : null
-  }
-  async list(workId: string, version?: number) {
-    return [...this.entries].filter(([key, step]) => JSON.parse(key)[0] === workId && step.kind !== 'runtime.action_trace' && (version === undefined || step.requestVersion === version))
-      .map(([, step]) => structuredClone(step))
-  }
-}

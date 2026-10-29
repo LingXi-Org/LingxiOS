@@ -124,7 +124,7 @@ export interface AgentRuntimeOptions {
 }
 
 export type { ModelCallObservation, ModelCallObserver, RootModelBudgetOptions } from '../model/execution.js'
-import { executionModel, DEFAULT_MODEL_BUDGET, type ModelCallObserver, type RootModelBudgetOptions } from '../model/execution.js'
+import { executionModel, DEFAULT_MODEL_BUDGET, type RootModelBudgetOptions } from '../model/execution.js'
 
 export interface ModelTracePolicy {
   recordPayloads?: boolean

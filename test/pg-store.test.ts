@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises'
 import { it } from 'node:test'
 import { PGlite } from '@electric-sql/pglite'
 import { PgActionLedger, PgEventStore, PgModelBudgetStore, PgSessionStore, PgWorkStore, type SqlPool } from '../src/control-plane/pg-store.js'
-import { hashToken } from '../src/control-plane/memory-store.js'
+import { hashToken } from './memory-store-fixture.js'
 import type { SessionRecord } from '../src/protocol/types.js'
 
 it('runs namespaced stores on PostgreSQL without touching product tables', async () => {

@@ -1,8 +1,7 @@
-import { inputWaitQuestion, isInputQuestion } from '../protocol/input-wait.js'
-import { executionClassOf, workStatusOf, type WorkStatus } from '../protocol/types.js'
+import { inputWaitQuestion, isInputQuestion } from '../src/protocol/input-wait.js'
+import { executionClassOf, workStatusOf, type WorkStatus } from '../src/protocol/types.js'
 /**
- * In-memory store implementation. Serves three purposes: local development,
- * the test suite, and the executable specification of the lease state
+ * In-memory test implementation and executable specification of the lease state
  * machine that `pg-store.ts` mirrors in SQL.
  *
  * Single-process only — it relies on JavaScript's run-to-completion semantics
@@ -10,12 +9,14 @@ import { executionClassOf, workStatusOf, type WorkStatus } from '../protocol/typ
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import { sessionKeyOf, type HostActionResult, type SessionRecord, type WorkCompletion, type WorkItem, WORK_LANE_PRIORITY } from '../protocol/types.js'
+import { sessionKeyOf, type HostActionResult, type SessionRecord, type WorkCompletion, type WorkItem } from '../src/protocol/types.js'
 import type {
   ActionIntent, ActionLedgerStore, EnqueueResult, EnqueueWorkInput, EventStore, HeartbeatRow,
   LeasedWork, SaveSessionResult, SessionStore, StoredRunEvent, WorkStore, WorkStoreOptions,
   ModelBudgetLimits, ModelBudgetReservation, ModelBudgetStore,
-} from './stores.js'
+} from '../src/control-plane/stores.js'
+
+const WORK_LANE_PRIORITY = { interactive: 4, approval: 3, collaboration: 2, background: 1 } as const
 
 export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex')
@@ -93,14 +94,11 @@ export class MemoryWorkStore implements WorkStore {
   private readonly rows = new Map<string, WorkRow>()
   private readonly routes = new Map<string, SessionRoute>()
   private readonly sessionLeases = new Map<string, SessionLease>()
-  private readonly workerLastSeen = new Map<string, number>()
-  private readonly claims = new Map<string, { workerId: string; work: WorkItem | null; kinds: string[] | null; lanes?: readonly string[]; executionClass?: import('../protocol/types.js').ExecutionClass }>()
+  private readonly claims = new Map<string, { workerId: string; work: WorkItem | null; kinds: string[] | null; lanes?: readonly string[]; executionClass?: import('../src/protocol/types.js').ExecutionClass }>()
   private readonly leaseTtlMs: number
-  private readonly workerTimeoutMs: number
 
   constructor(options: WorkStoreOptions = {}, private readonly now: () => number = Date.now) {
     this.leaseTtlMs = options.leaseTtlMs ?? 45_000
-    this.workerTimeoutMs = options.workerTimeoutMs ?? 90_000
   }
 
   async enqueue(input: EnqueueWorkInput): Promise<EnqueueResult> {
@@ -151,12 +149,7 @@ export class MemoryWorkStore implements WorkStore {
     return sessionKeyOf(row)
   }
 
-  private workerAlive(workerId: string, now: number): boolean {
-    const seen = this.workerLastSeen.get(workerId)
-    return seen !== undefined && now - seen < this.workerTimeoutMs
-  }
-
-  async claim(workerId: string, requestId?: string, workKinds?: readonly string[], lanes?: readonly WorkItem['lane'][], executionClass?: import('../protocol/types.js').ExecutionClass): Promise<WorkItem | null> {
+  async claim(workerId: string, requestId?: string, workKinds?: readonly string[], lanes?: readonly WorkItem['lane'][], executionClass?: import('../src/protocol/types.js').ExecutionClass): Promise<WorkItem | null> {
     const kinds = workKinds ? [...new Set(workKinds)].sort() : null
     lanes = lanes ? [...new Set(lanes)].sort() : undefined
     if (requestId) {
@@ -171,7 +164,6 @@ export class MemoryWorkStore implements WorkStore {
       if (this.claims.size >= 10_000) this.claims.delete(this.claims.keys().next().value!)
     }
     const now = this.now()
-    this.workerLastSeen.set(workerId, now)
     for (const [key, lease] of this.sessionLeases) {
       if (lease.expiresAt <= now) this.sessionLeases.delete(key)
     }
@@ -270,7 +262,6 @@ export class MemoryWorkStore implements WorkStore {
     if (!row) return null
     const now = this.now()
     row.leaseExpiresAt = now + this.leaseTtlMs
-    if (row.leasedBy) this.workerLastSeen.set(row.leasedBy, now)
     const lease = this.sessionLeases.get(this.sessionKey(row))
     if (lease && lease.workId === id && lease.fence === fence) lease.expiresAt = now + this.leaseTtlMs
     return {
@@ -308,7 +299,7 @@ export class MemoryWorkStore implements WorkStore {
     return this.settle(id, fence, leaseTokenHash, status, completion)
   }
 
-  async wait(id: string, fence: number, leaseTokenHash: string, goalOutcome: import('../protocol/outcome.js').WaitingOutcome): Promise<boolean> {
+  async wait(id: string, fence: number, leaseTokenHash: string, goalOutcome: import('../src/protocol/outcome.js').WaitingOutcome): Promise<boolean> {
     return this.settle(id, fence, leaseTokenHash, 'waiting', { goalOutcome })
   }
 
@@ -398,11 +389,6 @@ export class MemoryWorkStore implements WorkStore {
       row.leaseExpiresAt = 0
       this.sessionLeases.delete(this.sessionKey(row))
     }
-  }
-
-  /** Test helper: mark a worker dead. */
-  markWorkerDead(workerId: string): void {
-    this.workerLastSeen.set(workerId, 0)
   }
 }
 
@@ -499,8 +485,8 @@ export class MemoryActionLedger implements ActionLedgerStore {
   private readonly results = new Map<string, HostActionResult>()
   private readonly intents = new Map<string, string>()
   private readonly intentDetails = new Map<string, ActionIntent>()
-  private readonly resolutions = new Map<string, import('./stores.js').ActionResolution[]>()
-  private readonly resolutionIds = new Map<string, import('./stores.js').ActionResolution>()
+  private readonly resolutions = new Map<string, import('../src/control-plane/stores.js').ActionResolution[]>()
+  private readonly resolutionIds = new Map<string, import('../src/control-plane/stores.js').ActionResolution>()
 
   private effectiveResult(key: string): HostActionResult | undefined {
     return this.resolutions.get(key)?.at(-1)?.result ?? this.results.get(key)
@@ -543,7 +529,7 @@ export class MemoryActionLedger implements ActionLedgerStore {
     return result
   }
 
-  async recordResolution(resolution: import('./stores.js').ActionResolution): Promise<'recorded' | 'existing'> {
+  async recordResolution(resolution: import('../src/control-plane/stores.js').ActionResolution): Promise<'recorded' | 'existing'> {
     if (!this.intents.has(resolution.actionKey)) throw new Error('action intent is required before reconciliation')
     const prior = this.resolutionIds.get(resolution.id)
     if (prior) {
@@ -577,7 +563,7 @@ export class MemoryModelBudgetStore implements ModelBudgetStore {
     const dimension = Date.now() >= Date.parse(budget.deadlineAt) ? 'deadline' : budget.calls.size >= budget.maxModelCalls ? 'calls'
       : budget.tokens + (limits.reservedTokens ?? 0) > budget.maxTokens ? 'tokens'
       : budget.costMicros + (limits.reservedCostMicros ?? 0) > budget.maxCostMicros ? 'cost' : 'reservation'
-    return { allowed, ...(!allowed ? { dimension: dimension as import('../errors.js').BudgetDimension } : {}), remainingCalls: Math.max(0, budget.maxModelCalls - budget.calls.size),
+    return { allowed, ...(!allowed ? { dimension: dimension as import('../src/errors.js').BudgetDimension } : {}), remainingCalls: Math.max(0, budget.maxModelCalls - budget.calls.size),
       remainingTokens: Math.max(0, budget.maxTokens - budget.tokens),
       remainingCostMicros: Math.max(0, budget.maxCostMicros - budget.costMicros), deadlineAt: budget.deadlineAt }
   }

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { ControlPlaneService } from '../src/control-plane/service.js'
-import { MemoryActionLedger, MemoryEventStore, MemoryModelBudgetStore, MemorySessionStore, MemoryWorkStore } from '../src/control-plane/memory-store.js'
-import { MemoryStepStore } from '../src/control-plane/steps.js'
+import { MemoryActionLedger, MemoryEventStore, MemoryModelBudgetStore, MemorySessionStore, MemoryWorkStore } from './memory-store-fixture.js'
+import { MemoryStepStore } from './memory-step-fixture.js'
 import { snapshotRequest } from '../src/context/request.js'
 import { sessionKeyOf, type SessionRecord } from '../src/protocol/types.js'
 

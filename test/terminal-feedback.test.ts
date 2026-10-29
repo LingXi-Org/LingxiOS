@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { it } from 'node:test'
 import { PGlite } from '@electric-sql/pglite'
 import { PgWorkStore, type SqlPool } from '../src/control-plane/pg-store.js'
-import { hashToken } from '../src/control-plane/memory-store.js'
+import { hashToken } from './memory-store-fixture.js'
 import { readDiagnostics, readOperations, refreshMetrics } from '../src/app/diagnostics.js'
 import { MetricsRegistry } from '../src/metrics.js'
 

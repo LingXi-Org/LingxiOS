@@ -4,10 +4,10 @@ import { isInputQuestion } from '../protocol/input-wait.js'
  * object with `query` and `connect`, e.g. `pg.Pool`). Keeping the driver out
  * of this package's dependency tree lets deployments pin their own.
  *
- * Semantics mirror `memory-store.ts`, which is the executable specification;
+ * Semantics mirror the in-memory test fixture, which is the executable specification;
  * the schema lives in `db/schema.sql`.
  */
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { resumeDependents } from './dependencies.js'
 import { fromRow as stepFromRow, type ExecutionStep } from './steps.js'
@@ -126,11 +126,9 @@ export class PgWorkStore implements WorkStore {
     return rows.length === 1
   }
   private readonly leaseTtlSeconds: number
-  private readonly workerTimeoutSeconds: number
 
   constructor(private readonly pool: SqlPool, options: WorkStoreOptions = {}) {
     this.leaseTtlSeconds = Math.ceil((options.leaseTtlMs ?? 45_000) / 1000)
-    this.workerTimeoutSeconds = Math.ceil((options.workerTimeoutMs ?? 90_000) / 1000)
   }
 
   async enqueue(input: EnqueueWorkInput): Promise<EnqueueResult> { return enqueueWork(this.pool, input) }

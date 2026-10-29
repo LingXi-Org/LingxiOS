@@ -33,7 +33,7 @@ it('classifies split whitespace and Unicode prose without exposing its content',
   assert.equal(result.output.length, 1)
 })
 
-for (const publicTextProtocol of ['purpose-json-v1', 'purpose-json-v2'] as const) {
+for (const publicTextProtocol of ['purpose-json-v2'] as const) {
   it(`${publicTextProtocol}: consumes an untyped tool companion without publishing it or losing its native call/usage`, async () => {
     const previews: string[] = []
     const model = driver(event({ content: 'I will read the synthetic record. ' })

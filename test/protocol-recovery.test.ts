@@ -26,9 +26,9 @@ it('preserves SSE events with every supported LF/CRLF delimiter and every networ
 
 it('decodes a complete purpose answer across mixed SSE line endings without a correction',async()=>{
   for(const separator of ['\r\n\n','\n\r\n']){
-    const wire=frame('{"commentary":"","answer":"',null,separator)+frame('ok"}')+frame('','stop')+'data: [DONE]\n\n'
+    const wire=frame('{"commentary":"","answer":"',null,separator)+frame('ok","outcome":{"status":"satisfied","gaps":[]}}')+frame('','stop')+'data: [DONE]\n\n'
     for(const chunks of [[wire],[...wire]]){
-    const model=new OpenAIChatDriver('sse-purpose-fixture',{apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v1',fetchImpl:async()=>new Response(stream(chunks))})
+    const model=new OpenAIChatDriver('sse-purpose-fixture',{apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v2',fetchImpl:async()=>new Response(stream(chunks))})
     const result=await model.run({instructions:'Say ok.',items:[],codeExecution:'disabled'})
     assert.equal(result.text,'ok')
     assert.deepEqual(result.diagnostics?.['finishReasons'],['stop'])
@@ -37,14 +37,14 @@ it('decodes a complete purpose answer across mixed SSE line endings without a co
 })
 
 for(const scenario of [
-  {name:'answer_required',text:'{"commentary":"Checking","answer":""}',code:'public_text_answer_required'},
+  {name:'answer_required',text:'{"commentary":"Checking","answer":"","outcome":{"status":"satisfied","gaps":[]}}',code:'public_text_answer_required'},
   {name:'incomplete',text:'{"commentary":"Checking","answer":"',code:'public_text_incomplete'},
   {name:'invalid',text:'{"answer":"PRIVATE_BODY_SENTINEL","commentary":""}',code:'public_text_invalid'},
-  {name:'tool_identity',text:'{"commentary":"","answer":""}',code:'tool_identity_invalid'},
+  {name:'tool_identity',text:'{"commentary":"","answer":"","outcome":null}',code:'tool_identity_invalid'},
   {name:'legacy_empty',text:'',code:'response_empty'},
 ])for(const measured of [true,false])it(`protocol cause ${scenario.name} retains observed stop and ${measured?'measured':'unavailable'} usage`,async()=>{
   const model=new OpenAIChatDriver('protocol-diagnostics-fixture',{apiKey:'fixture',maxAttempts:1,
-    ...(scenario.name==='legacy_empty'?{}:{publicTextProtocol:'purpose-json-v1' as const}),fetchImpl:async()=>new Response('data: '+JSON.stringify({
+    ...(scenario.name==='legacy_empty'?{}:{publicTextProtocol:'purpose-json-v2' as const}),fetchImpl:async()=>new Response('data: '+JSON.stringify({
       choices:[{delta:{content:scenario.text,...scenario.name==='tool_identity'?{tool_calls:[{index:0,id:'call',function:{name:'not_exposed',arguments:'{}'}}]}:{}},finish_reason:'stop'}],
       ...measured?{usage:{prompt_tokens:17,completion_tokens:9}}:{},
     })+'\n\ndata: [DONE]\n\n')})

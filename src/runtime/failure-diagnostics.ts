@@ -78,7 +78,7 @@ function frames(error: unknown): RuntimeFailureFrame[] {
   const stack = field(error, 'stack'), result: RuntimeFailureFrame[] = []
   if (typeof stack !== 'string') return result
   for (const text of stack.slice(0, 16_384).split('\n').slice(0, 64)) {
-    const match = /^\s*at (?:[^()\r\n]* \()?((?:file:\/\/\/|\/)[^()\r\n]*?):(\d+)(?::(\d+))?\)?$/.exec(text)
+    const match = /^\s*at (?:[^()\r\n]* \()?((?:file:\/\/\/|\/|[A-Za-z]:[\\/])[^()\r\n]*?):(\d+)(?::(\d+))?\)?$/.exec(text)
     if (!match) continue
     let source = match[1]!
     if (source.startsWith('file:')) {
@@ -86,7 +86,7 @@ function frames(error: unknown): RuntimeFailureFrame[] {
     }
     const sourceRoot = sourceRoots.find(root => source.startsWith(root))
     if (!sourceRoot) continue
-    const module = source.slice(sourceRoot.length), line = Number(match[2]), column = match[3] === undefined ? undefined : Number(match[3])
+    const module = source.slice(sourceRoot.length).replaceAll('\\', '/'), line = Number(match[2]), column = match[3] === undefined ? undefined : Number(match[3])
     if (!nativeModules.has(module) || !positive(line) || column !== undefined && !positive(column)) continue
     result.push({ module, line, ...(column === undefined ? {} : { column }) })
     if (result.length === 4) break

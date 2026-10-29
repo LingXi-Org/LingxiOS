@@ -111,7 +111,7 @@ it('combines real public protocol recovery, joint review and bounded content com
   const f = fixture(recoveryRequest); let turns = 0,reviews = 0,settled = 0
   const record = f.host.recordModelUsage
   f.host.recordModelUsage = async (...args) => { await record(...args); settled++ }
-  const model = new OpenAIChatDriver('synthetic-combined', { apiKey: 'synthetic',publicTextProtocol: 'purpose-json-v1',
+  const model = new OpenAIChatDriver('synthetic-combined', { apiKey: 'synthetic',publicTextProtocol: 'purpose-json-v2',
     maxAttempts: 1,recovery: { maxAttempts: 1,totalTimeoutMs: 10_000 },fetchImpl: async (_url,init) => {
       const request = JSON.parse(String(init?.body))
       if (!request.stream) {
@@ -121,9 +121,9 @@ it('combines real public protocol recovery, joint review and bounded content com
         return Response.json({ choices: [{ finish_reason: 'stop',message: { content: JSON.stringify(value) } }],usage: { prompt_tokens: 100,completion_tokens: 20 } })
       }
       turns++
-      if (turns === 2 || turns === 3) assert.match(JSON.stringify(request.messages),/purpose-json-v1/)
+      if (turns === 2 || turns === 3) assert.match(JSON.stringify(request.messages),/purpose-json-v2/)
       if (turns === 4) assert.match(JSON.stringify(request.messages),/fix the omissions/)
-      const content = JSON.stringify({ commentary: '',answer: turns <= 2 ? '' : turns === 3 ? promise : recoveryAnswer })
+      const content = JSON.stringify({ commentary: '',answer: turns <= 2 ? '' : turns === 3 ? promise : recoveryAnswer, outcome: { status: 'satisfied', gaps: [] } })
       return new Response('data: '+JSON.stringify({ choices: [{ delta: { content },finish_reason: 'stop' }],usage: { prompt_tokens: 100,completion_tokens: 20 } })+'\n\ndata: [DONE]\n\n')
     } })
   await recoveryRuntime(f,model,3,{ maxModelCalls: 8,maxTokens: 200_000,wallClockMs: 30_000 }).runWork(f.work)

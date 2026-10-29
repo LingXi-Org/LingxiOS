@@ -8,13 +8,13 @@ import { createHash } from 'node:crypto'
 import { AgentRuntime } from '../src/runtime/runtime.js'
 import { AgentWorker } from '../src/worker/worker.js'
 import { Wakeup } from '../src/control-plane/wakeup.js'
-import { MemoryWorkStore } from '../src/control-plane/memory-store.js'
+import { MemoryWorkStore } from './memory-store-fixture.js'
 import { ByteBudget, ResourceQuota } from '../src/resource-quota.js'
 import { MetricsRegistry } from '../src/metrics.js'
 import { toolExecutor } from '../src/tools/executor.js'
 import type { ToolDefinition } from '../src/tools/definition.js'
 import { limitModel } from '../src/model/quota.js'
-import { decodeHtml } from '../src/research/index.js'
+import { decodeHtml } from '../src/context/html.js'
 import { extractDocumentText } from '../src/context/document-text.js'
 import { inspectArtifacts, stageArtifact } from '../src/app/artifacts.js'
 import type { ModelDriver } from '../src/model/driver.js'
@@ -54,6 +54,7 @@ it('HTML decoding stays linear on malformed tags and parsing is genuinely isolat
   assert.ok(performance.now() - began < 500, 'overlapping suffix scans returned')
   assert.equal(decodeHtml('<script>one<script>two'), '')
   assert.equal(decodeHtml('<p>A &amp;lt; B</p><style>hidden</style>'), 'A &lt; B')
+  assert.equal(decodeHtml('<script>ignore()</script><style>ignore</style><p>A &amp; B &#999999999999;</p>'), 'A & B \uFFFD')
   const stop = new AbortController()
   let ticks = 0
   const timer = setInterval(() => ticks++, 1)

@@ -1,10 +1,10 @@
-import { MemoryStepStore } from '../src/control-plane/steps.js'
-import { MemoryModelBudgetStore } from '../src/control-plane/memory-store.js'
+import { MemoryStepStore } from './memory-step-fixture.js'
+import { MemoryModelBudgetStore } from './memory-store-fixture.js'
 import { snapshotEvidence } from '../src/context/evidence.js'
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { ControlPlaneService } from '../src/control-plane/service.js'
-import { MemoryActionLedger, MemoryEventStore, MemorySessionStore, MemoryWorkStore } from '../src/control-plane/memory-store.js'
+import { MemoryActionLedger, MemoryEventStore, MemorySessionStore, MemoryWorkStore } from './memory-store-fixture.js'
 
 it('keeps a custom uncatalogued executor known unstarted when native trace persistence fails', async () => {
   const actions = new MemoryActionLedger(), steps = new MemoryStepStore()

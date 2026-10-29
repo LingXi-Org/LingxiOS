@@ -1,5 +1,7 @@
 # Memory continuity rollout and recovery
 
+> Historical release record: older producer protocols and migration resources described here are no longer provided by the current package. See [current upgrade instructions](packaged-runtime.md#installation-and-versions).
+
 This source branch needs one coordinated official runtime release with issues 215/218. Package and lockfile changes belong to the sole integrator; do not deploy source-qualified artifacts.
 
 1. Pause admission and use the integrator-reviewed Loop `scripts/schema-upgrade-maintenance.mjs` procedure for the first native12→13 transition. Physically stop and verify exit of both Workers and both Web/API instances, including their background capture/schedulers; prevent an old migrator or process restart. The ordinary `resources.toml` rollout stops only Workers and is not this transition procedure. Preserve queued work and durable data.

@@ -43,8 +43,6 @@ export function observationItems(items: readonly ModelItem[], source: string): M
     ? contextItem({ source: `${source}:${index}`, version: fingerprint(item.content), trust: 'observation', truncated: false, content: item.content }) : item)
 }
 
-export const PLATFORM_RULES = EXECUTION_SECTIONS.map(section => section.content).join('\n')
-
 /** A pure compiler: no environment reads, file I/O, clock, or cross-session mutable cache. */
 export function compileContext(blocks: readonly ContextBlock[], mode: 'execution' | 'auxiliary' = 'execution', purpose: string = mode): CompiledContext {
   if (mode !== 'execution' && mode !== 'auxiliary' || !purpose.trim()) throw new Error('invalid prompt purpose')
@@ -86,11 +84,6 @@ export function compileAuxiliaryPrompt(purpose: string, instructions: string): C
   if (!instructions.trim()) throw new Error('auxiliary prompt requires a trusted purpose')
   return compileContext([{ source: 'runtime:purpose', version: '1', trust: 'platform', truncated: false, cache: 'prefix',
     content: 'Return only the requested structured result.\n' + instructions }], 'auxiliary', purpose)
-}
-
-/** Compatibility helper for consumers that only need the rendered instructions. */
-export function auxiliaryInstructions(purpose: string): string {
-  return compileAuxiliaryPrompt('auxiliary', purpose).instructions
 }
 
 export function textSha256(value: string): string {

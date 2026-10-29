@@ -1,5 +1,7 @@
 # Runtime reliability 3.5.0
 
+> Historical release record: older producer protocols and migration resources described here are no longer provided by the current package. See [current upgrade instructions](packaged-runtime.md#installation-and-versions).
+
 Patch 3.5.1 preserves the existing five-specialist team by allowing up to eight
 pending children when the root budget can reserve their starts and its closing
 response. The ninth pending child is rejected. It also forwards the classified

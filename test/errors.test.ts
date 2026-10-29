@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
-  AgentOSError, ApprovalPendingError, CapabilityDeniedError, ConfigError, KernelCancelledError,
+  AgentOSError, ApprovalPendingError, ConfigError, KernelCancelledError,
   KernelExecutionError, KernelProtocolError, KernelTimeoutError, LeaseLostError, ModelDriverError,
   RunCancelledError, asError, errorMessage,
 } from '../src/errors.js'
@@ -46,12 +46,6 @@ describe('AgentOSError subclasses', () => {
     assert.equal(error.approvalId, 'appr-1')
     assert.equal(error.cellId, 'cell-4')
     assert.match(error.message, /appr-1/)
-  })
-
-  it('CapabilityDeniedError carries the denied action', () => {
-    const error = new CapabilityDeniedError('fs.write')
-    assert.equal(error.action, 'fs.write')
-    assert.match(error.message, /fs\.write/)
   })
 
   it('ModelDriverError carries structured diagnostics', () => {

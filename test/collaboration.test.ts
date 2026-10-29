@@ -416,14 +416,12 @@ it('discovers effective memory scopes through the public app and reauthorizes th
   } finally { await f.close() }
 })
 
-it('migrates schema 9 without resetting business data and matches the fresh schema', async () => {
+it('migrates schema 13 without resetting business data and matches the fresh schema', async () => {
   const migrated = new PGlite(), fresh = new PGlite()
   try {
-    await migrated.exec(await readFile(new URL('../../test/fixtures/schema-9.sql', import.meta.url), 'utf8'))
+    await migrated.exec(await readFile(new URL('../../db/schema-013.sql', import.meta.url), 'utf8'))
     await migrated.exec("INSERT INTO lingxios.agent_work_items(id,tenant_id,agent_id,session_id,kind,lane,trigger_ref,status) VALUES('old','t','a','s','turn','interactive','m','succeeded')")
-    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission', '013-distributed-workspaces', '014-terminal-feedback', '015-memory-continuity', '016-skill-delivery']) {
-      await migrated.exec(await readFile(new URL(`../../db/migrations/${migration}.sql`, import.meta.url), 'utf8'))
-    }
+    await migrated.exec(await readFile(new URL('../../db/migrations/016-skill-delivery.sql', import.meta.url), 'utf8'))
     await fresh.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
     const columns = "SELECT table_name,column_name,data_type,is_nullable FROM information_schema.columns WHERE table_schema='lingxios' ORDER BY table_name,ordinal_position"
     assert.deepEqual((await migrated.query(columns)).rows, (await fresh.query(columns)).rows)

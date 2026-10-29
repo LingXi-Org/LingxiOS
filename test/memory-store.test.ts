@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
-  hashToken, MemoryActionLedger, MemoryEventStore, MemorySessionStore, MemoryWorkStore,
-} from '../src/control-plane/memory-store.js'
+  hashToken, MemoryActionLedger, MemoryEventStore, MemoryWorkStore,
+} from './memory-store-fixture.js'
 import type { EnqueueWorkInput } from '../src/control-plane/stores.js'
-import type { SessionRecord } from '../src/protocol/types.js'
 
 function input(overrides: Partial<EnqueueWorkInput> = {}): EnqueueWorkInput {
   return {
@@ -25,17 +24,6 @@ describe('MemoryWorkStore lease state machine', () => {
     assert.equal(await store.hasChild({ ...parent, tenantId: 'other' }, 'child', 1), false)
     await store.requestCancel('child')
     assert.equal(await store.hasChild(parent, 'child', 1), true)
-  })
-  it('rejects a completion outcome superseded by steering at the store boundary', async () => {
-    const store = new MemoryWorkStore()
-    await store.enqueue(input({ id: 'revised', meta: { text: 'Original' } }))
-    const work = (await store.claim('worker'))!
-    const token = hashToken(work.leaseToken)
-    assert.equal(await store.complete(work.id, work.fence, token, { status: 'completed' }), false)
-    await store.addSteer(work.id, 'Changed requirement')
-    assert.equal(await store.complete(work.id, work.fence, token, { status: 'completed', goalOutcome: { status: 'partial', verification: 'not_run', requestVersion: 1 } }), false)
-    assert.ok(await store.getLeased(work.id, work.fence, token))
-    assert.equal(await store.complete(work.id, work.fence, token, { status: 'completed', goalOutcome: { status: 'partial', verification: 'not_run', requestVersion: 2 } }), true)
   })
   it('claims by lane priority, then priority, then age', async () => {
     const store = new MemoryWorkStore()
@@ -61,18 +49,6 @@ describe('MemoryWorkStore lease state machine', () => {
     store.expireLease('work-1')
     const reclaimed = await store.claim('w1')
     assert.equal(reclaimed?.fence, 2)
-  })
-
-  it('enforces session exclusivity: one live lease per session key', async () => {
-    const store = new MemoryWorkStore()
-    await store.enqueue(input({ id: 'w-a', triggerRef: 'm1' }))
-    await store.enqueue(input({ id: 'w-b', triggerRef: 'm2' }))
-    const first = await store.claim('w1')
-    assert.equal(first?.id, 'w-a')
-    assert.equal(await store.claim('w1'), null) // same session is locked
-    await store.complete('w-a', first!.fence, hashToken(first!.leaseToken), { status: 'completed' })
-    const second = await store.claim('w1')
-    assert.equal(second?.id, 'w-b')
   })
 
   it('allows an idle session to move to another worker and advances its home epoch', async () => {
@@ -137,25 +113,6 @@ describe('MemoryWorkStore lease state machine', () => {
     const store = new MemoryWorkStore()
     await store.enqueue(input({ id: 'later', availableAt: new Date(Date.now() + 60_000).toISOString() }))
     assert.equal(await store.claim('w1'), null)
-  })
-})
-
-describe('MemorySessionStore optimistic concurrency', () => {
-  function session(revision: number): SessionRecord {
-    return {
-      key: '[\"t1\",\"a1\",\"s1\",null]', tenantId: 't1', agentId: 'a1', sessionId: 's1',
-      history: [{ role: 'user', content: 'hi' }], appliedWorkIds: [], revision, compactionEpoch: 0,
-    }
-  }
-
-  it('creates at revision 0 and conflicts on stale revisions', async () => {
-    const store = new MemorySessionStore()
-    const created = await store.save(session(0))
-    assert.deepEqual(created, { ok: true, revision: 1 })
-    assert.deepEqual(await store.save(session(0)), { ok: false, conflict: true })
-    assert.deepEqual(await store.save(session(1)), { ok: true, revision: 2 })
-    const loaded = await store.get('[\"t1\",\"a1\",\"s1\",null]')
-    assert.equal(loaded?.revision, 2)
   })
 })
 

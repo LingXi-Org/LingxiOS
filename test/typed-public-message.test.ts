@@ -92,7 +92,7 @@ it('sealed message recovery retains memory provenance and a durable cursor throu
 })
 
 it('in-memory event projection excludes host-only seal recovery metadata',async()=>{
-  const {MemoryEventStore}=await import('../src/control-plane/memory-store.js')
+  const {MemoryEventStore}=await import('./memory-store-fixture.js')
   const events=new MemoryEventStore()
   await events.append({runId:'run',seq:1,tenantId:'tenant',agentId:'agent',recordedAt:new Date().toISOString(),kind:'public.text.sealed',stage:'completed',visibility:'user',data:{},
     publicTextRecovery:{version:1,phase:'intermediate',memorySources:{version:1,sources:[],unknown:true}}})

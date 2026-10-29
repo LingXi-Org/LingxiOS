@@ -18,13 +18,6 @@ export type WorkKind = 'turn' | 'resume' | (string & {})
 /** Scheduling lane. Higher lanes are claimed before lower ones. */
 export type WorkLane = 'interactive' | 'approval' | 'collaboration' | 'background'
 
-export const WORK_LANE_PRIORITY: Readonly<Record<WorkLane, number>> = Object.freeze({
-  interactive: 4,
-  approval: 3,
-  collaboration: 2,
-  background: 1,
-})
-
 export type ExecutionClass = 'conversation' | 'operation'
 export function executionClassOf(work: Pick<WorkItem, 'lane' | 'meta'>): ExecutionClass {
   return work.meta?.['executionClass'] === 'conversation' || work.meta?.['executionClass'] === 'operation'

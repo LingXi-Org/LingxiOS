@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { OpenAIChatDriver } from '../src/model/openai.js'
-import { PUBLIC_PURPOSE_INSTRUCTIONS, PUBLIC_PURPOSE_V2_INSTRUCTIONS, publicPurposeInstructions } from '../src/model/public-purpose.js'
+import { PUBLIC_PURPOSE_V2_INSTRUCTIONS, publicPurposeInstructions } from '../src/model/public-purpose.js'
 import { ModelDriverError } from '../src/errors.js'
 import type { ToolDefinition } from '../src/tools/catalog.js'
 
@@ -67,7 +67,6 @@ it('keeps a null final answer strict and avoids replaying an already sealed answ
 
 it('preserves legacy instruction text',()=>{
   for(const profile of [undefined,{parallelTools:false,jsonObjectWithTools:false},{parallelTools:true,jsonObjectWithTools:true}]) {
-    assert.equal(publicPurposeInstructions('purpose-json-v1',profile),PUBLIC_PURPOSE_INSTRUCTIONS)
     assert.equal(publicPurposeInstructions('purpose-json-v2',profile),PUBLIC_PURPOSE_V2_INSTRUCTIONS)
   }
 })
@@ -75,7 +74,6 @@ it('preserves legacy instruction text',()=>{
 it('versions only the changed v3 prompt policy and preserves clone and legacy binding identity',()=>{
   const options={apiKey:'synthetic',maxThinkingTokens:0,capabilities:{jsonObjectWithTools:false,parallelTools:false}}
   for(const [publicTextProtocol,fingerprint,tokens] of [
-    ['purpose-json-v1','377c85734d5bc484b0ebf07657a103632f0e903508f276c36197250cd98780d8',1124],
     ['purpose-json-v2','c5a3ffc2915dc602de0ed90fb8a6ad754c4b61a2c864b0c3a17c11a7ed1de77c',1596],
   ] as const){
     const model=new OpenAIChatDriver('purpose-tool-turn-fixture',{...options,publicTextProtocol})

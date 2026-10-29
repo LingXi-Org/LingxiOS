@@ -1,5 +1,7 @@
 # Purpose JSON and native tool compatibility
 
+> Historical release record: older producer protocols and migration resources described here are no longer provided by the current package. See [current upgrade instructions](packaged-runtime.md#installation-and-versions).
+
 A provider can support JSON object responses and native tool calls separately
 without supporting their combination. An authorized synthetic qualification sent
 the same lookup instruction and read-only `lookup_fixture({key:"alpha"})`

@@ -1,5 +1,7 @@
 # Issue 216 native qualification
 
+> Historical release record: older producer protocols and migration resources described here are no longer provided by the current package. See [current upgrade instructions](packaged-runtime.md#installation-and-versions).
+
 Both phases belong to one delivery. This contributor supplies native source and Loop draft PRs; the sole integrator owns coordinated publication, exact dependency pins, deployment and issue closure.
 
 Base: `e44fb862c1a1a0d94eb5213fcfaf56f3dfccae73` (3.5.6/schema12). Candidate schema13 is installed through packaged 015. Runtime package version is intentionally unchanged pending one official release coordinated with issues 215/218; suggested compatible minor is 3.6.0. Source tarballs are development qualification, never release artifacts.

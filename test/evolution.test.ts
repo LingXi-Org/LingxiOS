@@ -6,7 +6,7 @@ import { withTransaction, type SqlPool } from '../src/control-plane/pg-store.js'
 import { freezeEvolutionBenchmark, proposeEvolution, executeEvolution, pinnedEvolution, rollbackEvolution,
   type EvolutionBenchmark, type EvolutionCandidate, type EvolutionReport } from '../src/memory/evolution.js'
 import { memoryEvaluationProcessor } from '../src/memory/processor.js'
-import { recallMemories } from '../src/memory/store.js'
+import { searchMemories } from '../src/memory/store.js'
 import type { WorkItem } from '../src/protocol/types.js'
 import type { WorkProcessorContext } from '../src/runtime/runtime.js'
 
@@ -72,7 +72,7 @@ it('gates evolution on frozen independent results, recovers evaluation, pins ver
     assert.equal((await execute(rejected.job,'finish') as { verdict: string }).verdict,'pending')
     assert.equal((await evaluate(rejected.job,true)).verdict,'failed')
     assert.deepEqual(await pin(await run('after-regression')),[])
-    assert.deepEqual(await recallMemories(pool,scope,'',12),[])
+    assert.deepEqual((await searchMemories(pool,scope,'',12)).items,[])
 
     const first = await propose('Read the persisted action receipt before retrying a write')
     await assert.rejects(withTransaction(pool,client => executeEvolution(client,first.job,[],'load',{})),/scope/)

@@ -1,5 +1,5 @@
 /** Same-generation declaration, never independent verification or authority. */
-export type PublicTextProtocol = 'purpose-json-v1' | 'purpose-json-v2' | 'purpose-json-v3'
+export type PublicTextProtocol = 'purpose-json-v2' | 'purpose-json-v3'
 export interface OutcomeDeclaration {
   status: 'satisfied' | 'partial' | 'blocked'
   gaps: string[]

@@ -4,22 +4,9 @@ import { fileURLToPath } from 'node:url'
 export function packageResources() {
   return {
     schema: fileURLToPath(new URL('../../../db/schema.sql', import.meta.url)),
-    /** Immutable schema-11 installation for hosts replaying historical migration guards. */
-    schema011: fileURLToPath(new URL('../../../db/schema-011.sql', import.meta.url)),
-    /** Immutable 3.5.6 schema for upgrade and pre-activation rollback provenance. */
-    schema012: fileURLToPath(new URL('../../../db/schema-012.sql', import.meta.url)),
     /** Immutable native13 baseline for the explicit skill-delivery upgrade. */
     schema013: fileURLToPath(new URL('../../../db/schema-013.sql', import.meta.url)),
     migration016: fileURLToPath(new URL('../../../db/migrations/016-skill-delivery.sql', import.meta.url)),
-    migration008: fileURLToPath(new URL('../../../db/migrations/008-governance.sql', import.meta.url)),
-    memoryReset009: fileURLToPath(new URL('../../../db/migrations/009-cognitive-memory-reset.sql', import.meta.url)),
-    migration010: fileURLToPath(new URL('../../../db/migrations/010-im-collaboration.sql', import.meta.url)),
-    migration011: fileURLToPath(new URL('../../../db/migrations/011-performance-notifications.sql', import.meta.url)),
-    migration012: fileURLToPath(new URL('../../../db/migrations/012-async-admission.sql', import.meta.url)),
-    migration013: fileURLToPath(new URL('../../../db/migrations/013-distributed-workspaces.sql', import.meta.url)),
-    migration015: fileURLToPath(new URL('../../../db/migrations/015-memory-continuity.sql', import.meta.url)),
-    rollback015: fileURLToPath(new URL('../../../db/migrations/015-memory-continuity-rollback.sql', import.meta.url)),
-    migration014: fileURLToPath(new URL('../../../db/migrations/014-terminal-feedback.sql', import.meta.url)),
     runner: fileURLToPath(new URL('../../../kernel/runner.py', import.meta.url)),
   }
 }

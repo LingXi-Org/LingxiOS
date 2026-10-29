@@ -16,7 +16,6 @@ import { executionSnapshot } from '../src/runtime/execution-policy.js'
 import { buildPromptContext } from '../src/prompts/provider.js'
 import { businessActionDeliveryGap } from '../src/outcome/completion.js'
 import { consumeAssistantMessage, createRunView, responseSegments } from '../src/ui/index.js'
-import { checkStorage } from '../src/app/storage.js'
 import { fitsModel } from '../src/model/profile.js'
 import { OpenAIChatDriver } from '../src/model/openai.js'
 
@@ -144,29 +143,6 @@ it('enforces modes, scoped observations, skill revocation, exact obligations and
     const program = await db.query<Record<string, unknown>>("SELECT data->'program' AS program FROM lingxios.agent_run_events WHERE run_id='display' AND kind='model.started' LIMIT 1")
     assert.equal((program.rows[0]?.['program'] as { hash: string }).hash.length, 64)
   } finally { await app.stop(); await db.close() }
-})
-
-it('migrates existing schema 7 without approving old semantics and rejects accidental reapplication', async () => {
-  const db = new PGlite()
-  try {
-    await db.exec(await readFile(new URL('../../test/fixtures/schema-8.sql', import.meta.url), 'utf8'))
-    await db.exec(`DROP TABLE lingxios.agent_memory_scopes;
-      ALTER TABLE lingxios.agent_memory_evidence DROP COLUMN scope_epochs;
-      ALTER TABLE lingxios.agent_approvals DROP COLUMN tool_contract_hash;
-      UPDATE lingxios.schema_version SET version=7`)
-    const migration = await readFile(new URL('../../db/migrations/008-governance.sql', import.meta.url), 'utf8')
-    await db.exec(migration)
-    assert.deepEqual((await db.query('SELECT version FROM lingxios.schema_version')).rows, [{ version: 8 }])
-    const defaults = await db.query<Record<string, unknown>>("SELECT column_default FROM information_schema.columns WHERE table_schema='lingxios' AND table_name='agent_approvals' AND column_name='tool_contract_hash'")
-    assert.equal(defaults.rows[0]?.['column_default'], null)
-    await assert.rejects(db.exec(migration), /requires schema version 7/)
-    await db.exec('ROLLBACK')
-    await db.exec(await readFile(new URL('../../db/migrations/009-cognitive-memory-reset.sql',import.meta.url),'utf8'))
-    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission', '013-distributed-workspaces', '014-terminal-feedback', '015-memory-continuity', '016-skill-delivery']) {
-      await db.exec(await readFile(new URL(`../../db/migrations/${migration}.sql`, import.meta.url), 'utf8'))
-    }
-    await checkStorage({ query: async (sql, params) => ({ rows: (await db.query<Record<string, unknown>>(sql, params)).rows, rowCount: null }) })
-  } finally { await db.close() }
 })
 
 it('rejects unsupported model protocols before sending and budgets the full Chinese input', async () => {

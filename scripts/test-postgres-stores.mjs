@@ -8,7 +8,7 @@ import { Pool } from 'pg'
 import { PgActionLedger, PgSessionStore, PgWorkStore, PgModelBudgetStore, withTransaction } from '../dist/src/control-plane/pg-store.js'
 import { admitChildBudget } from '../dist/src/model/child-admission.js'
 import { enqueueWork } from '../dist/src/app/jobs.js'
-import { hashToken } from '../dist/src/control-plane/memory-store.js'
+import { hashToken } from '../dist/test/memory-store-fixture.js'
 import { checkStorage } from '../dist/src/app/storage.js'
 import { forgetMemoryScope } from '../dist/src/memory/forget.js'
 import { writeMemory } from '../dist/src/memory/store.js'
@@ -27,26 +27,10 @@ try {
   const existing = await pool.query("SELECT tablename FROM pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')")
   assert.equal(existing.rows.length, 0, 'store checks require an empty disposable PostgreSQL database')
   await pool.query("CREATE TABLE public.agent_work_items(company_id text); INSERT INTO public.agent_work_items VALUES('untouched')")
-  await pool.query(await readFile(new URL('../test/fixtures/schema-8.sql', import.meta.url), 'utf8'))
-  await pool.query(`DROP TABLE lingxios.agent_memory_scopes;
-    ALTER TABLE lingxios.agent_memory_evidence DROP COLUMN scope_epochs;
-    ALTER TABLE lingxios.agent_approvals DROP COLUMN tool_contract_hash;
-    UPDATE lingxios.schema_version SET version=7`)
-  await pool.query(await readFile(new URL('../db/migrations/008-governance.sql', import.meta.url), 'utf8'))
+  await pool.query(await readFile(new URL('../db/schema-013.sql', import.meta.url), 'utf8'))
   await pool.query("INSERT INTO lingxios.agent_work_items(id,tenant_id,agent_id,session_id,kind,lane,trigger_ref,status) VALUES('preserved','migration','agent','s','turn','interactive','original','succeeded')")
-  await pool.query(await readFile(new URL('../db/migrations/009-cognitive-memory-reset.sql', import.meta.url), 'utf8'))
-  assert.equal((await pool.query("SELECT trigger_ref FROM lingxios.agent_work_items WHERE id='preserved'")).rows[0].trigger_ref,'original')
-  await assert.rejects(pool.query(await readFile(new URL('../db/migrations/009-cognitive-memory-reset.sql', import.meta.url),'utf8')),/schema version 8/)
-  await pool.query('ROLLBACK')
-  await pool.query(await readFile(new URL('../db/migrations/010-im-collaboration.sql', import.meta.url), 'utf8'))
-  await pool.query(await readFile(new URL('../db/migrations/011-performance-notifications.sql', import.meta.url), 'utf8'))
-  await pool.query(await readFile(new URL('../db/migrations/012-async-admission.sql', import.meta.url), 'utf8'))
-  await pool.query(await readFile(new URL('../db/migrations/013-distributed-workspaces.sql', import.meta.url), 'utf8'))
-  await pool.query(await readFile(new URL('../db/migrations/013-distributed-workspaces.sql', import.meta.url), 'utf8'))
-  await pool.query(await readFile(new URL('../db/migrations/014-terminal-feedback.sql', import.meta.url), 'utf8'))
-  await pool.query(await readFile(new URL('../db/migrations/015-memory-continuity.sql', import.meta.url), 'utf8'))
-  await pool.query(await readFile(new URL('../db/migrations/015-memory-continuity.sql', import.meta.url), 'utf8'))
   await pool.query(await readFile(new URL('../db/migrations/016-skill-delivery.sql', import.meta.url), 'utf8'))
+  assert.equal((await pool.query("SELECT trigger_ref FROM lingxios.agent_work_items WHERE id='preserved'")).rows[0].trigger_ref,'original')
   await checkStorage(pool)
   await memoryAdmissionLockRegression(pool)
   await memoryToolAdmissionLockRegression(pool)

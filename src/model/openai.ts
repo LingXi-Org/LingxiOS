@@ -223,7 +223,7 @@ export class OpenAIChatDriver implements ModelDriver {
 
   constructor(readonly modelId: string, private readonly options: OpenAIDriverOptions) {
     this.recovery = recoveryPolicy(options.recovery)
-    if(options.publicTextProtocol!==undefined&&!['purpose-json-v1','purpose-json-v2','purpose-json-v3'].includes(options.publicTextProtocol))throw new Error('invalid public text protocol')
+    if(options.publicTextProtocol!==undefined&&!['purpose-json-v2','purpose-json-v3'].includes(options.publicTextProtocol))throw new Error('invalid public text protocol')
     this.publicTextProtocol=options.publicTextProtocol
     if(options.publicTextContinuation!==undefined && (options.publicTextContinuation!=='typed-message-v1'
       || this.publicTextProtocol!=='purpose-json-v3' || options.nativeToolPublicOutput!==undefined))throw new Error('public text continuation requires v3 and original native tool schemas')
@@ -700,15 +700,13 @@ export class OpenAIChatDriver implements ModelDriver {
           purposeParser.finish()
           text=(JSON.parse(text) as {answer:string|null}).answer ?? ''
         }
-        if(this.publicTextProtocol==='purpose-json-v2'||this.publicTextProtocol==='purpose-json-v3'){
-          if(accumulator.toolCalls.size){if(accumulator.text.length&&purposeParser.outcome!==null)throw publicPurposeError()}
-          else if(purposeParser.outcome===null && this.publicTextContinuation==='typed-message-v1') {
-            if(!text.trim() || purposeParser.answerIsNull || !purposeParser.operation)throw publicPurposeError('public_text_answer_required')
-            publicTextPhase='intermediate'
-          } else {if(purposeParser.outcome===null)throw new ModelDriverError('terminal response requires an outcome declaration', {
-            ...diagnostics, kind:'protocol', category:'protocol', protocolCode:'terminal_outcome_required',
-          });if(!purposeParser.outcome)throw publicPurposeError();outcomeDeclaration=purposeParser.outcome}
-        }
+        if(accumulator.toolCalls.size){if(accumulator.text.length&&purposeParser.outcome!==null)throw publicPurposeError()}
+        else if(purposeParser.outcome===null && this.publicTextContinuation==='typed-message-v1') {
+          if(!text.trim() || purposeParser.answerIsNull || !purposeParser.operation)throw publicPurposeError('public_text_answer_required')
+          publicTextPhase='intermediate'
+        } else {if(purposeParser.outcome===null)throw new ModelDriverError('terminal response requires an outcome declaration', {
+          ...diagnostics, kind:'protocol', category:'protocol', protocolCode:'terminal_outcome_required',
+        });if(!purposeParser.outcome)throw publicPurposeError();outcomeDeclaration=purposeParser.outcome}
         if(!accumulator.toolCalls.size&&!text.trim()&&!(this.publicTextProtocol==='purpose-json-v3'&&purposeParser.answerIsNull
           &&request.answerContext?.segmentIds.length))throw publicPurposeError('public_text_answer_required')
       }catch(error){throw new ModelDriverError('invalid public text protocol',{

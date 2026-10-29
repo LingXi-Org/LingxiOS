@@ -1,5 +1,7 @@
 # Public purpose contract: failure model before implementation
 
+> Historical release record: older producer protocols and migration resources described here are no longer provided by the current package. See [current upgrade instructions](packaged-runtime.md#installation-and-versions).
+
 Issue: LingXi-Org/LingxiLoop#280, remaining scope of #275.
 
 The wire contract is opt-in `publicTextProtocol: 'purpose-json-v1'`: exactly an ordered JSON object `{"commentary":"...","answer":"..."}`. Both fields are public. Commentary contains concise user-facing progress only, never reasoning. Answer contains substantive user-facing content only. This proves a producer declaration, not semantic correctness of arbitrary model prose. JSON mode itself does not guarantee schema/order: the adapter validates both incrementally. Private provider reasoning fields are ignored.

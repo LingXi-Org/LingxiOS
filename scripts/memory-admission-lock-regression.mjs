@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
 import { PgActionLedger, PgModelBudgetStore, PgWorkStore } from '../dist/src/control-plane/pg-store.js'
-import { hashToken } from '../dist/src/control-plane/memory-store.js'
+import { hashToken } from '../dist/test/memory-store-fixture.js'
 import { createMemoryRuntime } from '../dist/src/memory/runtime.js'
 import { sessionKeyOf } from '../dist/src/protocol/types.js'
 import { toolExecutor } from '../dist/src/tools/executor.js'

@@ -3,7 +3,7 @@ import { it } from 'node:test'
 import { ModelDriverError } from '../src/errors.js'
 import { OpenAIChatDriver } from '../src/model/openai.js'
 import type { ToolDefinition } from '../src/tools/catalog.js'
-import { PUBLIC_PURPOSE_INSTRUCTIONS } from '../src/model/public-purpose.js'
+import { PUBLIC_PURPOSE_V2_INSTRUCTIONS } from '../src/model/public-purpose.js'
 
 const lookup: ToolDefinition = {
   name: 'lookup_fixture', action: 'lookup_fixture', effect: 'read', approval: false,
@@ -33,7 +33,7 @@ it('opts out of combined JSON mode and native tools without dropping the public 
   const bodies: Record<string, unknown>[] = []
   const capabilities = { parallelTools: false, jsonObjectWithTools: false }
   const model = new OpenAIChatDriver('combined-format-fixture', {
-    apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v1', capabilities,
+    apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v2', capabilities,
     fetchImpl: async (_url, init) => {
       const body = JSON.parse(String(init?.body)); bodies.push(body)
       // A provider can support JSON mode and native tools independently while its
@@ -51,19 +51,19 @@ it('opts out of combined JSON mode and native tools without dropping the public 
   assert.equal(bodies[0]!['tool_choice'], 'auto')
   assert.equal(bodies[0]!['parallel_tool_calls'], false)
   assert.deepEqual(bodies[0]!['tools'], [{ type: 'function', function: { name: lookup.name, description: lookup.description, parameters: lookup.parameters } }])
-  assert.ok(JSON.stringify(bodies[0]!['messages']).includes(JSON.stringify(PUBLIC_PURPOSE_INSTRUCTIONS).slice(1, -1)))
+  assert.ok(JSON.stringify(bodies[0]!['messages']).includes(JSON.stringify(PUBLIC_PURPOSE_V2_INSTRUCTIONS).slice(1, -1)))
 })
 
 it('keeps JSON mode for purpose requests with no exposed tools after opting out of the combination', async () => {
   const capabilities = { parallelTools: false, jsonObjectWithTools: false }
   for (const toolConfig of [{ codeExecution: 'disabled' as const }, { tools: [] }]) {
     const model = new OpenAIChatDriver('combined-format-no-tools-fixture', {
-      apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v1', capabilities,
+      apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v2', capabilities,
       fetchImpl: async (_url, init) => {
         const body = JSON.parse(String(init?.body))
         assert.deepEqual(body.response_format, { type: 'json_object' })
         assert.equal(Object.hasOwn(body, 'tools'), false)
-        return new Response(event({ content: '{"commentary":"","answer":"Answer."}' }, 'stop'))
+        return new Response(event({ content: '{"commentary":"","answer":"Answer.","outcome":{"status":"satisfied","gaps":[]}}' }, 'stop'))
       },
     })
     assert.equal((await model.run({ instructions: 'Answer.', items: [], ...toolConfig })).text, 'Answer.')
@@ -73,12 +73,12 @@ it('keeps JSON mode for purpose requests with no exposed tools after opting out 
 it('applies the opt-out to the implicit Python tool and preserves it in single-attempt drivers', async () => {
   const capabilities = { parallelTools: false, jsonObjectWithTools: false }
   const model = new OpenAIChatDriver('combined-format-python-fixture', {
-    apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v1', capabilities,
+    apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v2', capabilities,
     fetchImpl: async (_url, init) => {
       const body = JSON.parse(String(init?.body))
       assert.equal(Object.hasOwn(body, 'response_format'), false)
       assert.deepEqual(body.tools.map((tool: { function: { name: string } }) => tool.function.name), ['ipython'])
-      return new Response(event({ content: '{"commentary":"","answer":"Answer."}' }, 'stop'))
+      return new Response(event({ content: '{"commentary":"","answer":"Answer.","outcome":{"status":"satisfied","gaps":[]}}' }, 'stop'))
     },
   })
   assert.equal((await model.singleAttempt().run({ instructions: 'Answer.', items: [] })).text, 'Answer.')
@@ -88,7 +88,7 @@ it('retains auxiliary JSON mode and independent configuration identity for combi
   const capabilities = { parallelTools: false, jsonObjectWithTools: false }
   for (const auxiliaryStreaming of [false, true]) {
     const model = new OpenAIChatDriver('combined-format-auxiliary-fixture', {
-      apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v1', capabilities, auxiliaryStreaming,
+      apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v2', capabilities, auxiliaryStreaming,
       fetchImpl: async (_url, init) => {
         const body = JSON.parse(String(init?.body))
         assert.deepEqual(body.response_format, { type: 'json_object' })
@@ -101,7 +101,7 @@ it('retains auxiliary JSON mode and independent configuration identity for combi
     await model.structured({ instructions: 'Fixture JSON.', input: {} })
     await model.compact({ instructions: 'Summarize.', items: [] })
   }
-  const options = { apiKey: 'fixture', publicTextProtocol: 'purpose-json-v1' as const }
+  const options = { apiKey: 'fixture', publicTextProtocol: 'purpose-json-v2' as const }
   const legacy = new OpenAIChatDriver('combined-format-identity-fixture', options)
   const supportedCapabilities = { ...capabilities, jsonObjectWithTools: true }
   const supported = new OpenAIChatDriver('combined-format-identity-fixture', { ...options, capabilities: supportedCapabilities })
@@ -122,7 +122,7 @@ it('accepts a first native tool turn with absent content and split arguments in 
   let calls = 0
   const previews: string[] = []
   const model = new OpenAIChatDriver('native-purpose-fixture', {
-    apiKey: 'fixture', maxAttempts: 1, maxThinkingTokens: 0, publicTextProtocol: 'purpose-json-v1',
+    apiKey: 'fixture', maxAttempts: 1, maxThinkingTokens: 0, publicTextProtocol: 'purpose-json-v2',
     capabilities: { parallelTools: false }, fetchImpl: async (_url, init) => {
       calls++
       const body = JSON.parse(String(init?.body))
@@ -149,7 +149,7 @@ for (const jsonObjectWithTools of [true, false]) for (const content of [
   '{"commentary":"Checking","answer":"',
 ]) it(`rejects malformed public content with a native call (combined JSON mode ${jsonObjectWithTools}): ${JSON.stringify(content)}`, async () => {
   const model = new OpenAIChatDriver('native-purpose-rejection-fixture', {
-    apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v1',
+    apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v2',
     capabilities: { jsonObjectWithTools },
     fetchImpl: async () => new Response(event({ content, tool_calls: [nativeCall] }, 'tool_calls') + 'data: [DONE]\n\n'),
   })
@@ -160,9 +160,9 @@ for (const jsonObjectWithTools of [true, false]) for (const content of [
 for (const jsonObjectWithTools of [true, false]) it(`does not turn tool-shaped answer text into a native call (combined JSON mode ${jsonObjectWithTools})`, async () => {
   const answer = JSON.stringify({ tool_calls: [nativeCall] })
   const model = new OpenAIChatDriver('embedded-native-purpose-fixture', {
-    apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v1',
+    apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v2',
     capabilities: { jsonObjectWithTools },
-    fetchImpl: async () => new Response(event({ content: JSON.stringify({ commentary: '', answer }) }, 'stop') + 'data: [DONE]\n\n'),
+    fetchImpl: async () => new Response(event({ content: JSON.stringify({ commentary: '', answer, outcome: {status:'satisfied',gaps:[]} }) }, 'stop') + 'data: [DONE]\n\n'),
   })
   const result = await model.run({ instructions: 'Read the synthetic fixture.', items: [], tools: [lookup], codeExecution: 'disabled' })
   assert.deepEqual(result.output, [{ role: 'assistant', content: answer }])
@@ -171,7 +171,7 @@ for (const jsonObjectWithTools of [true, false]) it(`does not turn tool-shaped a
 it('keeps measured usage, tool identity validation, and cancellation when combined JSON mode is disabled', async () => {
   for (const invalidIdentity of [false, true]) {
     const model = new OpenAIChatDriver('combined-format-usage-fixture', {
-      apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v1', capabilities: { jsonObjectWithTools: false },
+      apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v2', capabilities: { jsonObjectWithTools: false },
       fetchImpl: async () => new Response('data: ' + JSON.stringify({
         choices: [{ delta: { tool_calls: [{ ...nativeCall, function: { ...nativeCall.function, name: invalidIdentity ? 'unexposed' : lookup.name } }] }, finish_reason: 'tool_calls' }],
         usage: { prompt_tokens: 17, completion_tokens: 9 },
@@ -188,8 +188,8 @@ it('keeps measured usage, tool identity validation, and cancellation when combin
   }
   const stop = new AbortController(), previews: string[] = []
   const model = new OpenAIChatDriver('combined-format-cancellation-fixture', {
-    apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v1', capabilities: { jsonObjectWithTools: false },
-    fetchImpl: async () => new Response(event({ content: '{"commentary":"Checking","answer":"MUST_NOT_PUBLISH"}', tool_calls: [nativeCall] }, 'tool_calls')),
+    apiKey: 'fixture', maxAttempts: 1, publicTextProtocol: 'purpose-json-v2', capabilities: { jsonObjectWithTools: false },
+    fetchImpl: async () => new Response(event({ content: '{"commentary":"Checking","answer":"MUST_NOT_PUBLISH","outcome":null}', tool_calls: [nativeCall] }, 'tool_calls')),
   })
   await assert.rejects(model.run({ instructions: 'Fixture.', items: [], tools: [lookup], codeExecution: 'disabled', signal: stop.signal,
     onTextDelta: text => { previews.push(text); stop.abort(new Error('cancelled fixture')) } }), /cancelled fixture/)

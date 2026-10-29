@@ -1,5 +1,7 @@
 # Public text purpose, generation contract and rollout
 
+> Historical release record: older producer protocols and migration resources described here are no longer provided by the current package. See [current upgrade instructions](packaged-runtime.md#installation-and-versions).
+
 Tracking: [LingxiLoop #280](https://github.com/LingXi-Org/LingxiLoop/issues/280), remaining work of #275. This is an unpublished **3.7.0** release candidate based on formal 3.6.0. The package, lockfile root and runtime declaration are aligned at3.7.0. The sole release owner performs publication only after exact-main release gates; this PR does not publish a package or tag.
 
 ## Public contract

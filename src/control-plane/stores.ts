@@ -43,11 +43,6 @@ export interface EnqueueResult {
   deduplicated: boolean
 }
 
-/** What `claim` hands the worker: a full WorkItem with a fresh lease. */
-export interface ClaimResult {
-  work: WorkItem
-}
-
 export interface HeartbeatRow {
   cancelRequested: boolean
   preemptRequested: boolean
@@ -63,7 +58,6 @@ export interface LeasedWork {
 
 export interface WorkStoreOptions {
   leaseTtlMs?: number
-  workerTimeoutMs?: number
 }
 
 export interface WorkStore {

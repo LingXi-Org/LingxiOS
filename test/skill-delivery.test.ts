@@ -150,7 +150,7 @@ it('a durable input wait preserves a pending authoring obligation without preten
     assert.equal((await f.db.query<Record<string, unknown>>('SELECT resolution FROM lingxios.agent_skill_activations')).rows[0]!['resolution'], null)
   } finally { await f.close() }
 })
-it('schema13 upgrades explicitly to14 and remains incompatible with older rollback', async () => {
+it('schema13 upgrades explicitly to14', async () => {
   const db = new PGlite()
   try {
     await db.exec(await readFile(new URL('../../db/schema-013.sql', import.meta.url), 'utf8'))
@@ -160,7 +160,6 @@ it('schema13 upgrades explicitly to14 and remains incompatible with older rollba
     await db.exec('ROLLBACK; INSERT INTO lingxios.schema_version(singleton,version) VALUES(TRUE,13)')
     await db.exec(migration)
     assert.equal((await db.query<Record<string, unknown>>('SELECT version FROM lingxios.schema_version')).rows[0]!['version'], 14)
-    await assert.rejects(db.exec(await readFile(new URL('../../db/migrations/015-memory-continuity-rollback.sql', import.meta.url), 'utf8')), /requires schema 12 or 13/)
   } finally { await db.close() }
 })
 

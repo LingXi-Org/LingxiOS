@@ -177,7 +177,7 @@ it('charges public-purpose wire instructions once for main turns, never history 
   const {estimateTokens}=await import('../src/runtime/compaction.js')
   const {OpenAIChatDriver}=await import('../src/model/openai.js')
   const plain=new OpenAIChatDriver('purpose-budget',{apiKey:'fixture',maxOutputTokens:10,contextWindowTokens:2500})
-  const typed=new OpenAIChatDriver('purpose-budget',{apiKey:'fixture',maxOutputTokens:10,contextWindowTokens:2500,publicTextProtocol:'purpose-json-v1'})
+  const typed=new OpenAIChatDriver('purpose-budget',{apiKey:'fixture',maxOutputTokens:10,contextWindowTokens:2500,publicTextProtocol:'purpose-json-v2'})
   const history=[{role:'assistant' as const,content:'history'}]
   assert.equal(estimateTokens(history,typed),estimateTokens(history,plain),'history does not include new turn framing')
   const nearLimit={instructions:'fixture',input:'x'.repeat(1000)}

@@ -80,13 +80,6 @@ export class ApprovalPendingError extends AgentOSError {
   }
 }
 
-/** The control plane rejected an action the grant does not cover. */
-export class CapabilityDeniedError extends AgentOSError {
-  constructor(readonly action: string) {
-    super('capability_denied', `action not covered by this work item's capability grant: ${action}`)
-  }
-}
-
 // Model ---------------------------------------------------------------------
 
 export interface ModelDiagnostics {

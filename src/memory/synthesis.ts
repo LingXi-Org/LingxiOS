@@ -4,7 +4,7 @@ import type { WorkItem } from '../protocol/types.js'
 import { applyMemoryChanges, memoryDocument, parseDocumentChanges, scopeParams } from './store.js'
 import { lockMemoryScopes } from './forget.js'
 import { authorizedScopes, sameScope, sourceIdentity, type MemoryOptions } from './access.js'
-import { excerpt, memoryDigest, memoryQuery } from './text.js'
+import { memoryDigest, memoryQuery } from './text.js'
 import { memoryWriteBody } from './policy.js'
 import type { MemoryChange, MemoryDocument, MemoryIdentity, MemoryScope, MemorySource } from './types.js'
 

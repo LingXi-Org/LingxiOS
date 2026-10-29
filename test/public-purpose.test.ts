@@ -6,7 +6,7 @@ import { consumeRunEvent, createRunView } from '../src/ui/index.js'
 
 const frame=(content:string,finish:string|null=null)=>`data: ${JSON.stringify({choices:[{delta:{content,reasoning_content:'PRIVATE_REASONING_SENTINEL'},finish_reason:finish}]})}\n\n`
 const driver=(chunks:string[],onRequest?:(request:Record<string,unknown>)=>void)=>new OpenAIChatDriver('purpose-fixture',{
-  apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v1',fetchImpl:async(_url,init)=>{
+  apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v2',fetchImpl:async(_url,init)=>{
     onRequest?.(JSON.parse(String(init?.body)));return new Response(chunks.map((chunk,index)=>frame(chunk,index===chunks.length-1?'stop':null)).join('')+'data: [DONE]\n\n')
   },
 } as OpenAIDriverOptions)
@@ -17,7 +17,7 @@ it('declares purpose before the first character and streams split escaped answer
   const gate=new Promise<void>(resolve=>{release=resolve})
   let received!:()=>void
   const firstAnswer=new Promise<void>(resolve=>{received=resolve})
-  const model=driver(['{"commentary":"Checking. e.g. explain nothing private","answer":"A','\\uD83D','\\uDE00\\nB"}'],request=>{
+  const model=driver(['{"commentary":"Checking. e.g. explain nothing private","answer":"A','\\uD83D','\\uDE00\\nB","outcome":{"status":"satisfied","gaps":[]}}'],request=>{
     assert.deepEqual(request['response_format'],{type:'json_object'})
     assert.match(JSON.stringify(request['messages']),/commentary/)
   })
@@ -66,13 +66,13 @@ it('replay retains immutable v2 purpose and never accepts commentary as final so
 
 it('cancellation during commentary suppresses the answer in the same provider frame',async()=>{
   const stop=new AbortController(),seen:string[]=[]
-  await assert.rejects(driver(['{"commentary":"Checking","answer":"MUST_NOT_PUBLISH"}']).run({instructions:'fixture',items:[],signal:stop.signal,
+  await assert.rejects(driver(['{"commentary":"Checking","answer":"MUST_NOT_PUBLISH","outcome":{"status":"satisfied","gaps":[]}}']).run({instructions:'fixture',items:[],signal:stop.signal,
     onTextDelta:text=>{seen.push(text);stop.abort(new Error('cancelled fixture'))}}))
   assert.deepEqual(seen,['Checking'])
 })
 
 it('EOF protocol rejection retains observed usage and encoding instructions count toward admission',async()=>{
-  const typed=new OpenAIChatDriver('purpose-usage-fixture',{apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v1',
+  const typed=new OpenAIChatDriver('purpose-usage-fixture',{apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v2',
     fetchImpl:async()=>new Response('data: '+JSON.stringify({choices:[{delta:{content:'{"commentary":"ok","answer":"'},finish_reason:'stop'}],usage:{prompt_tokens:17,completion_tokens:9}})+'\n\ndata: [DONE]\n\n') } as OpenAIDriverOptions)
   await assert.rejects(typed.run({instructions:'fixture',items:[]}),error=>{
     assert.deepEqual(Reflect.get(error as object,'diagnostics').usage,{available:true,inputTokens:17,outputTokens:9});return true
@@ -83,7 +83,7 @@ it('EOF protocol rejection retains observed usage and encoding instructions coun
 
 it('native tool calls preserve a simultaneous substantive answer',async()=>{
   for(const answer of ['', 'The known base value is 40.']){
-    const model=new OpenAIChatDriver('purpose-tool-fixture',{apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v1',fetchImpl:async()=>new Response('data: '+JSON.stringify({choices:[{delta:{content:JSON.stringify({commentary:'Checking',answer}),tool_calls:[{index:0,id:'call',function:{name:'probe',arguments:'{}'}}]},finish_reason:'tool_calls'}]})+'\n\ndata: [DONE]\n\n')} as OpenAIDriverOptions)
+    const model=new OpenAIChatDriver('purpose-tool-fixture',{apiKey:'fixture',maxAttempts:1,publicTextProtocol:'purpose-json-v2',fetchImpl:async()=>new Response('data: '+JSON.stringify({choices:[{delta:{content:JSON.stringify({commentary:'Checking',answer,outcome:null}),tool_calls:[{index:0,id:'call',function:{name:'probe',arguments:'{}'}}]},finish_reason:'tool_calls'}]})+'\n\ndata: [DONE]\n\n')} as OpenAIDriverOptions)
     const task=model.run({instructions:'fixture',items:[],codeExecution:'disabled',tools:[{name:'probe',action:'probe',effect:'read',approval:false,description:'fixture',parameters:{type:'object',properties:{},additionalProperties:false}}]})
     const result=await task
     assert.equal(result.text,answer)

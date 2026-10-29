@@ -6,7 +6,6 @@ import type { MemoryApplyResult, MemoryChange, MemoryContent, MemoryDocument, Me
   MemoryPage, MemoryScope, MemorySearchResult, MemorySource, MemoryVersion } from './types.js'
 import { authorizedScopes, sameScope, sourceIdentity, type MemoryOptions } from './access.js'
 export type { MemoryScope, MemorySnapshot } from './types.js'
-export type MemoryScopeType = string
 
 export function validateScope(scope: MemoryScope) {
   if (!scope || ![scope.tenantId,scope.scopeType,scope.scopeId].every(value => typeof value === 'string' && value.trim() && value.length <= 1000)) throw new Error('invalid memory scope')
@@ -297,10 +296,4 @@ export async function writeMemory(database: SqlQueryable, scope: MemoryScope, mu
   }
   const result = await applyMemoryChanges(database,scope,[change],context)
   return mutation.method === 'delete' ? { id: mutation.id,deleted: true } : result.documents[0]!
-}
-
-/** Internal compatibility for the separately evaluated evolution path. */
-export async function recallMemories(database: SqlQueryable, scope: MemoryScope, query: string, limit: number) {
-  const result = await searchMemories(database,scope,query,limit)
-  return Promise.all(result.items.map(item => readMemory(database,scope,(item as MemoryEntry).id)))
 }

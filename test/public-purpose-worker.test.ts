@@ -11,7 +11,7 @@ import type { SqlPool } from '../src/control-plane/pg-store.js'
 import { nullLogger } from '../src/logging.js'
 import { consumeRunEvent, consumeRunState, consumeRunStreamEvent, createRunView } from '../src/ui/index.js'
 
-for(const protocol of ['purpose-json-v1','purpose-json-v2'] as const) it(`${protocol}: purpose-aware public worker streams a substantive answer before EOF, executes its tool and accepts only the final answer across SSE/replay`, {timeout:15_000}, async t => {
+for(const protocol of ['purpose-json-v2'] as const) it(`${protocol}: purpose-aware public worker streams a substantive answer before EOF, executes its tool and accepts only the final answer across SSE/replay`, {timeout:15_000}, async t => {
   const db=new PGlite(), directory=await mkdtemp(join(tmpdir(),'public-text-worker-'))
   await db.exec(await readFile(new URL('../../db/schema.sql',import.meta.url),'utf8'))
   let tail=Promise.resolve()

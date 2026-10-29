@@ -1,5 +1,5 @@
-import { MemoryModelBudgetStore } from '../src/control-plane/memory-store.js'
-import { MemoryStepStore } from '../src/control-plane/steps.js'
+import { MemoryModelBudgetStore } from './memory-store-fixture.js'
+import { MemoryStepStore } from './memory-step-fixture.js'
 import type { HostPort } from '../src/host/port.js'
 import type { ModelCallObservation } from '../src/model/execution.js'
 import { candidateHash } from '../src/outcome/verification.js'

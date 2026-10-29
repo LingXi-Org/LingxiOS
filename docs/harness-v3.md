@@ -16,7 +16,7 @@
 
 ## 指令职责
 
-`buildPromptContext()` 每轮从实时配置收集产品规则、授权和偏好，`compileContext()` 负责纯函数编译。主执行和辅助调用共用该编译器；`compileAuxiliaryPrompt()` 声明独立目的，现有 `auxiliaryInstructions()` 保留兼容，不继承用户 persona。装配、缓存与审计契约见 [Prompt runtime](prompt-runtime.md)。
+`buildPromptContext()` 每轮从实时配置收集产品规则、授权和偏好，`compileContext()` 负责纯函数编译。主执行和辅助调用共用该编译器；`compileAuxiliaryPrompt()` 声明独立目的，不继承用户 persona。装配、缓存与审计契约见 [Prompt runtime](prompt-runtime.md)。
 
 | 层 | 来源 | 发送方式与边界 |
 | --- | --- | --- |

@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises'
 import { it } from 'node:test'
 import { PGlite } from '@electric-sql/pglite'
 import { createLingxiOS } from '../src/app/index.js'
-import { checkStorage } from '../src/app/storage.js'
 import { actionKeyOf,type HostAction,type WorkItem } from '../src/protocol/types.js'
 import { memoryFixture,identity,scope,content } from './memory-fixture.js'
 import { captureMemoryEvidence } from '../src/memory/evidence.js'
@@ -130,32 +129,4 @@ it('isolates searchable history by principal, rechecks original session permissi
     assert.equal((await f.api.search(identity,scope,{target:'history',query:''})).items.length,0)
     assert.ok((await f.db.query<{input_text:string;assistant_text:string;search_text:string}>('SELECT input_text,assistant_text,search_text FROM lingxios.agent_memory_evidence')).rows.every(row=>!row.input_text&&!row.assistant_text&&!row.search_text))
   }finally{await f.close()}
-})
-
-it('resets only schema-8 memory, retains product records and frozen benchmarks, and rejects live workers and reapplication',async()=>{
-  const db=new PGlite()
-  try{
-    await db.exec(await readFile(new URL('../../test/fixtures/schema-8.sql',import.meta.url),'utf8'))
-    await db.exec(`CREATE TABLE public.product_data(value text); INSERT INTO public.product_data VALUES('untouched');
-      INSERT INTO lingxios.agent_evolution_benchmarks(tenant_id,id,hash,definition) VALUES('t','benchmark','hash','{}');
-      INSERT INTO lingxios.agent_work_items(id,tenant_id,agent_id,session_id,kind,lane,trigger_ref,status,lease_expires_at)
-        VALUES('business','t','a','s','turn','interactive','r','leased',NOW()+INTERVAL '1 hour');
-      INSERT INTO lingxios.agent_memories(tenant_id,id,scope_type,scope_id,body,kind,origin,source_refs)
-        VALUES('t','old','user','u','Old memory','observation','explicit','[{}]')`)
-    const reset=await readFile(new URL('../../db/migrations/009-cognitive-memory-reset.sql',import.meta.url),'utf8')
-    await assert.rejects(db.exec(reset),/stop and drain/)
-    await db.exec('ROLLBACK')
-    assert.equal((await db.query('SELECT id FROM lingxios.agent_memories')).rows.length,1)
-    await db.exec("UPDATE lingxios.agent_work_items SET status='succeeded' WHERE id='business'")
-    await db.exec(reset)
-    assert.deepEqual((await db.query('SELECT value FROM public.product_data')).rows,[{value:'untouched'}])
-    assert.deepEqual((await db.query('SELECT id FROM lingxios.agent_work_items')).rows,[{id:'business'}])
-    assert.deepEqual((await db.query('SELECT id FROM lingxios.agent_evolution_benchmarks')).rows,[{id:'benchmark'}])
-    assert.deepEqual((await db.query('SELECT id FROM lingxios.agent_memories')).rows,[])
-    for (const migration of ['010-im-collaboration', '011-performance-notifications', '012-async-admission', '013-distributed-workspaces', '014-terminal-feedback', '015-memory-continuity', '016-skill-delivery']) {
-      await db.exec(await readFile(new URL(`../../db/migrations/${migration}.sql`, import.meta.url), 'utf8'))
-    }
-    await checkStorage({query:async(sql,params)=>({rows:(await db.query<Record<string,unknown>>(sql,params)).rows,rowCount:null})})
-    await assert.rejects(db.exec(reset),/requires schema version 8/)
-  }finally{await db.close()}
 })

@@ -51,12 +51,11 @@ it('omission does not weaken ordering, unknown/duplicate keys, typed values or c
     valid.slice(0,-1),prefix,prefix+'Unclosed',valid+' trailing',
   ])assert.throws(()=>{const parser=new PublicPurposeParser('purpose-json-v3');parser.push(text);parser.finish()})
 })
-it('v1/v2 still require commentary and keep the prior configuration fingerprints',()=>{
+it('v2 still requires commentary and keep the prior configuration fingerprints',()=>{
   const fingerprints={
-    'purpose-json-v1':'a36987763fcb884c00f01bae0ceeb572c4b569b6bfbae351925d81b44873e984',
     'purpose-json-v2':'52d8757d54a17fa4bc53097f15aa5d477f8c8134af29c9d21bba8b0c9d34ea05',
   } as const
-  for(const protocol of ['purpose-json-v1','purpose-json-v2'] as const){
+  for(const protocol of ['purpose-json-v2'] as const){
     assert.throws(()=>{const parser=new PublicPurposeParser(protocol);parser.push('{"answer":"43"'+(protocol==='purpose-json-v2'?',"outcome":{"status":"satisfied","gaps":[]}':'')+'}');parser.finish()})
     const driver=new OpenAIChatDriver('optional-commentary-fixture',{apiKey:'synthetic',publicTextProtocol:protocol,maxAttempts:1,capabilities:{parallelTools:false,jsonObjectWithTools:false}})
     assert.equal(driver.configurationFingerprint,fingerprints[protocol])

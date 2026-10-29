@@ -1,5 +1,7 @@
 # 3.7.0 release preparation and reader-first handoff
 
+> Historical release record: older producer protocols and migration resources described here are no longer provided by the current package. See [current upgrade instructions](packaged-runtime.md#installation-and-versions).
+
 This is an unpublished release candidate. It changes runtime/package version to 3.7.0 and advertises `releaseVersions.publicText=2`. Control-plane11, kernel2, native schema14 and assistant-message2 are unchanged. All native SQL files and dependency resolutions remain unchanged. Product migration50 remains a separate product invariant. This document authorizes no merge, tag, package publication or production action.
 
 ## Minimum formal release chain

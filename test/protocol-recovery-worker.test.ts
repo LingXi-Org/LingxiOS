@@ -28,13 +28,13 @@ for(const scenario of ['empty-answer','incomplete','tool-once','persistent','pro
     parameters:{type:'object',properties:{},additionalProperties:false},parse:()=>({}),authorize:async()=>{authorizations++},
     execute:async()=>{executions++;return {ok:true,value:{answer:42}}},
   }]})
-  const model=new OpenAIChatDriver('protocol-worker-'+scenario,{apiKey:'fixture',maxAttempts:1,publicTextProtocol:precise?'purpose-json-v3':'purpose-json-v1',
+  const model=new OpenAIChatDriver('protocol-worker-'+scenario,{apiKey:'fixture',maxAttempts:1,publicTextProtocol:precise?'purpose-json-v3':'purpose-json-v2',
     ...(precise?{nativeToolPublicOutput:'envelope-v1' as const,capabilities:{jsonObjectWithTools:false,parallelTools:false}}:{}),
     recovery:{maxAttempts:1,totalTimeoutMs:10_000},fetchImpl:async(_url,init)=>{
       const request=JSON.parse(String(init?.body))
       if(!request.stream)return Response.json({choices:[{finish_reason:'stop',message:{content:'{"missing":[]}'}}],usage:{prompt_tokens:11,completion_tokens:7}})
       wire++;requests.push(request)
-      if(!seededHistory)return new Response('data: '+JSON.stringify({choices:[{delta:{content:'{"commentary":"","answer":"Gather collects; Check reviews."}'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n')
+      if(!seededHistory)return new Response('data: '+JSON.stringify({choices:[{delta:{content:'{"commentary":"","answer":"Gather collects; Check reviews.","outcome":{"status":"satisfied","gaps":[]}}'},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n')
       if(scenario==='provider')return Response.json({error:{message:'PRIVATE_PROVIDER_SENTINEL'}},{status:503})
       const correction=precise?request.messages.find((message:{role:string;content?:string})=>message.role==='user'&&message.content?.startsWith('Protocol correction:'))?.content??''
         :request.messages.filter((message:{role:string})=>message.role==='user').at(-1)?.content??''
@@ -57,14 +57,14 @@ for(const scenario of ['empty-answer','incomplete','tool-once','persistent','pro
         return new Response('data: '+JSON.stringify({choices:[{delta:tool_calls?{tool_calls}:{content},finish_reason:tool_calls?'tool_calls':'stop'}],usage:{prompt_tokens:11,completion_tokens:7}})+'\n\ndata: [DONE]\n\n')
         } catch(error) { fetchAssertions.push(error); throw error }
       }
-      const targeted=correction.includes('purpose-json-v1')&&correction.includes('trusted model driver')
+      const targeted=correction.includes('purpose-json-v2')&&correction.includes('trusted model driver')
         &&selectedContract.includes('answer')&&selectedContract.includes('nonempty')
       const firstTool=scenario==='tool-once'&&wire===1
       const badTool=scenario==='tool-once'&&!firstTool&&!targeted
-      const content=firstTool?'{"commentary":"Reading","answer":""}'
-        :targeted&&scenario!=='persistent'?'{"commentary":"","answer":"The answer is 42."}'
+      const content=firstTool?'{"commentary":"Reading","answer":"","outcome":null}'
+        :targeted&&scenario!=='persistent'?'{"commentary":"","answer":"The answer is 42.","outcome":{"status":"satisfied","gaps":[]}}'
         :scenario==='incomplete'||badTool?'{"commentary":"Checking","answer":"'
-        :'{"commentary":"Checking","answer":""}'
+        :'{"commentary":"Checking","answer":"","outcome":{"status":"satisfied","gaps":[]}}'
       const tool_calls=firstTool||badTool?[{index:0,id:firstTool?'read-once':'must-not-execute',function:{name:'fixture__read',arguments:'{}'}}]:undefined
       return new Response('data: '+JSON.stringify({choices:[{delta:{content,...tool_calls?{tool_calls}:{},reasoning_content:'PRIVATE_REASONING_SENTINEL'},finish_reason:tool_calls?'tool_calls':'stop'}],usage:{prompt_tokens:11,completion_tokens:7}})+'\n\ndata: [DONE]\n\n')
     }})

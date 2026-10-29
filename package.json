@@ -1,6 +1,6 @@
 {
   "name": "@lyyzka/lingxios",
-  "version": "3.8.16",
+  "version": "4.0.0-slim.0",
   "description": "Durable agent execution for PostgreSQL with fenced workers, native tools, verified outcomes, and sandboxed Python.",
   "type": "module",
   "license": "MIT",
@@ -14,10 +14,8 @@
   "files": [
     "dist/src",
     "db/schema.sql",
-    "db/schema-011.sql",
-    "db/schema-012.sql",
     "db/schema-013.sql",
-    "db/migrations",
+    "db/migrations/016-skill-delivery.sql",
     "kernel/runner.py"
   ],
   "engines": {

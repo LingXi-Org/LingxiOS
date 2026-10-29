@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { it } from 'node:test'
 import { PGlite } from '@electric-sql/pglite'
-import { MemoryWorkStore } from '../src/control-plane/memory-store.js'
+import { MemoryWorkStore } from './memory-store-fixture.js'
 import { PgWorkStore, type SqlPool } from '../src/control-plane/pg-store.js'
 import { sessionKeyOf, actionKeyOf } from '../src/protocol/types.js'
 it('keeps action identity tuples unambiguous', () => {

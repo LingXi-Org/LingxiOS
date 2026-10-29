@@ -65,12 +65,12 @@ for(const scenario of ['commit-failure','commit-ack-loss','cancel','revoke','rev
       }
     }}
   }}
-  const model=new OpenAIChatDriver('acceptance-fixture',{apiKey:'fixture',maxAttempts:1,...(scenario==='commentary-source'?{publicTextProtocol:'purpose-json-v1' as const}:{}),fetchImpl:async(_url,init)=>{
+  const model=new OpenAIChatDriver('acceptance-fixture',{apiKey:'fixture',maxAttempts:1,...(scenario==='commentary-source'?{publicTextProtocol:'purpose-json-v2' as const}:{}),fetchImpl:async(_url,init)=>{
     const request=JSON.parse(String(init?.body))
     if(!request.stream)return Response.json({choices:[{finish_reason:'stop',message:{content:'{"missing":[]}'}}],usage:{prompt_tokens:11,completion_tokens:7}})
     modelCalls++
     if(scenario==='unrelated-source'&&modelCalls===1)return new Response('data: {"choices":[{"delta":{"content":"Tool preface.","tool_calls":[{"index":0,"id":"probe","function":{"name":"probe__read","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}\n\ndata: [DONE]\n\n')
-    return new Response(`data: ${JSON.stringify({choices:[{delta:{content:scenario==='commentary-source'?JSON.stringify({commentary:finalBody,answer:finalBody}):finalBody},finish_reason:'stop'}],usage:{prompt_tokens:11,completion_tokens:7}})}\n\ndata: [DONE]\n\n`)
+    return new Response(`data: ${JSON.stringify({choices:[{delta:{content:scenario==='commentary-source'?JSON.stringify({commentary:finalBody,answer:finalBody,outcome:{status:'satisfied',gaps:[]}}):finalBody},finish_reason:'stop'}],usage:{prompt_tokens:11,completion_tokens:7}})}\n\ndata: [DONE]\n\n`)
   }})
   const worker=createWorker({controlPlane:connection,model,logger:nullLogger,kernel:{homesRoot:directory},worker:{id:'acceptance-fixture',healthPort:0}})
   try{

@@ -50,13 +50,8 @@ it('validates declaration shape and limits without classifying quoted, condition
   for(const value of invalid)await assert.rejects(driver(value).run(request),error=>error instanceof ModelDriverError&&error.diagnostics.kind==='protocol')
 })
 
-it('preserves v1 strict framing and fingerprint while v2 uses a distinct configuration',async()=>{
-  const fetchImpl=async()=>new Response(frame(wire('satisfied',[]),'stop')+usage)
-  const v1=new OpenAIChatDriver('identity',options(fetchImpl,'purpose-json-v1'))
-  const v2=new OpenAIChatDriver('identity',options(fetchImpl))
-  assert.notEqual(v1.configurationFingerprint,v2.configurationFingerprint)
-  await assert.rejects(v1.run(request),/public text protocol/)
-  assert.equal((await v2.run(request)).outcomeDeclaration?.status,'satisfied')
+it('rejects the retired v1 configuration',()=>{
+  assert.throws(()=>new OpenAIChatDriver('identity',options(async()=>new Response(), 'purpose-json-v1')),/invalid public text protocol/)
 })
 
 it('permits tool-only output and null intermediate declaration without terminal metadata',async()=>{

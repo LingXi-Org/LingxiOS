@@ -21,7 +21,7 @@ function fixture(wire: string, publicTextProtocol: PublicTextProtocol = 'purpose
   return { run, seen }
 }
 
-for (const protocol of ['purpose-json-v1', 'purpose-json-v2', 'purpose-json-v3'] as const) {
+for (const protocol of ['purpose-json-v2', 'purpose-json-v3'] as const) {
   for (const [field, optional] of Object.entries({ id: { id: null }, type: { type: null }, function: { function: null },
     name: { function: { name: null } }, arguments: { function: { arguments: null } },
     combined: { id: null, type: null, function: { name: null, arguments: null } } })) {
