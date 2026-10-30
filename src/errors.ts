@@ -89,12 +89,20 @@ export class CapabilityDeniedError extends AgentOSError {
 
 // Model ---------------------------------------------------------------------
 
+/** Closed structural reasons only; never rejected keys, values or provider text. */
+export const MODEL_PROTOCOL_DETAILS = ['json_syntax', 'duplicate_field', 'unknown_field', 'answer_type', 'commentary_type',
+  'operation_invalid', 'outcome_invalid', 'root_invalid', 'unicode_invalid', 'text_regression', 'depth_limit', 'size_limit',
+  'parser_closed', 'identity_changed', 'tool_name_unknown', 'tool_id_invalid', 'tool_id_duplicate', 'tool_index_invalid',
+  'tool_batch_invalid', 'tool_metadata_invalid', 'mixed_output_channels', 'terminal_with_business'] as const
+export type ModelProtocolDetail = typeof MODEL_PROTOCOL_DETAILS[number]
+
 export interface ModelDiagnostics {
   /** Provider usage remains billable when its completed response violates the protocol. */
   usage?: import('./model/driver.js').ModelUsage
   kind?: 'provider' | 'protocol'
   /** Fixed contract failures only; never provider response text. */
-  protocolCode?: 'native_envelope_invalid' | 'terminal_outcome_required' | 'public_text_invalid' | 'public_text_incomplete' | 'public_text_answer_required' | 'tool_identity_invalid' | 'response_empty'
+  protocolCode?: 'native_envelope_invalid' | 'terminal_outcome_required' | 'public_text_invalid' | 'public_text_incomplete' | 'public_text_answer_required' | 'public_answer_first_required' | 'tool_identity_invalid' | 'response_empty'
+  protocolDetail?: ModelProtocolDetail
   status?: number
   finishReasons: string[]
   requestId?: string

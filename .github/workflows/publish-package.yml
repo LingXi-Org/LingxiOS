@@ -15,25 +15,58 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Require the tagged version and successful main release gates
+        with: { fetch-depth: 0 }
+      - name: Require exact maintenance source and successful full release gates
         uses: actions/github-script@v7
         with:
           script: |
-            const { version } = require('./package.json')
-            if (context.ref !== `refs/tags/v${version}`) throw new Error('Tag does not match package version')
+            const { checkMaintenanceSource, assertMaintenanceRun } = await import(`${process.env.GITHUB_WORKSPACE}/scripts/check-maintenance-source.mjs`)
+            const { branch, sha } = checkMaintenanceSource(context.ref)
+            if (sha !== context.sha) throw new Error('Tag source SHA mismatch')
             const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner, repo: context.repo.repo, workflow_id: 'release.yml',
-              branch: 'main', event: 'push', head_sha: context.sha, per_page: 100,
+              branch, event: 'push', head_sha: context.sha, per_page: 100,
             })
-            if (!runs.data.workflow_runs.some(run => run.head_sha === context.sha && run.conclusion === 'success')) {
-              throw new Error('This exact commit has no successful main release gates')
-            }
+            const qualified = runs.data.workflow_runs.find(run => run.head_sha === context.sha && run.conclusion === 'success')
+            if (!qualified) throw new Error('This exact commit has no successful maintenance release gates')
+            assertMaintenanceRun(qualified, context.sha)
       - uses: actions/setup-node@v4
         with:
           node-version: 22.13.1
           cache: npm
           registry-url: https://npm.pkg.github.com
       - run: npm ci --ignore-scripts
-      - run: npm publish --access public
+      - run: npm publish --access public --tag maintenance-3.8
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LINGXIOS_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+      - name: Qualify the actual registry package for exact consumer pins
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.LINGXIOS_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir release-package
+          version=$(node -p "require('./package.json').version")
+          npm view "@lyyzka/lingxios@$version" --json > release-package/registry.json
+          npm pack "@lyyzka/lingxios@$version" --ignore-scripts --pack-destination release-package --json > release-package/pack.json
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict'
+          import { createHash } from 'node:crypto'
+          import { readFileSync } from 'node:fs'
+          const registry = JSON.parse(readFileSync('release-package/registry.json'))
+          const [packed] = JSON.parse(readFileSync('release-package/pack.json'))
+          const source = JSON.parse(readFileSync('package.json'))
+          assert.equal(registry.name, source.name)
+          assert.equal(registry.version, source.version)
+          assert.deepEqual(registry.dependencies, source.dependencies)
+          assert.equal(packed.integrity, registry.dist.integrity)
+          const bytes = readFileSync(`release-package/${packed.filename}`)
+          assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`, registry.dist.integrity)
+          assert.equal(createHash('sha1').update(bytes).digest('hex'), registry.dist.shasum)
+          JS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: published-runtime-${{ github.ref_name }}
+          path: release-package/
+          retention-days: 7
+          if-no-files-found: error

@@ -17,7 +17,7 @@ import type { RunState } from '../src/app/jobs.js'
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const ack = '{"status":"public_message_recorded"}'
 const known = 'Gather collects the items. Check reviews them. '
-type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; callId?: string; reads?: boolean; save?: boolean }
+type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; callId?: string; reads?: boolean; save?: boolean; lateCommentary?: boolean }
   | { business: true; read?: string }
   | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' }
 type WireRequest = { stream?: boolean; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
@@ -116,8 +116,9 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
     } else {
       const steps = reply.replace ? await pool.query("SELECT input FROM lingxios.agent_steps WHERE kind='runtime.answer_segment' AND work_id=$1 ORDER BY step_seq", [identity.runId]) : { rows: [] }
       const args = JSON.stringify({ operation: { kind: reply.replace ? 'replace' : 'append', supersedes: steps.rows.map(row => String((row['input'] as Record<string, unknown>)['partId'])) },
-        ...(nativeV2 ? {commentary:reply.reads ? 'I will read both independent observations.' : reply.save ? 'Both observations were received; I will save the synthetic record.' : ''} : {}),
-        answer: reply.answer, outcome: reply.intermediate ? null : { status: reply.partial ? 'partial' : 'satisfied', gaps: reply.partial ? ['Synthetic limitation.'] : [] } })
+        ...(nativeV2 && !reply.lateCommentary ? {commentary:reply.reads ? 'I will read both independent observations.' : reply.save ? 'Both observations were received; I will save the synthetic record.' : ''} : {}),
+        answer: reply.answer, ...(reply.lateCommentary ? {commentary:'I will save the synthetic record.'} : {}),
+        outcome: reply.intermediate ? null : { status: reply.partial ? 'partial' : 'satisfied', gaps: reply.partial ? ['Synthetic limitation.'] : [] } })
       const id = reply.callId ?? `call-${calls}`
       rawPublicCalls.push({ id, args })
       wire = frame({ content: 'Private ordinary tool companion.', reasoning_content: 'Private synthetic reasoning.', tool_calls: [call('public_answer', args, 0, id),
@@ -438,6 +439,19 @@ it('native-v2 real Worker persists useful text before overlapping reads and obse
     assert.doesNotMatch(JSON.stringify(events.filter(event => event.visibility === 'user')), /Private ordinary|Private synthetic/)
     await recordToolRoundEvidence('native-v2',f,state)
   } finally { await f.close() }
+})
+
+it('native-v2 late commentary preserves answer, executes one write and verifies delivery', async () => {
+  const f=await fixture([{answer:known,intermediate:true,save:true,lateCommentary:true},{answer:'The synthetic artifact is saved.'}],undefined,2,undefined,true)
+  try{
+    const state=await f.run(),events=(await f.app.readEvents(f.identity)).events
+    assert.equal(state.run.status,'succeeded')
+    assert.equal(state.message?.body,known+'The synthetic artifact is saved.')
+    assert.equal(f.calls,2);assert.equal(f.effects,1);assert.ok(f.resourceChecks>0)
+    assert.ok(f.timeline.indexOf('seal')<f.timeline.indexOf('business'))
+    assert.equal(events.filter(event=>event.kind==='model.failed').length,0)
+    assertNativePair(f.requests[1]!,f.rawPublicCalls[0]!)
+  }finally{await f.close()}
 })
 
 it('native-v2 cancellation after durable text prevents the accompanying write', async () => {

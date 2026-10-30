@@ -3,6 +3,9 @@ import { it } from 'node:test'
 import { OpenAIChatDriver } from '../src/model/openai.js'
 import type { ModelTurnRequest } from '../src/model/driver.js'
 import type { ToolDefinition } from '../src/tools/catalog.js'
+import { ModelDriverError } from '../src/errors.js'
+import { publicModelDiagnostics } from '../src/model/diagnostics.js'
+import { modelProtocolCorrection } from '../src/runtime/protocol-correction.js'
 
 const business: ToolDefinition = { name: 'record__read', action: 'record.read', effect: 'read', approval: false,
   description: 'Read a synthetic record.', parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'], additionalProperties: false } }
@@ -15,6 +18,69 @@ const done = 'data: [DONE]\n\n'
 const options = { apiKey: 'synthetic', publicTextProtocol: 'purpose-json-v3' as const, publicTextContinuation: 'typed-message-v1' as const,
   publicAnswerTool: 'native-v1' as const, capabilities: { jsonObjectWithTools: false, parallelTools: false }, maxAttempts: 1 }
 const request: ModelTurnRequest = { instructions: 'Use only supplied synthetic facts.', items: [], tools: [business], codeExecution: 'disabled' }
+
+it('unknown function names stay rejected with safe tool diagnostics and actionable correction',async()=>{
+  const model=new OpenAIChatDriver('native-name-regression',{...options,publicAnswerTool:'native-v2',capabilities:{jsonObjectWithTools:false,parallelTools:true},
+    fetchImpl:async(_url,init)=>{
+      const payload=JSON.parse(String(init?.body))
+      assert.match(payload.messages[0].content,/never start the next generation with a business call alone/)
+      assert.match(payload.messages[0].content,/exact function.name identifiers/)
+      return new Response(frame({tool_calls:[call('{}','record.read')]},'tool_calls')+done)
+    }})
+  await assert.rejects(model.run(request),error=>{
+    assert.ok(error instanceof ModelDriverError)
+    assert.equal(publicModelDiagnostics(error.diagnostics)['protocolCode'],'tool_identity_invalid')
+    const correction=modelProtocolCorrection(error.diagnostics,'disabled','purpose-json-v3')
+    assert.equal(correction.category,'tool_protocol')
+    assert.match(correction.content,/exact function.name identifiers/)
+    assert.doesNotMatch(correction.content,/record.read/)
+    return true
+  })
+})
+
+it('native-v2 business-only batches retain usage and explain the missing output binding',async()=>{
+  const model=new OpenAIChatDriver('missing-output-regression',{...options,publicAnswerTool:'native-v2',capabilities:{jsonObjectWithTools:false,parallelTools:true},
+    fetchImpl:async()=>new Response(frame({tool_calls:[call('{"key":"v"}',business.name)]},'tool_calls')+done)})
+  await assert.rejects(model.run(request),error=>{
+    assert.ok(error instanceof ModelDriverError)
+    const diagnostics=publicModelDiagnostics(error.diagnostics)
+    assert.equal(diagnostics['protocolCode'],'public_answer_first_required')
+    assert.deepEqual(diagnostics['finishReasons'],['tool_calls'])
+    assert.equal(error.diagnostics.usage?.inputTokens,20)
+    const correction=modelProtocolCorrection(error.diagnostics,'disabled','purpose-json-v3')
+    assert.equal(correction.category,'response_protocol');assert.match(correction.content,/not dispatched/)
+    assert.match(correction.content,/SAME generation/);assert.doesNotMatch(correction.content,/record__read/)
+    return true
+  })
+})
+
+it('native rejection diagnostics identify structure without retaining rejected text',async()=>{
+  const values=[
+    [JSON.stringify({operation,answer:{private:'marker'},outcome:terminal}),'answer_type'],
+    [JSON.stringify({operation,answer:'safe',commentary:null,outcome:terminal}),'commentary_type'],
+    [JSON.stringify({operation:'append',answer:'safe',outcome:terminal}),'operation_invalid'],
+    [JSON.stringify({operation,answer:'safe',outcome:{status:'satisfied',gaps:['marker']}}),'outcome_invalid'],
+    [JSON.stringify({operation,answer:'safe',outcome:terminal,private:'marker'}),'unknown_field'],
+    ['{"operation":{"kind":"append","supersedes":[]},"answer":"bad\\q","outcome":null}','json_syntax'],
+  ] as const
+  for(const [args,detail] of values)await assert.rejects(fixture(frame({tool_calls:[call(args)]},'tool_calls')+done).model.run(request),error=>{
+    assert.ok(error instanceof ModelDriverError)
+    const diagnostics=publicModelDiagnostics(error.diagnostics)
+    assert.equal(diagnostics['protocolDetail'],detail)
+    assert.doesNotMatch(JSON.stringify(diagnostics),/marker|private|bad\\q/)
+    return true
+  })
+  assert.deepEqual(publicModelDiagnostics({protocolDetail:'private-marker'}),{})
+  for(const [name,id,detail] of [['unexposed','other','tool_name_unknown'],[business.name,'public-id','tool_id_duplicate']] as const){
+    const model=new OpenAIChatDriver('native-identity-detail',{...options,publicAnswerTool:'native-v2',capabilities:{jsonObjectWithTools:false,parallelTools:true},
+      fetchImpl:async()=>new Response(frame({tool_calls:[call(publicArgs('safe')),call('{}',name,id,1)]},'tool_calls')+done)})
+    await assert.rejects(model.run(request),error=>{
+      assert.ok(error instanceof ModelDriverError);assert.equal(publicModelDiagnostics(error.diagnostics)['protocolDetail'],detail);return true
+    })
+  }
+})
+
+
 function fixture(wire: string) {
   const requests: Array<Record<string, unknown>> = []
   const model = new OpenAIChatDriver('public-answer-fixture', { ...options, fetchImpl: async (_url, init) => {

@@ -1,5 +1,5 @@
 import { parseOutcomeTail, type OutcomeDeclaration, type PublicTextProtocol } from './outcome-declaration.js'
-import { ModelDriverError } from '../errors.js'
+import { ModelDriverError, type ModelProtocolDetail } from '../errors.js'
 import type { PublicTextPurpose } from '../protocol/public-text.js'
 import { snapshotPublicTextOperation, type PublicTextOperation } from '../protocol/answer-segments.js'
 
@@ -62,8 +62,8 @@ export const PUBLIC_PURPOSE_V3_MESSAGE_INSTRUCTIONS = PUBLIC_PURPOSE_V3_INSTRUCT
     'When useful facts are already supplied and work remains, preserve that explanation in the typed answer, either with the next native tool call or as an intermediate message.')
   + '\nMessage lifecycle capability (typed-message-v1): A complete object with nonempty substantive answer and outcome:null may end an intermediate public message without tool_calls. It seals that answer item and continues the SAME execution; it does not declare completion. Use this only for actual useful content, never an empty message or status preface. No introductory call is required. A simple completed answer still declares its terminal outcome in one generation. Only an explicit outcome object ends execution and invokes full delivery validation. A null answer is permitted only with that terminal declaration and existing sealed sources.'
 
-export function publicPurposeError(protocolCode:'public_text_invalid'|'public_text_incomplete'|'public_text_answer_required'='public_text_invalid'):ModelDriverError {
-  return new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',protocolCode,finishReasons:[]})
+export function publicPurposeError(protocolCode:'public_text_invalid'|'public_text_incomplete'|'public_text_answer_required'='public_text_invalid',protocolDetail?:ModelProtocolDetail):ModelDriverError {
+  return new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',protocolCode,...(protocolDetail?{protocolDetail}:{}),finishReasons:[]})
 }
 /** Bounded framing state only: released body characters are never buffered until EOF. */
 export class PublicPurposeParser {

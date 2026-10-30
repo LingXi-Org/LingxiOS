@@ -3,7 +3,7 @@ import { PUBLIC_ANSWER_TOOL, PUBLIC_ANSWER_TOOL_INSTRUCTIONS, PUBLIC_ANSWER_BATC
 import { PUBLIC_ANSWER_TOOL_NAME, decodePublicAnswerCall, type PublicAnswerCall } from '../protocol/public-answer-call.js'
 import type { OutcomeDeclaration, PublicTextProtocol } from './outcome-declaration.js'
 import { publicPurposeInstructions, PublicPurposeParser, publicPurposeError } from './public-purpose.js'
-import { ToolCompanionBoundary, completeCompanionIdentity, completeCompanionTurn, companionHasJsonFraming } from './tool-companion.js'
+import { ToolCompanionBoundary, companionIdentityFailure, completeCompanionIdentity, completeCompanionTurn, companionHasJsonFraming } from './tool-companion.js'
 import { NativeToolPublicOutput, NATIVE_TOOL_PUBLIC_OUTPUT_INSTRUCTIONS, wrapNativeToolSchema, wrapNativeToolArguments } from './native-tool-public-output.js'
 import { compileToolSchemas, validateToolBatch } from '../runtime/tool-batch.js'
 /**
@@ -583,10 +583,10 @@ export class OpenAIChatDriver implements ModelDriver {
     const acceptPublicDelta = async (index:number, call:{id:string;name:string;arguments:string}, _delta:string, finalIdentity=false) => {
       request.signal?.throwIfAborted()
       if(index !== 0){if(this.publicAnswerTool==='native-v2')return;throw publicPurposeError()}
-      if(publicCallIdentity && (call.id!==publicCallIdentity.id || call.name!==publicCallIdentity.name))throw publicPurposeError()
+      if(publicCallIdentity && (call.id!==publicCallIdentity.id || call.name!==publicCallIdentity.name))throw publicPurposeError('public_text_invalid','identity_changed')
       if(!publicCallIdentity) {
         const candidates=tools.filter(tool=>tool.function.name.startsWith(call.name))
-        if(!candidates.length)throw publicPurposeError()
+        if(!candidates.length)throw new ModelDriverError('invalid native tool identity',{kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid',protocolDetail:'tool_name_unknown',finishReasons:[]})
         if(call.name!==PUBLIC_ANSWER_TOOL_NAME || !call.id || call.id.trim()!==call.id
           || !finalIdentity && candidates.length>1)return
         publicCallIdentity={id:call.id,name:call.name}
@@ -645,15 +645,18 @@ export class OpenAIChatDriver implements ModelDriver {
         ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_text_answer_required'})
       // Validate identities first. The public-output parser below owns its JSON
       // completion diagnostics; truncation is not a malformed tool identity.
-      if(!completeCompanionIdentity({text:'',calls:accumulator.toolCalls,finishReasons:accumulator.finishReasons,
-        ...(accumulator.malformedToolCalls?{malformed:true}:{})},tools.map(tool=>tool.function.name),this.profile.parallelTools))throw new ModelDriverError('invalid original native output batch',{
-        ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid'})
+      const identityFailure=companionIdentityFailure({text:'',calls:accumulator.toolCalls,finishReasons:accumulator.finishReasons,
+        ...(accumulator.malformedToolCalls?{malformed:true}:{})},tools.map(tool=>tool.function.name),this.profile.parallelTools)
+      if(identityFailure)throw new ModelDriverError('invalid original native output batch',{
+        ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid',protocolDetail:identityFailure})
       const call=accumulator.toolCalls.get(0)
+      if(this.publicAnswerTool==='native-v2'&&call?.name!==PUBLIC_ANSWER_TOOL_NAME)throw new ModelDriverError('public output binding must precede native business calls',{
+        ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_answer_first_required'})
       if(!call || this.publicAnswerTool==='native-v2' && (call.name!==PUBLIC_ANSWER_TOOL_NAME || [...accumulator.toolCalls.entries()].some(([index,item])=>index!==0&&item.name===PUBLIC_ANSWER_TOOL_NAME)))throw publicPurposeError()
       text='' // Raw content and reasoning never enter public text or model history.
       if(call.name===PUBLIC_ANSWER_TOOL_NAME) {
         if(/^\s*[\[{]/.test(accumulator.text)||companionHasJsonFraming(accumulator.text))throw new ModelDriverError('ambiguous public output channels',{
-          ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_text_invalid'})
+          ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_text_invalid',protocolDetail:'mixed_output_channels'})
         try { await acceptPublicDelta(0,call,'',true) } catch(error) { this.throwStreamFailure(error,accumulator) }
         publicAnswerCall={type:'function_call',callId:call.id,name:PUBLIC_ANSWER_TOOL_NAME,arguments:call.arguments}
         let decoded:ReturnType<typeof decodePublicAnswerCall>
@@ -663,11 +666,12 @@ export class OpenAIChatDriver implements ModelDriver {
           validateToolBatch([publicAnswerCall],[{name:PUBLIC_ANSWER_TOOL_NAME,action:'output.public_answer',description:'Public output protocol',effect:'read',approval:false,
             parameters:PUBLIC_ANSWER_TOOL.function.parameters as import('../tools/catalog.js').ToolDefinition['parameters']}],'disabled',false)
         } catch(error) { throw new ModelDriverError('invalid public answer tool arguments', { ...diagnostics,kind:'protocol',category:'protocol',
-          protocolCode:error instanceof ModelDriverError ? error.diagnostics.protocolCode ?? 'public_text_invalid' : 'public_text_invalid' }) }
+          protocolCode:error instanceof ModelDriverError ? error.diagnostics.protocolCode ?? 'public_text_invalid' : 'public_text_invalid',
+          ...(error instanceof ModelDriverError&&error.diagnostics.protocolDetail?{protocolDetail:error.diagnostics.protocolDetail}:{}) }) }
         text=decoded!.text ?? ''
         if(decoded!.outcome===null)publicTextPhase='intermediate'
         else outcomeDeclaration=decoded!.outcome
-        if(this.publicAnswerTool==='native-v2'&&accumulator.toolCalls.size>1&&decoded!.outcome!==null)throw publicPurposeError()
+        if(this.publicAnswerTool==='native-v2'&&accumulator.toolCalls.size>1&&decoded!.outcome!==null)throw publicPurposeError('public_text_invalid','terminal_with_business')
         if(!text.trim() && !(decoded!.text===null && request.answerContext?.segmentIds.length && outcomeDeclaration))throw publicPurposeError('public_text_answer_required')
       }
     } else if (nativeEnvelope && accumulator.toolCalls.size) {

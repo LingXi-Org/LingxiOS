@@ -239,6 +239,22 @@ it('an older unassociated segment cannot supply a newly activated stage', async 
   } finally { await f.close() }
 })
 
+it('a corrected replacement sealed during a pending stage unlocks authoring without duplicating the explanation',async()=>{
+  const f=await fixture([{kind:'answer',text:'Earlier unbound explanation. ',intermediate:true},
+    {kind:'activate',declaration:declaration()}, {kind:'answer',text:answer,intermediate:true,replace:'all'},
+    {kind:'save'},{kind:'answer',text:'Saved.'}])
+  try{
+    const state=await f.run()
+    assert.equal(state.run.status,'succeeded',JSON.stringify({run:state.run,calls:f.calls,failures:f.failures}))
+    assert.equal(names(f.payloads[2]!).includes('documents__save'),false)
+    assert.ok(names(f.payloads[3]!).includes('documents__save'))
+    assert.ok(f.payloads[3]!.messages.some(message=>typeof message.content==='string'&&message.content.includes('the explanation is durably recorded')))
+    assert.equal(f.effects,1);assert.ok(f.verifies>0)
+    assert.equal(state.message?.body,answer+'Saved.')
+    assert.deepEqual(f.stages.slice(0,2).map(stage=>stage.status),['pending','provided'])
+  }finally{await f.close()}
+})
+
 for (const [label, rejected] of [
   ['truncated answer', { kind: 'answer', text: 'Provisional text.', intermediate: true, invalid: true }],
   ['commentary without an answer', { kind: 'answer', text: null, intermediate: true, commentary: 'Reading the material.' }],
@@ -322,4 +338,17 @@ it('provided explanation cannot replay an unknown authoring effect or turn it in
     const rows=await f.pool.query("SELECT r.result FROM lingxios.agent_action_intents i JOIN lingxios.agent_action_ledger r USING(idempotency_key) WHERE i.intent->>'workId'=$1 AND i.intent->'action'->>'action'='documents.save'",[f.identity.runId])
     assert.equal(rows.rows.length,1);assert.equal((rows.rows[0]!['result'] as {executionState:string}).executionState,'unknown')
   }finally{await f.close()}
+})
+
+it('keeps the closed call-budget cause on model.failed after valid intermediate continuations', async () => {
+  const f=await fixture([{kind:'activate',declaration:declaration()},
+    ...Array.from({length:7},()=>({kind:'answer' as const,text:answer,intermediate:true}))])
+  try {
+    const state=await f.run();assert.equal(state.run.status,'failed');assert.equal(f.calls,8);assert.equal(f.effects,0)
+    const failures=(await f.pool.query("SELECT data FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='model.failed'",[f.identity.runId])).rows
+    assert.equal(failures.length,1)
+    const data=failures[0]!['data'] as Record<string,unknown>
+    assert.deepEqual(data['budgetLimit'],{code:'budget_limit',dimension:'calls'})
+    assert.equal(data['modelDiagnostics'],undefined,'an exhausted test budget is not a model protocol rejection')
+  } finally {await f.close()}
 })
