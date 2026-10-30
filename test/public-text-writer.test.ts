@@ -1,10 +1,32 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
-import { PublicTextWriter, PublicTextPublicationError } from '../src/runtime/public-text.js'
+import { PublicTextWriter, PublicTextAttemptWriter, PublicTextPublicationError } from '../src/runtime/public-text.js'
+import { ModelDriverError } from '../src/errors.js'
+import { publicModelDiagnostics } from '../src/model/diagnostics.js'
+import { modelProtocolCorrection } from '../src/runtime/protocol-correction.js'
 import type { RunEvent } from '../src/protocol/types.js'
 import { modelFailure } from '../src/model/recovery.js'
 const identity={version:1 as const,requestVersion:1,fence:1,attemptId:'call',partId:'part',partIndex:0}
 type Event=Omit<RunEvent,'runId'|'seq'>
+
+it('invalid purposes retain safe diagnostics and legacy protocols keep ordered purposes',async()=>{
+  for(const protocol of ['purpose-json-v1','purpose-json-v2','purpose-json-v3'] as const){
+    const writer=new PublicTextAttemptWriter(identity,async()=>{},new AbortController().signal,undefined,protocol)
+    const rejected=(error:unknown)=>{
+      assert.ok(error instanceof ModelDriverError)
+      assert.deepEqual(publicModelDiagnostics(error.diagnostics),{kind:'protocol',category:'protocol',protocolCode:'public_text_invalid',finishReasons:[]})
+      assert.equal(modelProtocolCorrection(error.diagnostics,'disabled',protocol).category,'response_protocol')
+      return true
+    }
+    try{
+      await assert.rejects(writer.push('No purpose.'),rejected)
+      if(protocol!=='purpose-json-v3'){
+        await writer.push('Answer.',{purpose:'answer'})
+        await assert.rejects(writer.push('Late commentary.',{purpose:'commentary'}),rejected)
+      }
+    }finally{writer.dispose()}
+  }
+})
 
 it('first chunk waits for durable acknowledgement; later chunks coalesce within the time bound',async()=>{
   let release!:()=>void,entered!:()=>void,second!:()=>void

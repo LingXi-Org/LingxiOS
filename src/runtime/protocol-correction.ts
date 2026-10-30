@@ -20,7 +20,7 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
       ? 'The previous response lacked substantive answer text or a legal null terminal answer backed by sealed sources. '
       :code==='public_text_incomplete'
         ? 'The previous public response ended before the complete JSON object was closed.'
-        : 'The previous public response violated the required JSON field order, string encoding, or framing.'
+        : 'The previous public response violated the required JSON fields, types, string encoding, or framing.'
     return {category:'response_protocol',content:`Protocol correction: ${failure}
 Continue the current active trust=request blocks and their revisions. Historical requests are observations. Existing receipts remain the record of completed or uncertain actions.
 Use the ${protocol} contract supplied by the trusted model driver for the current output channel and terminal status.
