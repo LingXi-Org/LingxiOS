@@ -17,9 +17,9 @@ import type { RunState } from '../src/app/jobs.js'
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const ack = '{"status":"public_message_recorded"}'
 const known = 'Gather collects the items. Check reviews them. '
-type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; wrongAppend?: boolean; callId?: string; reads?: boolean; save?: boolean; lateCommentary?: boolean }
+type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; forceAppend?: boolean; callId?: string; reads?: boolean; save?: boolean; lateCommentary?: boolean }
   | { business: true; read?: string }
-  | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' }
+  | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' | 'misordered' }
 type WireRequest = { stream?: boolean; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
 type AnswerOperation = { kind: 'append' | 'replace'; supersedes: string[] }
 // The synthetic model follows the exact runtime-selected correction target.
@@ -123,13 +123,15 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
       const invalidArgs = reply.invalid === 'missing-outcome'
         ? JSON.stringify({ operation, answer: 'Provisional only.' })
         : reply.invalid === 'truncated' ? args.slice(0, -1) : args
-      wire = frame({ tool_calls: [call('public_answer', invalidArgs),
+      wire = reply.invalid === 'misordered'
+        ? frame({ tool_calls: [call('probe__save', '{"key":"synthetic-record"}'), call('public_answer', args, 1, 'misordered-public')] }, 'tool_calls')
+        : frame({ tool_calls: [call('public_answer', invalidArgs),
         ...(reply.invalid === 'mixed' ? [call('probe__save', '{"key":"synthetic-record"}', 1, 'second')]
           : reply.invalid === 'duplicate' ? [call('public_answer', args, 1, 'second')] : [])] }, 'tool_calls')
     } else {
       const steps = reply.replace ? await pool.query("SELECT input FROM lingxios.agent_steps WHERE kind='runtime.answer_segment' AND work_id=$1 ORDER BY step_seq", [identity.runId]) : { rows: [] }
       // Null terminal answers reuse the sealed body and do not replace text.
-      const operation = reply.answer !== null && !reply.wrongAppend && correction ? correction
+      const operation = reply.answer !== null && !reply.forceAppend && correction ? correction
         : { kind: reply.replace ? 'replace' : 'append', supersedes: steps.rows.map(row => String((row['input'] as Record<string, unknown>)['partId'])) }
       const args = JSON.stringify({ operation,
         ...(nativeV2 && !reply.lateCommentary ? {commentary:reply.reads ? 'I will read both independent observations.' : reply.save ? 'Both observations were received; I will save the synthetic record.' : ''} : {}),
@@ -283,7 +285,7 @@ it('a requested correction replaces its sealed candidate instead of appending an
 })
 
 it('an appended full rewrite during correction is rejected before public text or sealing, then explicitly replaced', async () => {
-  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { answer: 'Wrong appended rewrite.', wrongAppend: true }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-answer', 8, 'Explain only the supplied synthetic facts.')
+  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { answer: 'Wrong appended rewrite.', forceAppend: true }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-answer', 8, 'Explain only the supplied synthetic facts.')
   try {
     const state = await f.run(), events = (await f.app.readEvents(f.identity)).events
     assert.equal(state.run.status, 'succeeded')
@@ -299,7 +301,7 @@ it('an appended full rewrite during correction is rejected before public text or
 })
 
 it('repair intent survives a lost acknowledgement and a business tool before the corrected answer', async () => {
-  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { business: true }, { answer: 'Wrong appended rewrite.', wrongAppend: true }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-restart', 8, 'Explain the supplied facts, then save the synthetic record.')
+  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { business: true }, { answer: 'Wrong appended rewrite.', forceAppend: true }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-restart', 8, 'Explain the supplied facts, then save the synthetic record.')
   try {
     await f.run(); assert.equal(f.calls, 1, 'worker stops after persisting the repair intent')
     const state = await f.restart(), events = (await f.app.readEvents(f.identity)).events
@@ -527,4 +529,92 @@ it('native-v2 directly answers without tools in one generation', async () => {
     const state=await f.run();assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'43')
     assert.deepEqual([f.calls,f.effects,f.auxiliary],[1,0,0]);assert.deepEqual(f.timeline,['seal'])
   } finally {await f.close()}
+})
+
+for (const binding of ['missing', 'misordered'] as const) it(`native-v2 ${binding} binding repairs the batch without replacing its sealed prefix`, async () => {
+  const added = 'The supplied facts are ready for saving. ', final = 'The synthetic record is saved.'
+  const rejected: Reply = binding === 'missing' ? { business: true } : { invalid: 'misordered' }
+  const f = await fixture([{ answer: known, intermediate: true }, rejected,
+    // Force append rather than adapting to the runtime correction. A binding
+    // error must not manufacture a request to rewrite the already sealed text.
+    { answer: added, intermediate: true, save: true, forceAppend: true },
+    { answer: final }], undefined, 4, undefined, true)
+  try {
+    const state = await f.run(), events = (await f.app.readEvents(f.identity)).events
+    assert.equal(state.run.status, 'succeeded', JSON.stringify(state.run))
+    assert.equal(state.message?.body, known + added + final)
+    assert.deepEqual([f.calls, f.effects, f.auxiliary], [4, 1, 0])
+    assert.ok(f.resourceChecks > 0)
+    assert.deepEqual(f.timeline, ['seal', 'seal', 'business', 'seal'])
+    assert.equal(requestedCorrection(f.requests[2]!), undefined)
+    const steps = await f.pool.query("SELECT kind,input FROM lingxios.agent_steps WHERE work_id=$1 AND kind IN ('runtime.answer_correction','runtime.answer_candidate_failure')", [f.identity.runId])
+    assert.deepEqual(steps.rows, [], 'a rejected binding without a public candidate cannot invalidate sealed sources')
+    const failures = await f.pool.query("SELECT data->'modelDiagnostics' AS diagnostics FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='model.failed' ORDER BY seq", [f.identity.runId])
+    assert.equal(failures.rows.length, 1)
+    const diagnostics = failures.rows[0]!['diagnostics'] as Record<string, unknown>
+    assert.equal(diagnostics['protocolCode'], 'public_answer_first_required')
+    assert.equal(diagnostics['protocolDetail'], `public_answer_${binding}`)
+    assert.equal(events.filter(event => event.kind === 'tool.started').length, 1, 'the rejected batch must not dispatch its write')
+    assert.equal(events.some(event => event.kind === 'public.text.delta' && String(event.data['text']).includes('Provisional only.')), false)
+    const operations = events.filter(event => event.kind === 'public.text.operation')
+    assert.deepEqual(operations.map(event => event.data['operation']), ['append', 'append', 'append'])
+    const sources = state.message!.publicTextSources!.segments
+    assert.equal(sources.length, 3)
+    assert.equal(sources[0]!.partId, operations[0]!.data['partId'], 'the original prefix keeps its sealed source identity')
+    assertNativePair(f.requests[2]!, f.rawPublicCalls[0]!)
+    const ledger = await f.pool.query("SELECT observation->>'status' AS status FROM lingxios.agent_model_budget_calls WHERE work_id=$1 ORDER BY call_id", [f.identity.runId])
+    assert.deepEqual(ledger.rows.map(row => row['status']), ['succeeded', 'failed', 'succeeded', 'succeeded'])
+  } finally { await f.close() }
+})
+
+for (const binding of ['missing', 'misordered'] as const) it(`native-v2 ${binding} binding preserves a pending failed-candidate replacement target`, async () => {
+  const corrected = 'The corrected remaining fact.'
+  const rejected: Reply = binding === 'missing' ? { business: true } : { invalid: 'misordered' }
+  const f = await fixture([{ answer: known, intermediate: true }, { invalid: 'truncated' }, rejected,
+    { answer: corrected, replace: true }], undefined, 4, 'Gather collects items. Check reviews them. Explain only these supplied facts.', true)
+  try {
+    const state = await f.run(), events = (await f.app.readEvents(f.identity)).events
+    assert.equal(state.run.status, 'succeeded', JSON.stringify(state.run))
+    assert.equal(state.message?.body, known + corrected)
+    assert.deepEqual([f.calls, f.effects, f.auxiliary], [4, 0, 0])
+    const failures = await f.pool.query("SELECT input FROM lingxios.agent_steps WHERE work_id=$1 AND kind='runtime.answer_candidate_failure' ORDER BY step_seq", [f.identity.runId])
+    assert.equal(failures.rows.length, 1, 'the binding rejection adds no failed public candidate')
+    const failedId = String((failures.rows[0]!['input'] as Record<string, unknown>)['partId'])
+    const required = { kind: 'replace', supersedes: [failedId] }
+    assert.deepEqual(requestedCorrection(f.requests[2]!), required)
+    assert.deepEqual(requestedCorrection(f.requests[3]!), required, 'the binding-only repair must not clear an existing failed-candidate target')
+    const intents = await f.pool.query("SELECT input FROM lingxios.agent_steps WHERE work_id=$1 AND kind='runtime.answer_correction'", [f.identity.runId])
+    assert.equal(intents.rows.length, 1)
+    assert.deepEqual((intents.rows[0]!['input'] as Record<string, unknown>)['operation'], required)
+    const seals = events.filter(event => event.kind === 'public.text.sealed')
+    assert.equal(seals.length, 2)
+    assert.equal(seals.some(event => event.data['partId'] === failedId), false)
+    const sources = state.message!.publicTextSources!.segments
+    assert.equal(sources.length, 2)
+    assert.equal(sources[0]!.partId, seals[0]!.data['partId'])
+    const replacement = events.find(event => event.kind === 'public.text.operation' && event.data['operation'] === 'replace')!
+    assert.deepEqual(replacement.data['supersedes'], [failedId])
+    assert.equal(events.filter(event => event.kind === 'tool.started').length, 0)
+  } finally { await f.close() }
+})
+
+it('native-v2 binding-only repair preserves an existing sealed content-correction intent', async () => {
+  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { business: true },
+    { answer: 'Corrected synthetic answer.', replace: true }], 'repair-answer', 3, 'Explain only the supplied synthetic facts.', true)
+  try {
+    const state = await f.run(), events = (await f.app.readEvents(f.identity)).events
+    assert.equal(state.run.status, 'succeeded', JSON.stringify(state.run))
+    assert.equal(state.message?.body, 'Corrected synthetic answer.')
+    assert.deepEqual([f.calls, f.effects, f.auxiliary], [3, 0, 0])
+    const seals = events.filter(event => event.kind === 'public.text.sealed')
+    assert.equal(seals.length, 2)
+    const required = { kind: 'replace', supersedes: [String(seals[0]!.data['partId'])] }
+    assert.deepEqual(requestedCorrection(f.requests[1]!), required)
+    assert.deepEqual(requestedCorrection(f.requests[2]!), required)
+    const intents = await f.pool.query("SELECT input FROM lingxios.agent_steps WHERE work_id=$1 AND kind='runtime.answer_correction'", [f.identity.runId])
+    assert.equal(intents.rows.length, 1)
+    assert.deepEqual((intents.rows[0]!['input'] as Record<string, unknown>)['operation'], required)
+    assert.equal(state.message?.publicTextSources?.segments.length, 1)
+    assert.equal(events.filter(event => event.kind === 'tool.started').length, 0)
+  } finally { await f.close() }
 })

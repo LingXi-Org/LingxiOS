@@ -487,7 +487,7 @@ export class AgentRuntime {
       if (!priorBinding && (context.executionCheckpoint || context.executionSteps?.some(step => step.kind === 'runtime.checkpoint'))) {
         throw new Error('unbound execution must resume with the original pinned worker configuration')
       }
-      const binding = { runtime: releaseVersions.runtime, ...(this.model.publicTextProtocol==='purpose-json-v3'?{publicTextSelection:'public-v3-failed-candidate-v2'}:{}), semanticReview: this.semanticReview,
+      const binding = { runtime: releaseVersions.runtime, ...(this.model.publicTextProtocol==='purpose-json-v3'?{publicTextSelection:'public-v3-failed-candidate-v2',answerCorrectionPolicy:'preserve-sealed-binding-errors-v1'}:{}), semanticReview: this.semanticReview,
         ...(semanticReviewPolicy ? { semanticReviewPolicy } : {}), harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
         ...(deepModel.publicAnswerTool?{publicAnswerTool:deepModel.publicAnswerTool}:{}),
@@ -530,6 +530,9 @@ export class AgentRuntime {
     // A failed tool is a new observation, not a request to replace useful public text.
     // native-v1 retains its original correction/replacement behavior.
     let toolObservationCorrection = false
+    // A rejected batch without public output has no new answer revision to repair.
+    // Keep its protocol correction/budget, but do not select sealed prose as a new target.
+    let bindingOnlyProtocolCorrection = false
     let protocolCorrection: ModelItem | null = null
     let pendingCompaction: ReturnType<typeof prepareCompaction> | undefined
     const repairContext = (body: string, targets: unknown) => {
@@ -660,7 +663,7 @@ export class AgentRuntime {
           ?'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes):'')})
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
         +'\nAppend adds text; replace selects active revision IDs in source order or the exact failed-candidate target supplied by a runtime correction. Failed candidates are not sealed body sources. A terminal null answer uses only the assembled sealed body.'})
-      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection), answerSegments.correctionSources) : undefined
+      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !bindingOnlyProtocolCorrection && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection), answerSegments.correctionSources) : undefined
       if (requestedCorrection && canonicalJson(requestedCorrection) !== canonicalJson(pendingAnswerCorrection ?? null)) {
         await host.saveStep(work,{id:'answer-correction:'+createHash('sha256').update(JSON.stringify([runId,(session.request?.revisions.length ?? 0)+1,requestedCorrection])).digest('hex'),
           kind:'runtime.answer_correction',requestVersion:(session.request?.revisions.length ?? 0)+1,input:{operation:requestedCorrection},output:'{}',artifacts:[]})
@@ -786,6 +789,7 @@ export class AgentRuntime {
       try {
         protocolCorrection = null
         toolObservationCorrection = false
+        bindingOnlyProtocolCorrection = false
         const generationSignal = signals.generationSignal()
         turn = await model.run({
           operation: generationOperation,
@@ -885,6 +889,10 @@ export class AgentRuntime {
           const correction=modelProtocolCorrection(error.diagnostics,codeExecution,model.publicTextProtocol)
           if(budget.consume(correction.category,error.diagnostics.protocolCode ?? 'model protocol violation')){
             protocolCorrection={role:'user',content:correction.content}
+            const sources=answerSegments.correctionSources,sealed=answerSegments.context.segmentIds
+            bindingOnlyProtocolCorrection=model.publicAnswerTool==='native-v2'
+              &&error.diagnostics.protocolCode==='public_answer_first_required'
+              &&sources.length===sealed.length&&sources.every((source,index)=>source===sealed[index])
             continue
           }
         }
