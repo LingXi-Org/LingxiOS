@@ -53,6 +53,34 @@ it('native-v2 business-only batches retain usage and explain the missing output 
     return true
   })
 })
+
+it('native rejection diagnostics identify structure without retaining rejected text',async()=>{
+  const values=[
+    [JSON.stringify({operation,answer:{private:'marker'},outcome:terminal}),'answer_type'],
+    [JSON.stringify({operation,answer:'safe',commentary:null,outcome:terminal}),'commentary_type'],
+    [JSON.stringify({operation:'append',answer:'safe',outcome:terminal}),'operation_invalid'],
+    [JSON.stringify({operation,answer:'safe',outcome:{status:'satisfied',gaps:['marker']}}),'outcome_invalid'],
+    [JSON.stringify({operation,answer:'safe',outcome:terminal,private:'marker'}),'unknown_field'],
+    ['{"operation":{"kind":"append","supersedes":[]},"answer":"bad\\q","outcome":null}','json_syntax'],
+  ] as const
+  for(const [args,detail] of values)await assert.rejects(fixture(frame({tool_calls:[call(args)]},'tool_calls')+done).model.run(request),error=>{
+    assert.ok(error instanceof ModelDriverError)
+    const diagnostics=publicModelDiagnostics(error.diagnostics)
+    assert.equal(diagnostics['protocolDetail'],detail)
+    assert.doesNotMatch(JSON.stringify(diagnostics),/marker|private|bad\\q/)
+    return true
+  })
+  assert.deepEqual(publicModelDiagnostics({protocolDetail:'private-marker'}),{})
+  for(const [name,id,detail] of [['unexposed','other','tool_name_unknown'],[business.name,'public-id','tool_id_duplicate']] as const){
+    const model=new OpenAIChatDriver('native-identity-detail',{...options,publicAnswerTool:'native-v2',capabilities:{jsonObjectWithTools:false,parallelTools:true},
+      fetchImpl:async()=>new Response(frame({tool_calls:[call(publicArgs('safe')),call('{}',name,id,1)]},'tool_calls')+done)})
+    await assert.rejects(model.run(request),error=>{
+      assert.ok(error instanceof ModelDriverError);assert.equal(publicModelDiagnostics(error.diagnostics)['protocolDetail'],detail);return true
+    })
+  }
+})
+
+
 function fixture(wire: string) {
   const requests: Array<Record<string, unknown>> = []
   const model = new OpenAIChatDriver('public-answer-fixture', { ...options, fetchImpl: async (_url, init) => {

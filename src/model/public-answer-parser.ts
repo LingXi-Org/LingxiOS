@@ -3,6 +3,7 @@ import { snapshotPublicTextOperation, type PublicTextOperation } from '../protoc
 import type { PublicTextPurpose } from '../protocol/public-text.js'
 import { snapshotOutcomeDeclaration, type OutcomeDeclaration } from './outcome-declaration.js'
 import { publicPurposeError } from './public-purpose.js'
+import { ModelDriverError } from '../errors.js'
 
 type Part = { text: string; purpose: PublicTextPurpose }
 /** The upstream JSON parser owns tokenization, escaping and grammar. This
@@ -32,13 +33,14 @@ export class PublicAnswerParser {
   }
   private value(info: ParsedElementInfo) {
     const { value, key, parent, stack, partial } = info
-    if (stack.length > 4) throw publicPurposeError()
+    if (stack.length > 4) throw publicPurposeError('public_text_invalid','depth_limit')
     // A completed key emits a partial value with no value yet. Inspect that
     // public callback before a duplicate can overwrite the assembled object.
     if (partial && value === undefined && typeof key === 'string' && parent && !Array.isArray(parent)
       && this.token?.token === TokenType.STRING && !this.token.partial) {
       const keys = this.keys.get(parent) ?? new Set<string>()
-      if (keys.has(key) || stack.length === 1 && !['operation', 'commentary', 'answer', 'outcome'].includes(key)) throw publicPurposeError()
+      if (keys.has(key)) throw publicPurposeError('public_text_invalid','duplicate_field')
+      if (stack.length === 1 && !['operation', 'commentary', 'answer', 'outcome'].includes(key)) throw publicPurposeError('public_text_invalid','unknown_field')
       keys.add(key); this.keys.set(parent, keys)
     }
     if (stack.length === 1 && (key === 'answer' || key === 'commentary') && value !== undefined) {
@@ -47,23 +49,29 @@ export class PublicAnswerParser {
         if (!partial) this.answerIsNull = true
       }
       else {
-        if (typeof value !== 'string') throw publicPurposeError()
+        if (typeof value !== 'string') throw publicPurposeError('public_text_invalid',key==='answer'?'answer_type':'commentary_type')
         let safe = value
         const last = safe.charCodeAt(safe.length - 1)
         if (partial && last >= 0xd800 && last <= 0xdbff) safe = safe.slice(0, -1)
-        if (/[\uD800-\uDFFF]/u.test(safe) || !safe.startsWith(this.text.get(key) ?? '')) throw publicPurposeError()
+        if (/[\uD800-\uDFFF]/u.test(safe)) throw publicPurposeError('public_text_invalid','unicode_invalid')
+        if (!safe.startsWith(this.text.get(key) ?? '')) throw publicPurposeError('public_text_invalid','text_regression')
         this.text.set(key, safe); this.flush()
       }
     }
     if (!partial && stack.length === 1 && key === 'operation') {
-      if (!value || typeof value !== 'object' || Array.isArray(value) || typeof Reflect.get(value, 'kind') !== 'string') throw publicPurposeError()
-      this.operation = snapshotPublicTextOperation(value); this.flush()
+      if (!value || typeof value !== 'object' || Array.isArray(value) || typeof Reflect.get(value, 'kind') !== 'string') throw publicPurposeError('public_text_invalid','operation_invalid')
+      try { this.operation = snapshotPublicTextOperation(value) }
+      catch { throw publicPurposeError('public_text_invalid','operation_invalid') }
+      this.flush()
     }
-    if (!partial && stack.length === 1 && key === 'outcome') this.outcome = value === null ? null : snapshotOutcomeDeclaration(value)
+    if (!partial && stack.length === 1 && key === 'outcome') {
+      try { this.outcome = value === null ? null : snapshotOutcomeDeclaration(value) }
+      catch { throw publicPurposeError('public_text_invalid','outcome_invalid') }
+    }
     if (!partial && stack.length === 0) {
       if (!value || typeof value !== 'object' || Array.isArray(value)
         || !this.operation || !Object.hasOwn(value, 'answer') || !Object.hasOwn(value, 'outcome')
-        || this.outcome === undefined || Object.keys(value).some(field => !['operation', 'commentary', 'answer', 'outcome'].includes(field))) throw publicPurposeError()
+        || this.outcome === undefined || Object.keys(value).some(field => !['operation', 'commentary', 'answer', 'outcome'].includes(field))) throw publicPurposeError('public_text_invalid','root_invalid')
       this.closed = true
     }
   }
@@ -80,18 +88,18 @@ export class PublicAnswerParser {
     }
   }
   push(chunk: string): Part[] {
-    if (this.invalid || this.finished) throw publicPurposeError()
+    if (this.invalid || this.finished) throw publicPurposeError('public_text_invalid','parser_closed')
     this.parts = []
     try {
       this.size += chunk.length
-      if (this.size > 256_000) throw publicPurposeError()
+      if (this.size > 256_000) throw publicPurposeError('public_text_invalid','size_limit')
       chunk = this.pendingSurrogate + chunk; this.pendingSurrogate = ''
       const last = chunk.charCodeAt(chunk.length - 1)
       if (last >= 0xd800 && last <= 0xdbff) { this.pendingSurrogate = chunk.slice(-1); chunk = chunk.slice(0, -1) }
-      if (/[\uD800-\uDFFF]/u.test(chunk)) throw publicPurposeError()
+      if (/[\uD800-\uDFFF]/u.test(chunk)) throw publicPurposeError('public_text_invalid','unicode_invalid')
       if (chunk) this.parser.write(Buffer.from(chunk))
       return this.parts
-    } catch { this.invalid = true; throw publicPurposeError() }
+    } catch(error) { this.invalid = true; throw error instanceof ModelDriverError ? error : publicPurposeError('public_text_invalid','json_syntax') }
   }
   finish() {
     if (this.invalid || this.pendingSurrogate) throw publicPurposeError()
