@@ -10,7 +10,7 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
   const code=diagnostics.protocolCode
   if(code==='public_answer_first_required'){
     const failure=diagnostics.protocolDetail==='public_answer_missing'?'did not include public_answer'
-      :diagnostics.protocolDetail==='public_answer_misordered'?'placed public_answer after a business call'
+      :diagnostics.protocolDetail==='public_answer_misordered'?'placed public_answer outside index 0'
       :'did not place public_answer at index 0'
     return {category:'response_protocol',content:`Protocol correction: the previous native-v2 batch ${failure}. Its business calls were not dispatched. Start with the first exposed tool schema, public_answer, containing new substantive answer text, operation and outcome:null, then include the needed business calls in the SAME generation using their exact exposed function.name identifiers. Return public_answer first in tool_calls, not assistant prose and not a trailing call. Do not repeat sealed answer text or stop after restating an explanation. If no work remains, use public_answer alone with an honest terminal outcome. Existing receipts remain the record of completed or uncertain actions. ${execution}`}
   }

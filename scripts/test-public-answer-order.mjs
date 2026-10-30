@@ -30,7 +30,8 @@ test('native-v2 catalog and budget estimate put mandatory output first without c
 
 for(const [detail,calls,phrase] of [
   ['public_answer_missing',[call(0,business.name,'{"key":"private-marker"}')],/did not include public_answer/],
-  ['public_answer_misordered',[call(0,business.name,'{"key":"private-marker"}'),call(1,'public_answer',args)],/placed public_answer after a business call/],
+  ['public_answer_misordered',[call(0,business.name,'{"key":"private-marker"}'),call(1,'public_answer',args)],/placed public_answer outside index 0/],
+  ['public_answer_misordered',[call(1,'public_answer',args)],/placed public_answer outside index 0/],
 ])test(`native-v2 ${detail} remains rejected with safe specific correction`,async()=>{
   const deltas=[]
   const model=new OpenAIChatDriver('order-'+detail,{...options,publicAnswerTool:'native-v2',fetchImpl:async()=>new Response(frame(calls))})
