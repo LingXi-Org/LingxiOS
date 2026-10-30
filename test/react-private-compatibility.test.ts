@@ -99,7 +99,7 @@ it('native private graph child completes on selected strict v2 with actual bindi
     assert.equal(f.calls, 1)
     const binding = (await f.pool.query("SELECT input FROM lingxios.agent_steps WHERE work_id=$1 AND kind='runtime.binding'", [f.childId])).rows[0]!['input'] as Record<string, unknown>
     assert.equal(binding['publicTextProtocol'], 'purpose-json-v2')
-    assert.equal(binding['publicTextSelection'], 'public-v3-internal-v2-v1')
+    assert.equal(binding['publicTextSelection'], 'public-v3-failed-candidate-v2')
     assert.equal(binding['model'], f.initial.driver.modelId)
     assert.equal(binding['provider'], f.initial.driver.withPublicTextProtocol('purpose-json-v2').configurationFingerprint)
     assert.notEqual(binding['provider'], f.initial.driver.configurationFingerprint)
