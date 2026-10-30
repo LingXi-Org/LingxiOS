@@ -14,7 +14,7 @@ const stage=createExplanationStage(work,request,activationId,skill.workflow.expl
 const tools=[{name:'documents__save',action:'documents.save'},{name:'documents__read',action:'documents.read'}]
 function row(partId,text,operation={kind:'append',supersedes:[]},stageId,segmentId=partId){
   const recovery={version:2,phase:'intermediate',memorySources:[],publicAnswerCall:{type:'function_call',callId:partId,name:'public_answer',arguments:JSON.stringify({operation,answer:text,outcome:null})},...(stageId?{explanationStageId:stageId}:{})}
-  return {input:{version:3,purpose:'answer',messageId:'answer:run:v1',segmentId,partId,requestVersion:1,fence:1,attemptId:partId,partIndex:1,operation:operation.kind,supersedes:operation.supersedes,bodyHash:hash(text)},output:JSON.stringify({text,recovery})}
+  return {kind:'runtime.answer_segment',input:{version:3,purpose:'answer',messageId:'answer:run:v1',segmentId,partId,requestVersion:1,fence:1,attemptId:partId,partIndex:1,operation:operation.kind,supersedes:operation.supersedes,bodyHash:hash(text)},output:JSON.stringify({text,recovery})}
 }
 function database(rows,recordedStage=stage){return {async query(sql){
   if(sql.includes('agent_action_intents'))return {rows:[{skill_name:skill.name,skill_version:skill.version,skill_hash:index.hash,id:activationId,stage:recordedStage}]}
