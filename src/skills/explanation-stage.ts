@@ -118,8 +118,9 @@ export async function readExplanationStage(database: SqlQueryable, work: Pick<Wo
     output:row['output'] as string,artifacts:[] }))).records
   for (const record of records) {
     if (record.recovery?.version !== 2 || record.recovery.explanationStageId !== stage.id) continue
-    if (record.recovery.phase !== 'intermediate' || record.identity.operation !== 'append'
-      || !record.text.trim()) throw new Error('invalid explanation stage source')
+    // Both a new explanation and a corrected replacement can satisfy the current
+    // pending stage. AnswerSegmentSet retains only active, validated sources.
+    if (record.recovery.phase !== 'intermediate' || !record.text.trim()) throw new Error('invalid explanation stage source')
     return { ...stage, status:'provided', provided:{partId:record.identity.partId,bodyHash:record.bodyHash} }
   }
   return stage
@@ -129,7 +130,7 @@ export async function explanationStageTools(tools: readonly ToolDefinition[], st
   return stage?.status === 'pending' ? tools.filter(tool => !stage.authoringActions.includes(tool.action)) : [...tools]
 }
 export function explanationStageInstructions(stage: ExplanationStage): string {
-  if (stage.status !== 'pending') return ''
   if (stage.stale) return 'The request changed. Select the workflow using the current human request before authoring.'
-  return 'Current workflow phase: explain the selected request facts. Authoring follows the recorded explanation.'
+  if(stage.status==='provided')return 'Current workflow phase: the explanation is durably recorded. Continue the requested authoring now using an actually exposed authoring tool; another explanation or a promise to save does not perform the action. If the output contract requires public_answer first, include it and the needed business call in the SAME generation. Preserve existing successful receipts: if authoring is already done, verify and deliver that saved result instead of saving again. Finish only with the verified result or an honest remaining gap.'
+  return 'Current workflow phase: explain the selected request facts. Authoring tools are temporarily unavailable until this explanation is recorded. Publish a substantive intermediate public_answer with outcome:null, using the required append or replacement operation for the current answer. Do not call an unavailable authoring tool or repeat a previously recorded explanation. The next generation can author after the explanation is durably recorded.'
 }

@@ -119,3 +119,27 @@ test('business-only native-v2 batch keeps usage and explains the missing output 
     assert.match(correction.content,/SAME generation/);assert.doesNotMatch(correction.content,/record__read/);return true
   })
 })
+
+test('structural rejection details are closed, precise and contain no rejected values',async()=>{
+  for(const [args,detail] of [
+    [JSON.stringify({operation,answer:{private:'marker'},outcome}),'answer_type'],
+    [JSON.stringify({operation,answer,commentary:null,outcome}),'commentary_type'],
+    [JSON.stringify({operation:'append',answer,outcome}),'operation_invalid'],
+    [JSON.stringify({operation,answer,outcome:{status:'satisfied',gaps:['marker']}}),'outcome_invalid'],
+    [JSON.stringify({operation,answer,outcome,private:'marker'}),'unknown_field'],
+    ['{"operation":{"kind":"append","supersedes":[]},"answer":"bad\\q","outcome":null}','json_syntax'],
+  ])await assert.rejects(driver(async()=>new Response(wire(args))).run(request),error=>{
+    assert.ok(error instanceof ModelDriverError)
+    const safe=publicModelDiagnostics(error.diagnostics)
+    assert.equal(safe.protocolDetail,detail);assert.doesNotMatch(JSON.stringify(safe),/marker|private|bad\\q/);return true
+  })
+  assert.deepEqual(publicModelDiagnostics({protocolDetail:'private-marker'}),{})
+})
+
+test('unknown tool names and duplicate IDs retain distinct safe rejection reasons',async()=>{
+  for(const [name,id,detail] of [['unexposed','second','tool_name_unknown'],['record__read','output','tool_id_duplicate']]){
+    const model=driver(async()=>new Response(frame({tool_calls:[call(JSON.stringify({operation,answer,outcome:null})),
+      {index:1,id,type:'function',function:{name,arguments:'{}'}}]},'tool_calls')+done))
+    await assert.rejects(model.run(request),error=>{assert.ok(error instanceof ModelDriverError);assert.equal(publicModelDiagnostics(error.diagnostics).protocolDetail,detail);return true})
+  }
+})

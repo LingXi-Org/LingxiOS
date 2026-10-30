@@ -654,8 +654,9 @@ export class AgentRuntime {
             revisionSources: [...(session.request.inheritedRevisions ?? []), ...session.request.revisions].map(revision => revision.id) }) }
         : protocolCorrection
       const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...restoredMessages, ...(currentCorrection ? [currentCorrection] : [])]
-      if (liveContext.explanationStage?.status === 'pending' && !liveContext.explanationStage.stale) supplementalItems.push({role:'user',
-        content:explanationStageInstructions(liveContext.explanationStage)+'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes)})
+      if (liveContext.explanationStage && !liveContext.explanationStage.stale) supplementalItems.push({role:'user',
+        content:explanationStageInstructions(liveContext.explanationStage)+(liveContext.explanationStage.status==='pending'
+          ?'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes):'')})
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
         +'\nAppend adds text; replace selects active revision IDs in source order. A terminal null answer uses the assembled body.'})
       const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection), answerSegments.context.segmentIds) : undefined
@@ -989,7 +990,7 @@ export class AgentRuntime {
             await publication.end(calls.length ? 'tool' : 'completed')
             const record=await publication.seal(turn.text,turn.publicAnswerCall
               ?{version:2,phase:intermediate?'intermediate':'terminal',memorySources:derivedSources,publicAnswerCall:turn.publicAnswerCall,
-                ...(intermediate&&turn.answerOperation.kind==='append'&&liveContext.explanationStage?.status==='pending'&&!liveContext.explanationStage.stale
+                ...(intermediate&&liveContext.explanationStage?.status==='pending'&&!liveContext.explanationStage.stale
                   ?{explanationStageId:liveContext.explanationStage.id}:{})}
               :intermediate?{version:1,phase:'intermediate',memorySources:derivedSources}:undefined)
             answerSegments.seal(record)

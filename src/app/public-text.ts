@@ -77,7 +77,7 @@ export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undef
             const decoded=decodePublicAnswerCall(recovery.publicAnswerCall)
             if(decoded.text!==text || !isDeepStrictEqual(decoded.operation,{kind:data.operation,supersedes:data.supersedes}))throw new Error('answer seal recovery does not match durable text')
             if(recovery.explanationStageId){
-              if(!validateExplanationStage || recovery.phase!=='intermediate' || data.operation!=='append' || !text.trim())throw new Error('invalid explanation stage publication')
+              if(!validateExplanationStage || recovery.phase!=='intermediate' || !text.trim())throw new Error('invalid explanation stage publication')
               await validateExplanationStage(database,current,data.requestVersion,recovery.explanationStageId)
             }
           }
