@@ -15,7 +15,7 @@ jobs:
         with: { node-version: 22.13.1, cache: npm }
       - run: npm ci --ignore-scripts
       - run: npm pack
-      - run: node --test scripts/test-public-answer-publication.mjs scripts/test-explanation-stage-replacement.mjs
+      - run: node --test scripts/test-public-answer-publication.mjs scripts/test-explanation-stage-replacement.mjs scripts/test-answer-candidate-lineage.mjs scripts/test-correction-candidate-view.mjs scripts/test-explanation-stage-references.mjs scripts/test-public-answer-order.mjs
       - name: Verify production package imports and resources
         run: |
           package="$PWD/$(node -p "const p=require('./package.json'); p.name.replace('@','').replace('/','-')+'-'+p.version+'.tgz'")"

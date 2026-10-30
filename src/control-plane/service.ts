@@ -196,7 +196,7 @@ export class ControlPlaneService {
 
   async saveStep(proof: LeaseProof, step: import('./steps.js').ExecutionStep, signal?: AbortSignal): Promise<void> {
     const work = await this.requireLease(proof, { rejectCancelled: true })
-    if (step?.kind === 'runtime.action_trace' || step?.kind === 'runtime.answer_segment') throw new ControlPlaneError(400, 'native trace and sealed answer steps are reserved')
+    if (step?.kind === 'runtime.action_trace' || step?.kind === 'runtime.answer_segment' || step?.kind === 'runtime.answer_candidate_failure') throw new ControlPlaneError(400, 'native trace and answer publication steps are reserved')
     if (!step || typeof step.id !== 'string' || !step.id || step.id.length > 512
       || !Number.isSafeInteger(step.requestVersion) || step.requestVersion < 1 || typeof step.kind !== 'string'
       || !step.input || typeof step.input !== 'object' || Array.isArray(step.input)

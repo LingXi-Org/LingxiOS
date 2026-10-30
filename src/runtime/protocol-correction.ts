@@ -8,7 +8,12 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
     ? 'Use only exposed native tools or an allowed ipython call when needed.'
     : 'Python execution is disabled for this request. Use only exposed native tools when needed.'
   const code=diagnostics.protocolCode
-  if(code==='public_answer_first_required')return {category:'response_protocol',content:`Protocol correction: the previous native-v2 batch omitted public_answer at index 0. Its business calls were not dispatched. Start with public_answer containing new substantive answer text, operation and outcome:null, then include the needed business calls in the SAME generation using their exact exposed function.name identifiers. Do not repeat sealed answer text or stop after restating an explanation. If no work remains, use public_answer alone with an honest terminal outcome. Existing receipts remain the record of completed or uncertain actions. ${execution}`}
+  if(code==='public_answer_first_required'){
+    const failure=diagnostics.protocolDetail==='public_answer_missing'?'did not include public_answer'
+      :diagnostics.protocolDetail==='public_answer_misordered'?'placed public_answer outside index 0'
+      :'did not place public_answer at index 0'
+    return {category:'response_protocol',content:`Protocol correction: the previous native-v2 batch ${failure}. Its business calls were not dispatched. Start with the first exposed tool schema, public_answer, containing new substantive answer text, operation and outcome:null, then include the needed business calls in the SAME generation using their exact exposed function.name identifiers. Return public_answer first in tool_calls, not assistant prose and not a trailing call. Do not repeat sealed answer text or stop after restating an explanation. If no work remains, use public_answer alone with an honest terminal outcome. Existing receipts remain the record of completed or uncertain actions. ${execution}`}
+  }
   const completion=protocol==='purpose-json-v3'
     ? '\nIf the current request is fully answered, declare its terminal outcome in this corrected response; do not add another full-answer round. Use outcome:null only for unfinished work. When sealed sources already contain the answer, finish with answer:null and a terminal outcome; revise their content only with explicit replace and their active source IDs. Never append a restatement of sealed text.'
     : ''
