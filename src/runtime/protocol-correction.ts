@@ -8,6 +8,7 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
     ? 'Use only exposed native tools or an allowed ipython call when needed.'
     : 'Python execution is disabled for this request. Use only exposed native tools when needed.'
   const code=diagnostics.protocolCode
+  if(code==='public_answer_first_required')return {category:'response_protocol',content:`Protocol correction: the previous native-v2 batch omitted public_answer at index 0. Its business calls were not dispatched. Start with public_answer containing new substantive answer text, operation and outcome:null, then include the needed business calls in the SAME generation using their exact exposed function.name identifiers. Do not repeat sealed answer text or stop after restating an explanation. If no work remains, use public_answer alone with an honest terminal outcome. Existing receipts remain the record of completed or uncertain actions. ${execution}`}
   const completion=protocol==='purpose-json-v3'
     ? '\nIf the current request is fully answered, declare its terminal outcome in this corrected response; do not add another full-answer round. Use outcome:null only for unfinished work. When sealed sources already contain the answer, finish with answer:null and a terminal outcome; revise their content only with explicit replace and their active source IDs. Never append a restatement of sealed text.'
     : ''
@@ -27,5 +28,5 @@ Use the ${protocol} contract supplied by the trusted model driver for the curren
 ${execution}${completion}`}
   }
   if(code==='response_empty')return {category:'response_protocol',content:`Protocol correction: the previous response contained neither an answer nor a tool call. Provide the substantive answer or an exposed native tool call needed to obtain it. Existing receipts remain the record of completed or uncertain actions. ${execution}${completion}`}
-  return {category:'tool_protocol',content:`Protocol correction: the previous response violated the tool protocol. Reply again with a valid exposed native tool call or the substantive answer. Existing receipts remain the record of completed or uncertain actions. ${execution}${completion}`}
+  return {category:'tool_protocol',content:`Protocol correction: the previous response violated the tool protocol. Use exact function.name identifiers from the exposed tool schemas; dotted action labels in descriptions are not callable names. Preserve the public output binding required by the configured contract when calling business tools. Existing receipts remain the record of completed or uncertain actions. ${execution}${completion}`}
 }
