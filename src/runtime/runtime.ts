@@ -863,7 +863,7 @@ export class AgentRuntime {
           },
         })
       } catch (error) {
-        await this.publications.get(runId)?.end(signals.hasSteer() ? 'superseded' : signals.lifecycle.signal.aborted ? 'cancelled' : 'failed').catch(()=>{})
+        await this.publications.get(runId)?.end(signals.hasSteer() ? 'superseded' : signals.lifecycle.signal.aborted ? 'cancelled' : 'failed')
         preview?.discard()
         if (signals.hasSteer() && !signals.lifecycle.signal.aborted) continue
         if (error instanceof ModelBudgetExceededError && pendingCompaction) {
@@ -931,7 +931,7 @@ export class AgentRuntime {
           if(calls.length)await this.publications.get(runId)?.end('tool')
         }
       } catch(error) {
-        await this.publications.get(runId)?.end('failed').catch(()=>{})
+        await this.publications.get(runId)?.end('failed')
         if(isPublicTextSafetyFailure(error)&&budget.consume('response_protocol','public text safety rejected')){
           protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return safe user-facing content without private reasoning or internal protocol.'}
           continue
@@ -960,7 +960,7 @@ export class AgentRuntime {
         } catch {
           // Custom drivers have the same fail-closed boundary as the wire driver.
           // No returned tool call executes while its declaration is invalid.
-          await this.publications.get(runId)?.end('failed').catch(()=>{})
+          await this.publications.get(runId)?.end('failed')
           if (!react && !calls.length) await rememberCandidate(turn.text, liveContext, ['Final outcome declaration is invalid'])
           const correction = modelProtocolCorrection({kind:'protocol',finishReasons:[],protocolCode:'public_text_invalid'},codeExecution,model.publicTextProtocol)
           if (!budget.consume('response_protocol','invalid outcome declaration')) {
@@ -1018,7 +1018,7 @@ export class AgentRuntime {
           }
         } catch (error) {
           if (error instanceof LeaseLostError || error instanceof RunCancelledError || signals.lifecycle.signal.aborted || isPublicTextPublicationFailure(error)) throw error
-          await this.publications.get(runId)?.end('failed').catch(()=>{})
+          await this.publications.get(runId)?.end('failed')
           if (!budget.consume('response_protocol','invalid answer source or tool batch')) {
             terminalError=new AgentOSError('response_protocol_exhausted','Answer source or tool protocol correction exhausted')
             break

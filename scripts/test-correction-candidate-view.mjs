@@ -53,3 +53,25 @@ test('final commit verifies failed lineage but never accepts the failed candidat
  const invalid={...assembled.sources,segments:assembled.sources.segments.map(s=>s.partId==='R'?{...s,partId:'F'}:s)}
  await assert.rejects(verifySealedAnswerSources(db,work,{...message,publicTextSources:invalid}),/not sealed/)
 })
+
+test('a lost failed-end acknowledgement stops correction until durable recovery',async()=>{
+ const {PublicTextAttemptWriter,PublicTextPublicationError}=await import('../dist/src/runtime/public-text.js')
+ const {AnswerSegmentSet}=await import('../dist/src/runtime/answer-segments.js')
+ const {createHash}=await import('node:crypto'),hash=text=>createHash('sha256').update(text).digest('hex')
+ const prefix={version:3,purpose:'answer',messageId:'answer:run:v1',segmentId:'P',partId:'P',requestVersion:1,fence:1,attemptId:'p',partIndex:1,operation:'append',supersedes:[]}
+ const live=new AnswerSegmentSet('run',1,1);live.seal({identity:prefix,text:'Kept.',bodyHash:hash('Kept.')})
+ const steps=[{kind:'runtime.answer_segment',requestVersion:1,input:{...prefix,bodyHash:hash('Kept.')},output:JSON.stringify({text:'Kept.'})}]
+ const writer=new PublicTextAttemptWriter({version:1,requestVersion:1,fence:1,attemptId:'f',partId:'F',partIndex:0,messageId:live.messageId},async event=>{
+   if(event.kind==='public.text.ended'){
+    steps.push({kind:'runtime.answer_candidate_failure',requestVersion:1,input:{...event.data,endedSeq:5},output:'{}'})
+    throw new Error('synthetic lost acknowledgement')
+   }
+ },new AbortController().signal,undefined,'purpose-json-v3')
+ try{
+  await writer.begin({kind:'append',supersedes:[]});await writer.push('Unverified.',{purpose:'answer'})
+  await assert.rejects(writer.end('failed'),PublicTextPublicationError)
+  await assert.rejects(writer.end('failed'),PublicTextPublicationError,'closed writer must retain uncertain publication failure')
+  const recovered=new AnswerSegmentSet('run',1,2,steps)
+  assert.deepEqual(recovered.correctionSources,['F:answer']);assert.equal(recovered.assemble().body,'Kept.')
+ }finally{writer.dispose()}
+})
