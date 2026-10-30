@@ -1,5 +1,7 @@
 # Issue 560: public output publication and bounded protocol correction
 
+## Initial investigation and PR 74 (historical record)
+
 The installed production dependency is `@lyyzka/lingxios` 3.8.16. A synthetic
 attention explanation plus interactive-view request through LingxiLoop's real
 Worker, isolated PostgreSQL/Redis, recording IM, and the existing authorized
@@ -34,20 +36,22 @@ identifies the missing binding and same-generation business call requirement;
 wire instructions reinforce exact exposed function names after skill observations.
 The instruction hash automatically changes the native-v2 configuration fingerprint.
 No budget increase, forced completion or tool-name alias fallback was introduced.
-The final dedicated correction has deterministic coverage; it has not had another
-real-provider run. Total real experiment calls: 13, across three synthetic runs.
+At the end of PR 74, the dedicated correction had deterministic coverage but no
+additional real-provider run. That initial phase used 13 real calls across three
+synthetic runs. The follow-up below records the later experiments and results.
 
 Current-main owning check:
 
 ```
 npm run build
-node --test scripts/test-public-answer-publication.mjs
+node --test scripts/test-public-answer-publication.mjs scripts/test-explanation-stage-replacement.mjs
 ```
 
-The 34 focused checks cover all 24 field orders, early streaming, malformed input,
+The current 40 focused checks cover all 24 field orders, early streaming, malformed input,
 late-commentary safety, legacy order, safe diagnostic projection, exact-name
-correction, and missing-output-binding diagnostics with preserved token usage.
-The package CI runs this focused file; no retired test harness was restored.
+correction, missing-output-binding diagnostics with preserved token usage, closed
+structural details and active explanation replacement proof.
+The package CI runs both focused files; no retired test harness was restored.
 On the 3.8.16 source candidate, the final changed driver/diagnostic checks passed
 39/39 after the earlier independent 105-case run (overlapping counts).
 
