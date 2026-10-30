@@ -87,7 +87,7 @@ export interface ModelDiagnostics {
   usage?: import('./model/driver.js').ModelUsage
   kind?: 'provider' | 'protocol'
   /** Fixed contract failures only; never provider response text. */
-  protocolCode?: 'native_envelope_invalid' | 'terminal_outcome_required' | 'public_text_invalid' | 'public_text_incomplete' | 'public_text_answer_required' | 'tool_identity_invalid' | 'response_empty'
+  protocolCode?: 'native_envelope_invalid' | 'terminal_outcome_required' | 'public_text_invalid' | 'public_text_incomplete' | 'public_text_answer_required' | 'public_answer_first_required' | 'tool_identity_invalid' | 'response_empty'
   status?: number
   finishReasons: string[]
   requestId?: string

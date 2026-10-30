@@ -586,7 +586,7 @@ export class OpenAIChatDriver implements ModelDriver {
       if(publicCallIdentity && (call.id!==publicCallIdentity.id || call.name!==publicCallIdentity.name))throw publicPurposeError()
       if(!publicCallIdentity) {
         const candidates=tools.filter(tool=>tool.function.name.startsWith(call.name))
-        if(!candidates.length)throw publicPurposeError()
+        if(!candidates.length)throw new ModelDriverError('invalid native tool identity',{kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid',finishReasons:[]})
         if(call.name!==PUBLIC_ANSWER_TOOL_NAME || !call.id || call.id.trim()!==call.id
           || !finalIdentity && candidates.length>1)return
         publicCallIdentity={id:call.id,name:call.name}
@@ -649,6 +649,8 @@ export class OpenAIChatDriver implements ModelDriver {
         ...(accumulator.malformedToolCalls?{malformed:true}:{})},tools.map(tool=>tool.function.name),this.profile.parallelTools))throw new ModelDriverError('invalid original native output batch',{
         ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid'})
       const call=accumulator.toolCalls.get(0)
+      if(this.publicAnswerTool==='native-v2'&&call?.name!==PUBLIC_ANSWER_TOOL_NAME)throw new ModelDriverError('public output binding must precede native business calls',{
+        ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_answer_first_required'})
       if(!call || this.publicAnswerTool==='native-v2' && (call.name!==PUBLIC_ANSWER_TOOL_NAME || [...accumulator.toolCalls.entries()].some(([index,item])=>index!==0&&item.name===PUBLIC_ANSWER_TOOL_NAME)))throw publicPurposeError()
       text='' // Raw content and reasoning never enter public text or model history.
       if(call.name===PUBLIC_ANSWER_TOOL_NAME) {
