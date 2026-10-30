@@ -339,3 +339,16 @@ it('provided explanation cannot replay an unknown authoring effect or turn it in
     assert.equal(rows.rows.length,1);assert.equal((rows.rows[0]!['result'] as {executionState:string}).executionState,'unknown')
   }finally{await f.close()}
 })
+
+it('keeps the closed call-budget cause on model.failed after valid intermediate continuations', async () => {
+  const f=await fixture([{kind:'activate',declaration:declaration()},
+    ...Array.from({length:7},()=>({kind:'answer' as const,text:answer,intermediate:true}))])
+  try {
+    const state=await f.run();assert.equal(state.run.status,'failed');assert.equal(f.calls,8);assert.equal(f.effects,0)
+    const failures=(await f.pool.query("SELECT data FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='model.failed'",[f.identity.runId])).rows
+    assert.equal(failures.length,1)
+    const data=failures[0]!['data'] as Record<string,unknown>
+    assert.deepEqual(data['budgetLimit'],{code:'budget_limit',dimension:'calls'})
+    assert.equal(data['modelDiagnostics'],undefined,'an exhausted test budget is not a model protocol rejection')
+  } finally {await f.close()}
+})
