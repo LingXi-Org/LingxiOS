@@ -75,3 +75,10 @@ test('a lost failed-end acknowledgement stops correction until durable recovery'
   assert.deepEqual(recovered.correctionSources,['F:answer']);assert.equal(recovered.assemble().body,'Kept.')
  }finally{writer.dispose()}
 })
+
+test('each v3 producer contract permits only explicit runtime-selected failed correction targets',async()=>{
+ const native=await import('../dist/src/model/public-answer-tool.js'),legacy=await import('../dist/src/model/public-purpose.js')
+ for(const instructions of [native.PUBLIC_ANSWER_TOOL_INSTRUCTIONS,native.PUBLIC_ANSWER_BATCH_INSTRUCTIONS,legacy.PUBLIC_PURPOSE_V3_INSTRUCTIONS]){
+  assert.equal(typeof instructions,'string');assert.match(instructions,/failed-candidate correction target/);assert.match(instructions,/Failed drafts are not sealed body sources/)
+ }
+})
