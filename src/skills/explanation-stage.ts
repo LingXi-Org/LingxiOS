@@ -7,12 +7,17 @@ import type { WorkItem } from '../protocol/types.js'
 import type { ToolDefinition } from '../tools/catalog.js'
 import { skillIndex, type SkillDefinition, type SkillIndex } from './definition.js'
 import { AnswerSegmentSet } from '../runtime/answer-segments.js'
+import { NoEffectError } from '../tools/definition.js'
+import { explanationReferenceCorrections } from '../tools/failure.js'
 
+/** sourceRef is the existing trusted request context item's source identifier.
+ * Ranges use UTF-16 offsets into that exact source; omitting both selects it whole. */
+export type ExplanationQuoteSelection = string | { sourceRef: string; start?: number; end?: number }
 export interface ExplanationDeclaration {
-  explanationQuote: string
-  authoringQuote: string
-  factQuotes: string[]
-  languageQuote?: string
+  explanationQuote: ExplanationQuoteSelection
+  authoringQuote: ExplanationQuoteSelection
+  factQuotes: ExplanationQuoteSelection[]
+  languageQuote?: ExplanationQuoteSelection
 }
 export interface RequestQuote { sourceRef: string; start: number; end: number; text: string }
 /** References prove provenance, not the model's interpretation or semantic correctness. */
@@ -31,23 +36,45 @@ export interface ExplanationStage {
   stale?: boolean
   provided?: { partId: string; bodyHash: string }
 }
-const quoteSchema = { type: 'string', minLength: 1, maxLength: 2000 }
+const sourceRefSchema = { type: 'string', minLength: 1, maxLength: 2000 }
+const quoteSchema = { anyOf: [
+  { type: 'string', minLength: 1, maxLength: 2000 },
+  { type: 'object', additionalProperties: false, properties: { sourceRef: sourceRefSchema }, required: ['sourceRef'] },
+  { type: 'object', additionalProperties: false, properties: { sourceRef: sourceRefSchema,
+    start: { type: 'integer', minimum: 0 }, end: { type: 'integer', minimum: 1 } }, required: ['sourceRef','start','end'] },
+] }
 export const explanationDeclarationSchema = { type: 'object', additionalProperties: false,
   properties: { explanationQuote: quoteSchema, authoringQuote: quoteSchema,
     factQuotes: { type: 'array', minItems: 1, maxItems: 8, uniqueItems: true, items: quoteSchema }, languageQuote: quoteSchema },
   required: ['explanationQuote', 'authoringQuote', 'factQuotes'] }
 
 export function parseExplanationDeclaration(value: unknown): ExplanationDeclaration {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid explanation declaration')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new ExplanationReferenceError('explanation_reference_invalid')
   const input = value as Record<string, unknown>
-  if (Object.keys(input).some(key => !['explanationQuote','authoringQuote','factQuotes','languageQuote'].includes(key))) throw new Error('unknown explanation declaration field')
-  const quote = (value: unknown): value is string => typeof value === 'string' && !!value.trim() && value.length <= 2000 && Buffer.from(value,'utf8').toString('utf8') === value
+  if (Object.keys(input).some(key => !['explanationQuote','authoringQuote','factQuotes','languageQuote'].includes(key))) throw new ExplanationReferenceError('explanation_reference_invalid')
+  const quote = (value: unknown): value is ExplanationQuoteSelection => {
+    if (typeof value === 'string') return validQuoteText(value)
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const selection = value as Record<string,unknown>, keys = Object.keys(selection).sort().join(',')
+    return validQuoteText(selection['sourceRef']) && (keys === 'sourceRef' || keys === 'end,sourceRef,start'
+      && Number.isSafeInteger(selection['start']) && Number(selection['start']) >= 0
+      && Number.isSafeInteger(selection['end']) && Number(selection['end']) > Number(selection['start']))
+  }
   if (!quote(input['explanationQuote']) || !quote(input['authoringQuote']) || !Array.isArray(input['factQuotes'])
     || !input['factQuotes'].length || input['factQuotes'].length > 8 || !input['factQuotes'].every(quote)
-    || new Set(input['factQuotes']).size !== input['factQuotes'].length
+    || new Set(input['factQuotes'].map(canonicalJson)).size !== input['factQuotes'].length
     || input['languageQuote'] !== undefined && !quote(input['languageQuote'])
-    || Buffer.byteLength(JSON.stringify(input)) > 16_000) throw new Error('invalid explanation references')
+    || Buffer.byteLength(JSON.stringify(input)) > 16_000) throw new ExplanationReferenceError('explanation_reference_invalid')
   return structuredClone(input) as unknown as ExplanationDeclaration
+}
+
+const validQuoteText = (value: unknown): value is string => typeof value === 'string' && !!value.trim()
+  && value.length <= 2000 && Buffer.from(value,'utf8').toString('utf8') === value
+type ReferenceFailure = keyof typeof explanationReferenceCorrections
+export class ExplanationReferenceError extends NoEffectError {
+  constructor(code: ReferenceFailure) {
+    super(explanationReferenceCorrections[code], code)
+  }
 }
 
 export function explanationRequestHash(request: RequestSnapshot): string {
@@ -59,25 +86,38 @@ export function createExplanationStage(work: Pick<WorkItem,'id'|'tenantId'|'prin
   activationId: string, authoringActions: readonly string[], value: unknown, skill: Pick<SkillIndex,'name'|'version'|'hash'>): ExplanationStage {
   const declaration = parseExplanationDeclaration(value)
   if (request.workId !== work.id || request.tenantId !== work.tenantId || request.authorId !== work.principalId
-    || request.instructionAuthor || request.parentWorkId) throw new Error('explanation stage requires a direct human request')
+    || request.instructionAuthor || request.parentWorkId) throw new NoEffectError('explanation stage requires a direct human request', 'forbidden')
   const sources = [{ sourceRef: request.sourceRef, text: request.originalText }, ...request.revisions
     .filter(revision => revision.author?.kind === 'human' && revision.author.id === work.principalId)
     .map(revision => ({ sourceRef: revision.id, text: revision.text }))]
-  const locate = (text: string): RequestQuote => {
+  const locate = (selection: ExplanationQuoteSelection): RequestQuote => {
+    if (typeof selection !== 'string') {
+      const matched = sources.filter(source => source.sourceRef === selection.sourceRef)
+      if (!matched.length) throw new ExplanationReferenceError('explanation_reference_not_found')
+      if (matched.length !== 1) throw new ExplanationReferenceError('explanation_reference_ambiguous')
+      const source = matched[0]!, start = selection.start ?? 0, end = selection.end ?? source.text.length
+      const text = source.text.slice(start,end)
+      if (end > source.text.length || !validQuoteText(text)) throw new ExplanationReferenceError('explanation_reference_invalid')
+      return { sourceRef: source.sourceRef, start, end, text }
+    }
+    const text = selection
     const matches: RequestQuote[] = []
     for (const source of sources) {
       const start = source.text.indexOf(text)
       if (start < 0) continue
-      if (source.text.indexOf(text, start + 1) >= 0) throw new Error('explanation quote must identify one request range')
+      if (source.text.indexOf(text, start + 1) >= 0) throw new ExplanationReferenceError('explanation_reference_ambiguous')
       matches.push({ sourceRef: source.sourceRef, start, end: start + text.length, text })
     }
-    if (matches.length !== 1) throw new Error('explanation quote is not a unique current human request range')
+    if (!matches.length) throw new ExplanationReferenceError('explanation_reference_not_found')
+    if (matches.length !== 1) throw new ExplanationReferenceError('explanation_reference_ambiguous')
     return matches[0]!
   }
+  const facts = declaration.factQuotes.map(locate)
+  if (new Set(facts.map(canonicalJson)).size !== facts.length) throw new ExplanationReferenceError('explanation_reference_invalid')
   const bound = { version: 1 as const, activationId, skill:{name:skill.name,version:skill.version,hash:skill.hash}, runId: work.id, requestVersion: request.revisions.length + 1,
     sourceRef: request.sourceRef, requestHash: explanationRequestHash(request),
     quotes: { explanation: locate(declaration.explanationQuote), authoring: locate(declaration.authoringQuote),
-      facts: declaration.factQuotes.map(locate), ...(declaration.languageQuote ? { language: locate(declaration.languageQuote) } : {}) },
+      facts, ...(declaration.languageQuote ? { language: locate(declaration.languageQuote) } : {}) },
     authoringActions: [...authoringActions] }
   return { ...bound, id: textSha256(canonicalJson(bound)), status: 'pending' }
 }
@@ -108,14 +148,14 @@ export async function readExplanationStage(database: SqlQueryable, work: Pick<Wo
   const request = await requestSnapshot(database,work.id,version)
   if (stage.requestVersion !== version || stage.requestHash !== explanationRequestHash(request)) throw new Error('explanation request binding changed')
   const expected = createExplanationStage(work,request,stage.activationId,stage.authoringActions,{
-    explanationQuote:stage.quotes.explanation.text, authoringQuote:stage.quotes.authoring.text,
-    factQuotes:stage.quotes.facts.map(quote => quote.text), ...(stage.quotes.language ? { languageQuote:stage.quotes.language.text } : {}) },{name:skill.name,version:skill.version,hash:skillIndex(skill).hash})
+    explanationQuote:quoteSelection(stage.quotes.explanation), authoringQuote:quoteSelection(stage.quotes.authoring),
+    factQuotes:stage.quotes.facts.map(quoteSelection), ...(stage.quotes.language ? { languageQuote:quoteSelection(stage.quotes.language) } : {}) },{name:skill.name,version:skill.version,hash:skillIndex(skill).hash})
   if (canonicalJson(expected) !== canonicalJson(stage)) throw new Error('invalid persisted explanation stage')
-  const sealed = (await database.query(`SELECT input,output FROM lingxios.agent_steps WHERE work_id=$1
-    AND request_version=$2 AND kind='runtime.answer_segment' AND completed_at IS NOT NULL ORDER BY step_seq LIMIT 2049`,[work.id,version])).rows
+  const sealed = (await database.query(`SELECT kind,input,output FROM lingxios.agent_steps WHERE work_id=$1
+    AND request_version=$2 AND kind IN ('runtime.answer_segment','runtime.answer_candidate_failure') AND completed_at IS NOT NULL ORDER BY step_seq LIMIT 2049`,[work.id,version])).rows
   if (sealed.length>2048) throw new Error('explanation source history exceeds recovery bound')
   const records = new AnswerSegmentSet(work.id,version,work.fence,sealed.map((row,index) => ({
-    id:String(index),kind:'runtime.answer_segment',requestVersion:version,input:row['input'] as Record<string,unknown>,
+    id:String(index),kind:String(row['kind']),requestVersion:version,input:row['input'] as Record<string,unknown>,
     output:row['output'] as string,artifacts:[] }))).records
   for (const record of records) {
     if (record.recovery?.version !== 2 || record.recovery.explanationStageId !== stage.id) continue
@@ -127,6 +167,8 @@ export async function readExplanationStage(database: SqlQueryable, work: Pick<Wo
   return stage
 }
 
+const quoteSelection = ({ sourceRef, start, end }: RequestQuote): ExplanationQuoteSelection => ({ sourceRef, start, end })
+
 type Schedule = { tools: readonly ToolDefinition[]; stage?: ExplanationStage }
 /** Reuse the upstream branch combinator only for routing; the existing runtime owns the loop. */
 const schedule = RunnableBranch.from<Schedule, ToolDefinition[]>([
@@ -135,6 +177,7 @@ const schedule = RunnableBranch.from<Schedule, ToolDefinition[]>([
 ])
 export function explanationStageTools(tools: readonly ToolDefinition[], stage?: ExplanationStage): Promise<ToolDefinition[]> {
   return schedule.invoke({ tools, ...(stage ? { stage } : {}) })
+
 }
 export function explanationStageInstructions(stage: ExplanationStage): string {
   if (stage.stale) return 'The request changed. Select the workflow using the current human request before authoring.'

@@ -74,8 +74,9 @@ for (const scenario of ['valid', 'bad-schema', 'truncated', 'typed-conflict', 's
           const valid = scenario === 'valid'
           // A denied action can leave a sealed public prefix. Follow the runtime's
           // durable repair intent instead of appending a rewritten full answer.
+          const sealed = (await pool.query("SELECT 1 FROM lingxios.agent_steps WHERE work_id=$1 AND kind='runtime.answer_segment' LIMIT 1",[identity.runId])).rows.length>0
           const repair = (await pool.query("SELECT input->'operation' AS operation FROM lingxios.agent_steps WHERE work_id=$1 AND request_version=1 AND kind='runtime.answer_correction' ORDER BY step_seq DESC LIMIT 1", [identity.runId])).rows[0]?.['operation']
-          return new Response(frame({ content: JSON.stringify({ operation: repair ?? operation, commentary: '', answer: valid ? null : (repair ? answer : '') + 'The synthetic action could not be completed.',
+          return new Response(frame({ content: JSON.stringify({ operation: repair ?? operation, commentary: '', answer: valid ? null : (repair && sealed ? answer : '') + 'The synthetic action could not be completed.',
             outcome: { status: valid ? 'satisfied' : 'blocked', gaps: valid ? [] : ['Synthetic action unavailable.'] } }) }, 'stop') + ending)
         }
         const prefix = '{"public_output":{"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":"' + answer

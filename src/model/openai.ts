@@ -281,6 +281,7 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
       ...(this.publicTextContinuation ? { publicTextContinuation: this.publicTextContinuation } : {}),
       ...(this.publicAnswerTool ? { publicAnswerTool:this.publicAnswerTool, publicAnswerHistoryPolicy:'sealed-native-call-ack-v1', publicAnswerParserPolicy:'streamparser-partial-null-v2', publicAnswerToolChoice:'auto-v1', publicAnswerInstructionsHash:createHash('sha256').update(this.publicAnswerInstructions).digest('hex') } : {}),
+      ...(this.publicAnswerTool === 'native-v2' ? { publicAnswerCatalogPolicy:'output-first-v1' } : {}),
       ...(options.nativeToolPublicOutput ? { nativeToolPublicOutput: options.nativeToolPublicOutput,
         nativeToolIdentityPolicy: 'bounded-unambiguous-prefix-v1' } : {}),
     })).digest('hex')
@@ -509,7 +510,7 @@ export class OpenAIChatDriver implements ModelDriver {
     if (this.publicAnswerTool) {
       if (tools.some(tool => tool.function.name === PUBLIC_ANSWER_TOOL_NAME)) throw new Error('reserved public answer tool name')
       return this.countTokens(JSON.stringify({ messages: toWireMessages(this.generationInstructions(request.instructions, false), request.items),
-        tools: [...tools, this.publicAnswerToolSchema], tool_choice:'auto', parallel_tool_calls:this.profile.parallelTools }))
+        tools: this.publicAnswerTool === 'native-v2' ? [this.publicAnswerToolSchema, ...tools] : [...tools, this.publicAnswerToolSchema], tool_choice:'auto', parallel_tool_calls:this.profile.parallelTools }))
     }
     const nativeEnvelope = tools.length > 0
     return this.countTokens(JSON.stringify({ messages: toWireMessages(this.generationInstructions(request.instructions, nativeEnvelope),
@@ -526,7 +527,10 @@ export class OpenAIChatDriver implements ModelDriver {
     const nativeEnvelope = !!this.options.nativeToolPublicOutput && tools.length > 0
     if (this.publicAnswerTool) {
       if (tools.some(tool => tool.function.name === PUBLIC_ANSWER_TOOL_NAME)) throw new Error('reserved public answer tool name')
-      tools.push(this.publicAnswerToolSchema as typeof tools[number])
+      // Match the mandatory output-first wire contract in the catalog itself.
+      // Keep native-v1's independent business-call selection unchanged.
+      if (this.publicAnswerTool === 'native-v2') tools.unshift(this.publicAnswerToolSchema as typeof tools[number])
+      else tools.push(this.publicAnswerToolSchema as typeof tools[number])
     }
     const wireTools = nativeEnvelope ? tools.map(tool => ({ ...tool, function: { ...tool.function,
       parameters: wrapNativeToolSchema(tool.function.parameters) } })) : tools
@@ -651,7 +655,8 @@ export class OpenAIChatDriver implements ModelDriver {
         ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid',protocolDetail:identityFailure})
       const call=accumulator.toolCalls.get(0)
       if(this.publicAnswerTool==='native-v2'&&call?.name!==PUBLIC_ANSWER_TOOL_NAME)throw new ModelDriverError('public output binding must precede native business calls',{
-        ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_answer_first_required'})
+        ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_answer_first_required',
+        protocolDetail:[...accumulator.toolCalls.values()].some(item=>item.name===PUBLIC_ANSWER_TOOL_NAME)?'public_answer_misordered':'public_answer_missing'})
       if(!call || this.publicAnswerTool==='native-v2' && (call.name!==PUBLIC_ANSWER_TOOL_NAME || [...accumulator.toolCalls.entries()].some(([index,item])=>index!==0&&item.name===PUBLIC_ANSWER_TOOL_NAME)))throw publicPurposeError()
       text='' // Raw content and reasoning never enter public text or model history.
       if(call.name===PUBLIC_ANSWER_TOOL_NAME) {

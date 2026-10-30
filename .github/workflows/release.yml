@@ -19,6 +19,7 @@ jobs:
       - name: Load confined Worker AppArmor policy
         run: sudo apparmor_parser --replace --skip-cache deploy/worker-apparmor
       - run: npm run check:release
+      - run: node --test scripts/test-answer-candidate-lineage.mjs scripts/test-correction-candidate-view.mjs scripts/test-explanation-stage-replacement.mjs scripts/test-explanation-stage-references.mjs scripts/test-public-answer-order.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: release-qualification-${{ github.sha }}

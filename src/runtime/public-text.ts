@@ -196,12 +196,17 @@ export class PublicTextWriter {
     if(this.closed)return
     this.closed=true
     await this.tail
-    if(this.chunks&&!this.signal.aborted)await this.emit({kind:'public.text.ended',stage:'completed',visibility:'user',data:{...this.identity,chunkCount:this.chunks,reason}})
+    if(this.chunks&&!this.signal.aborted){
+      try{await this.emit({kind:'public.text.ended',stage:'completed',visibility:'user',data:{...this.identity,chunkCount:this.chunks,reason}})}
+      catch(error){this.failure=new PublicTextPublicationError('unknown','persistence_rejected',error);throw this.failure}
+    }
   }
   async end(reason:PublicTextEndReason):Promise<void>{
     this.clearHeldTimer()
     if(this.timer){clearTimeout(this.timer);this.timer=undefined}
     if(this.signal.aborted){this.text='';this.received='';this.receivedMessage=undefined;await this.tail.catch(()=>{});this.closed=true;return}
+    if(this.failure instanceof PublicTextPublicationError)throw this.failure
+
     if(this.closed)return
     if(reason==='completed'||reason==='tool')await this.finish()
     else{this.text='';this.received=''}

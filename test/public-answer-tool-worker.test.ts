@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'node:test'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readFile, mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,10 +17,21 @@ import type { RunState } from '../src/app/jobs.js'
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const ack = '{"status":"public_message_recorded"}'
 const known = 'Gather collects the items. Check reviews them. '
-type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; callId?: string; reads?: boolean; save?: boolean; lateCommentary?: boolean }
+type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; wrongAppend?: boolean; callId?: string; reads?: boolean; save?: boolean; lateCommentary?: boolean }
   | { business: true; read?: string }
   | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' }
 type WireRequest = { stream?: boolean; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
+type AnswerOperation = { kind: 'append' | 'replace'; supersedes: string[] }
+// The synthetic model follows the exact runtime-selected correction target.
+// Failed drafts are not among the sealed answer sources in native context.
+function requestedCorrection(request: WireRequest): AnswerOperation | undefined {
+  const instruction = request.messages.findLast(message => message.role === 'user' && typeof message.content === 'string'
+    && message.content.includes('This generation repairs the explicitly selected candidate sources.'))?.content
+  if (typeof instruction !== 'string') return undefined
+  const serialized = instruction.match(/using exactly this operation: (\{"kind":"replace","supersedes":\[[^\n]*?\]\})\./)?.[1]
+  assert.ok(serialized, 'the runtime correction must supply an exact replacement operation')
+  return JSON.parse(serialized) as AnswerOperation
+}
 async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart' | 'publication-reject' | 'read-partial', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.', nativeV2 = false, requireApproval = false) {
   const db = new PGlite(), home = await mkdtemp(join(tmpdir(), 'public-answer-worker-'))
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
@@ -101,21 +112,26 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
     if (!request.stream) { auxiliary++; throw new Error('No semantic judge is permitted in this synthetic ordinary workflow') }
     const reply = replies[calls++]
     assert.ok(reply, 'the fixture has no unrequested additional model response')
+    const correction = requestedCorrection(request)
     const frame = (delta: unknown, finish: string | null = null) => `data: ${JSON.stringify({ choices: [{ delta, finish_reason: finish }], usage: { prompt_tokens: 20, completion_tokens: 10 } })}\n\n`
     const call = (name: string, args: string, index = 0, id = `call-${calls}`) => ({ index, id, type: 'function', function: { name, arguments: args } })
     let wire: string
     if ('business' in reply) wire = frame({ tool_calls: [call(reply.read ? 'probe__read' : 'probe__save', JSON.stringify({key:reply.read??'synthetic-record'}))] }, 'tool_calls')
     else if ('invalid' in reply) {
-      const args = JSON.stringify({ operation: { kind: 'append', supersedes: [] }, answer: 'Provisional only.', outcome: null })
+      const operation = correction ?? { kind: 'append', supersedes: [] }
+      const args = JSON.stringify({ operation, answer: 'Provisional only.', outcome: null })
       const invalidArgs = reply.invalid === 'missing-outcome'
-        ? JSON.stringify({ operation: { kind: 'append', supersedes: [] }, answer: 'Provisional only.' })
+        ? JSON.stringify({ operation, answer: 'Provisional only.' })
         : reply.invalid === 'truncated' ? args.slice(0, -1) : args
       wire = frame({ tool_calls: [call('public_answer', invalidArgs),
         ...(reply.invalid === 'mixed' ? [call('probe__save', '{"key":"synthetic-record"}', 1, 'second')]
           : reply.invalid === 'duplicate' ? [call('public_answer', args, 1, 'second')] : [])] }, 'tool_calls')
     } else {
       const steps = reply.replace ? await pool.query("SELECT input FROM lingxios.agent_steps WHERE kind='runtime.answer_segment' AND work_id=$1 ORDER BY step_seq", [identity.runId]) : { rows: [] }
-      const args = JSON.stringify({ operation: { kind: reply.replace ? 'replace' : 'append', supersedes: steps.rows.map(row => String((row['input'] as Record<string, unknown>)['partId'])) },
+      // Null terminal answers reuse the sealed body and do not replace text.
+      const operation = reply.answer !== null && !reply.wrongAppend && correction ? correction
+        : { kind: reply.replace ? 'replace' : 'append', supersedes: steps.rows.map(row => String((row['input'] as Record<string, unknown>)['partId'])) }
+      const args = JSON.stringify({ operation,
         ...(nativeV2 && !reply.lateCommentary ? {commentary:reply.reads ? 'I will read both independent observations.' : reply.save ? 'Both observations were received; I will save the synthetic record.' : ''} : {}),
         answer: reply.answer, ...(reply.lateCommentary ? {commentary:'I will save the synthetic record.'} : {}),
         outcome: reply.intermediate ? null : { status: reply.partial ? 'partial' : 'satisfied', gaps: reply.partial ? ['Synthetic limitation.'] : [] } })
@@ -127,7 +143,9 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
     }
     return new Response(wire + 'data: [DONE]\n\n')
   }
-  const model = new OpenAIChatDriver('public-output-worker-fixture', { apiKey: 'synthetic', publicTextProtocol: 'purpose-json-v3', publicTextContinuation: 'typed-message-v1', publicAnswerTool: nativeV2 ? 'native-v2' : 'native-v1',
+  // Provider circuits are process-wide. Each independent synthetic fixture has
+  // its own key; workers restarted inside the fixture keep that same driver.
+  const model = new OpenAIChatDriver('public-output-worker-fixture', { apiKey: `synthetic-${randomUUID()}`, publicTextProtocol: 'purpose-json-v3', publicTextContinuation: 'typed-message-v1', publicAnswerTool: nativeV2 ? 'native-v2' : 'native-v1',
     maxAttempts: 1, capabilities: { parallelTools: nativeV2, jsonObjectWithTools: false }, fetchImpl })
   if (fault === 'missing-binding') {
     const run = model.run.bind(model)
@@ -265,7 +283,7 @@ it('a requested correction replaces its sealed candidate instead of appending an
 })
 
 it('an appended full rewrite during correction is rejected before public text or sealing, then explicitly replaced', async () => {
-  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { answer: 'Wrong appended rewrite.' }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-answer', 8, 'Explain only the supplied synthetic facts.')
+  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { answer: 'Wrong appended rewrite.', wrongAppend: true }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-answer', 8, 'Explain only the supplied synthetic facts.')
   try {
     const state = await f.run(), events = (await f.app.readEvents(f.identity)).events
     assert.equal(state.run.status, 'succeeded')
@@ -281,7 +299,7 @@ it('an appended full rewrite during correction is rejected before public text or
 })
 
 it('repair intent survives a lost acknowledgement and a business tool before the corrected answer', async () => {
-  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { business: true }, { answer: 'Wrong appended rewrite.' }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-restart', 8, 'Explain the supplied facts, then save the synthetic record.')
+  const f = await fixture([{ answer: 'Superseded synthetic answer.' }, { business: true }, { answer: 'Wrong appended rewrite.', wrongAppend: true }, { answer: 'Corrected synthetic answer.', replace: true }], 'repair-restart', 8, 'Explain the supplied facts, then save the synthetic record.')
   try {
     await f.run(); assert.equal(f.calls, 1, 'worker stops after persisting the repair intent')
     const state = await f.restart(), events = (await f.app.readEvents(f.identity)).events

@@ -14,7 +14,14 @@ export interface ToolFailureDiagnostics {
 const denied = new Set(['forbidden', 'unauthorized', 'access_denied', 'permission_denied', 'capability_denied', 'mode_forbidden', 'review_required'])
 const blocked = new Set(['dns_blocked', 'blocked_dns', 'dependency_blocked', 'ssrf_blocked', 'EACCES', 'EPERM'])
 const version = new Set(['tool_contract_changed', 'approval_stale', 'observation_required', 'version_conflict', 'stale_version'])
-const invalid = new Set(['invalid_arguments', 'invalid_input', 'validation_error'])
+const invalid = new Set(['invalid_arguments', 'invalid_input', 'validation_error',
+  'explanation_reference_invalid', 'explanation_reference_not_found', 'explanation_reference_ambiguous'])
+/** Fixed repair advice only. Never interpolate rejected text or source identities. */
+export const explanationReferenceCorrections = {
+  explanation_reference_invalid: 'Select a nonempty exact request source or UTF-16 range, at most 2000 characters, without splitting a Unicode character.',
+  explanation_reference_not_found: 'Select an existing current-human request sourceRef or copy a continuous exact quote; preserve its original whitespace.',
+  explanation_reference_ambiguous: 'The quote occurs more than once. Select its request sourceRef and exact UTF-16 start/end range.',
+} as const
 const cancelled = new Set(['ABORT_ERR', 'tool_cancelled', 'run_cancelled', 'work_cancelled'])
 const missing = new Set(['not_found', 'resource_not_found', 'http_404'])
 const transient = new Set(['40001', '40P01', '57014', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'dependency_timeout', 'TimeoutError'])
@@ -83,7 +90,8 @@ export function classifyToolFailure(error: unknown, phase: 'authorization' | 'in
   else if ((causeCode = find(missing)) || prior?.category === 'not_found') { category = 'not_found'; code = 'not_found' }
   else if (codes.includes('budget_limit') || prior?.category === 'budget') { category = 'budget'; code = 'budget_limit' }
   else if ((causeCode = find(version))) { category = 'version'; code = causeCode }
-  else if (phase === 'input' || (causeCode = find(invalid))) { category = 'invalid_input'; code = 'invalid_arguments' }
+  else if ((causeCode = codes.find(item => Object.hasOwn(explanationReferenceCorrections,item)) ?? find(invalid))
+    || phase === 'input') { category = 'invalid_input'; code = 'invalid_arguments' }
   else if ((causeCode = find(permanent))) { category = 'dependency'; code = 'dependency_unavailable' }
   else if ((causeCode = find(transient, ['http_408', 'http_429', 'http_502', 'http_503', 'http_504']))) { category = 'dependency'; code = 'dependency_unavailable'; retryable = true }
   else if (prior) { category = prior.category; retryable = prior.retryable; causeCode = prior.causeCode
@@ -98,7 +106,9 @@ export function classifyToolFailure(error: unknown, phase: 'authorization' | 'in
     version: 'Native tool state changed; refresh authorized state before continuing', invalid_input: 'Native tool arguments are invalid',
     cancelled: 'Native tool operation was cancelled', unknown: phase === 'authorization' ? 'Native authorization was unavailable' : 'Native tool operation failed',
   }
-  return { code, message: messages[category], diagnostics: sanitizeToolFailureDiagnostics({ category, retryable,
+  const correction = category === 'invalid_input' && causeCode && Object.hasOwn(explanationReferenceCorrections,causeCode)
+    ? explanationReferenceCorrections[causeCode as keyof typeof explanationReferenceCorrections] : undefined
+  return { code, message: correction ?? messages[category], diagnostics: sanitizeToolFailureDiagnostics({ category, retryable,
     recovery: category === 'version' ? 'refresh' : retryable ? 'retry' : 'none', correlationId: prior?.correlationId ?? randomUUID(),
     ...(budgetDimension ? { budgetDimension } : {}),
     ...(causeCode ? { causeCode } : {}) }) }
