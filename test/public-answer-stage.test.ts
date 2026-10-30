@@ -239,6 +239,22 @@ it('an older unassociated segment cannot supply a newly activated stage', async 
   } finally { await f.close() }
 })
 
+it('a corrected replacement sealed during a pending stage unlocks authoring without duplicating the explanation',async()=>{
+  const f=await fixture([{kind:'answer',text:'Earlier unbound explanation. ',intermediate:true},
+    {kind:'activate',declaration:declaration()}, {kind:'answer',text:answer,intermediate:true,replace:'all'},
+    {kind:'save'},{kind:'answer',text:'Saved.'}])
+  try{
+    const state=await f.run()
+    assert.equal(state.run.status,'succeeded',JSON.stringify({run:state.run,calls:f.calls,failures:f.failures}))
+    assert.equal(names(f.payloads[2]!).includes('documents__save'),false)
+    assert.ok(names(f.payloads[3]!).includes('documents__save'))
+    assert.ok(f.payloads[3]!.messages.some(message=>typeof message.content==='string'&&message.content.includes('the explanation is durably recorded')))
+    assert.equal(f.effects,1);assert.ok(f.verifies>0)
+    assert.equal(state.message?.body,answer+'Saved.')
+    assert.deepEqual(f.stages.slice(0,2).map(stage=>stage.status),['pending','provided'])
+  }finally{await f.close()}
+})
+
 for (const [label, rejected] of [
   ['truncated answer', { kind: 'answer', text: 'Provisional text.', intermediate: true, invalid: true }],
   ['commentary without an answer', { kind: 'answer', text: null, intermediate: true, commentary: 'Reading the material.' }],
