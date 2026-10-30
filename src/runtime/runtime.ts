@@ -659,7 +659,7 @@ export class AgentRuntime {
         content:explanationStageInstructions(liveContext.explanationStage)+(liveContext.explanationStage.status==='pending'
           ?'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes):'')})
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
-        +'\nAppend adds text; replace selects active revision IDs in source order. A terminal null answer uses the assembled body.'})
+        +'\nAppend adds text; replace selects active revision IDs in source order or the exact failed-candidate target supplied by a runtime correction. Failed candidates are not sealed body sources. A terminal null answer uses only the assembled sealed body.'})
       const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection), answerSegments.correctionSources) : undefined
       if (requestedCorrection && canonicalJson(requestedCorrection) !== canonicalJson(pendingAnswerCorrection ?? null)) {
         await host.saveStep(work,{id:'answer-correction:'+createHash('sha256').update(JSON.stringify([runId,(session.request?.revisions.length ?? 0)+1,requestedCorrection])).digest('hex'),
