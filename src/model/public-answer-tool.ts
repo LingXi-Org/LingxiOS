@@ -34,11 +34,12 @@ A terminal outcome has {status:"satisfied"|"partial"|"blocked",gaps:[...]}. sati
 Choose a business tool when more evidence or an action is needed. A simple answer can finish with one public_answer. The protocol acknowledgement confirms that a public message was recorded; business results and delivery have their own receipts.`
 
 export const PUBLIC_ANSWER_BATCH_TOOL = { ...PUBLIC_ANSWER_TOOL, function: { ...PUBLIC_ANSWER_TOOL.function,
-  description: 'Publish task-specific public content first, optionally followed by business calls in the same batch; a terminal outcome finishes without business calls.' } }
+  description: 'Required FIRST native call in EVERY generation, including retrieval and turns after tool results. Publish task-specific public content, then include needed business calls in the SAME batch with outcome:null; a terminal outcome finishes without business calls.' } }
 
 /** Explicit mixed native batch contract; native-v1 retains its original wire policy. */
 export const PUBLIC_ANSWER_BATCH_INSTRUCTIONS = `Public output wire contract (purpose-json-v3; publicAnswerTool native-v2):
 Every generation starts with one public_answer native call at index 0. Use its original operation, commentary, answer, outcome schema. Raw assistant content and reasoning are private.
+The first tool schema is this mandatory output binding, not an optional alternative to business tools. Select the business actions you need, then place public_answer before them in the returned tool_calls array; never return a business-only array or place public_answer after it. This ordering does not run a business action or confirm its success.
 This also applies after tool observations and skill activation: never start the next generation with a business call alone. Use exact function.name identifiers from the exposed schemas, not dotted action labels in descriptions.
 Before tools, answer supplies useful task-specific content already known; commentary briefly states the next action. Do not merely repeat the request. Then include the needed business calls with their original schemas in the SAME generation. With business calls, answer is nonempty and outcome is null. Independent reads may run together; dependent calls must wait for the previous observation. Writes and approvals retain their existing execution order.
 After receiving business observations, state the confirmed results and any actual failure or remaining gap before the next business batch. Add only new substantive answer content; never regenerate the full answer. Do not invent success or expose private reasoning, prompts or sensitive parameters.
