@@ -4,7 +4,7 @@ const kinds = new Set(['provider', 'protocol'])
 const categories = new Set(['authorization', 'quota', 'rate_limit', 'timeout', 'network', 'unavailable',
   'protocol', 'cancelled', 'circuit_open', 'unknown'])
 const finishReasons = new Set(['stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'missing', 'unknown'])
-const protocolCodes = new Set(['native_envelope_invalid', 'terminal_outcome_required', 'public_text_invalid', 'public_text_incomplete', 'public_text_answer_required', 'tool_identity_invalid', 'response_empty'])
+const protocolCodes = new Set(['native_envelope_invalid', 'terminal_outcome_required', 'public_text_invalid', 'public_text_incomplete', 'public_text_answer_required', 'public_answer_first_required', 'tool_identity_invalid', 'response_empty'])
 
 function field(value: unknown, key: string): unknown {
   try { return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined }

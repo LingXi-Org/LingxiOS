@@ -206,7 +206,7 @@ export class PublicTextWriter {
   dispose(){this.closed=true;this.text='';this.received='';this.clearHeldTimer();if(this.timer)clearTimeout(this.timer);this.timer=undefined}
 }
 
-/** One attempt, two ordered public purposes. Legacy drivers keep one unknown-purpose part. */
+/** One attempt, separately identified public purposes. Legacy drivers keep one unknown-purpose part. */
 export class PublicTextAttemptWriter {
   private readonly writers=new Map<'legacy'|'commentary'|'answer',PublicTextWriter>()
   private answerStarted=false
@@ -234,7 +234,9 @@ export class PublicTextAttemptWriter {
   async push(text:string,metadata?:{purpose:import('../protocol/public-text.js').PublicTextPurpose}){
     const key=this.protocol?metadata?.purpose:'legacy'
     if(!key||!['legacy','commentary','answer'].includes(key)||!this.protocol&&metadata
-      ||key==='commentary'&&this.answerStarted)throw new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',finishReasons:[]})
+      // Native v3 JSON object members are unordered. Its parser validates field
+      // identity/types; commentary may first arrive after streamed answer text.
+      ||key==='commentary'&&this.answerStarted&&this.protocol!=='purpose-json-v3')throw new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',protocolCode:'public_text_invalid',finishReasons:[]})
     if(this.protocol==='purpose-json-v3'&&key==='answer'&&!this.operation)throw new PublicTextPublicationError('push','missing_operation')
     if(key==='answer'&&!this.answerStarted){
       this.answerStarted=true
