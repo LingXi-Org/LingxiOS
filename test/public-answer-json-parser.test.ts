@@ -5,6 +5,8 @@ import type { ToolDefinition } from '../src/tools/catalog.js'
 import type { ModelTurnRequest } from '../src/model/driver.js'
 import { PUBLIC_ANSWER_TOOL } from '../src/model/public-answer-tool.js'
 import { validateToolBatch } from '../src/runtime/tool-batch.js'
+import { PublicTextAttemptWriter } from '../src/runtime/public-text.js'
+import type { RunEvent } from '../src/protocol/types.js'
 
 const operation={kind:'append',supersedes:[]},outcome={status:'satisfied',gaps:[]}
 const known='Gather collects items. Check reviews them.'
@@ -28,6 +30,27 @@ it('accepts every schema-valid root member order with optional commentary at any
     const result=await run(args)
     assert.equal(result.text,known,keys.join(','));assert.deepEqual(result.outcomeDeclaration,outcome)
     assert.equal(result.publicAnswerCall?.arguments,args);assert.deepEqual(result.output,[])
+  }
+})
+
+it('publishes schema-valid member orders through the actual durable attempt writer',async()=>{
+  for(const keys of permutations(['operation','answer','commentary','outcome'])){
+    const events:Array<Omit<RunEvent,'runId'|'seq'>>=[]
+    const writer=new PublicTextAttemptWriter({version:1,requestVersion:1,fence:1,attemptId:'call',partId:'part',partIndex:0},
+      async event=>{events.push(event)},new AbortController().signal,undefined,'purpose-json-v3')
+    const args=object(keys,{operation,answer:known,commentary:'Public status.',outcome})
+    // Character splits expose the callback boundary hidden by driver-only tests.
+    const wire=args.split('').map((part,index)=>frame({tool_calls:[index===0?call(part):{index:0,function:{arguments:part}}]})).join('')+frame({},'tool_calls')+done
+    try{
+      const result=await driver(async()=>new Response(wire),'native-v2').run({...request,
+        onTextOperation:operation=>writer.begin(operation),onTextDelta:(text,metadata)=>writer.push(text,metadata)})
+      await writer.finish(result.text);await writer.end('completed');await writer.seal(result.text)
+      const deltas=events.filter(event=>event.kind==='public.text.delta')
+      assert.equal(deltas.filter(event=>event.data['purpose']==='answer').map(event=>event.data['text']).join(''),known,keys.join(','))
+      assert.equal(deltas.filter(event=>event.data['purpose']==='commentary').map(event=>event.data['text']).join(''),'Public status.')
+      assert.equal(events.filter(event=>event.kind==='public.text.sealed').length,1)
+      assert.deepEqual(result.outcomeDeclaration,outcome)
+    }finally{writer.dispose()}
   }
 })
 
