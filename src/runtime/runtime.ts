@@ -6,6 +6,7 @@ import { snapshotPublicTextSources, type PublicTextSources } from '../protocol/a
 import { validateToolBatch, compileToolSchemas } from './tool-batch.js'
 import { snapshotOutcomeDeclaration, type OutcomeDeclaration } from '../model/outcome-declaration.js'
 import { PublicTextAttemptWriter, isPublicTextPublicationFailure, isPublicTextSafetyFailure } from './public-text.js'
+import type { PublicTextIdentity } from '../protocol/public-text.js'
 import { isMemoryDeletionReceipt } from '../memory/confirmation.js'
 import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from './wait.js'
@@ -486,7 +487,7 @@ export class AgentRuntime {
       if (!priorBinding && (context.executionCheckpoint || context.executionSteps?.some(step => step.kind === 'runtime.checkpoint'))) {
         throw new Error('unbound execution must resume with the original pinned worker configuration')
       }
-      const binding = { runtime: releaseVersions.runtime, ...(this.model.publicTextProtocol==='purpose-json-v3'?{publicTextSelection:'public-v3-internal-v2-v1'}:{}), semanticReview: this.semanticReview,
+      const binding = { runtime: releaseVersions.runtime, ...(this.model.publicTextProtocol==='purpose-json-v3'?{publicTextSelection:'public-v3-failed-candidate-v2'}:{}), semanticReview: this.semanticReview,
         ...(semanticReviewPolicy ? { semanticReviewPolicy } : {}), harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
         ...(deepModel.publicAnswerTool?{publicAnswerTool:deepModel.publicAnswerTool}:{}),
@@ -518,7 +519,7 @@ export class AgentRuntime {
     let finalPublicTextPartId: string | undefined
     let finalPublicTextSources: PublicTextSources | undefined
     let answerSegments = new AnswerSegmentSet(runId,(session.request?.revisions.length ?? 0)+1,work.fence,context.executionSteps)
-    let pendingAnswerCorrection = restoreAnswerCorrection(context.executionSteps,(session.request?.revisions.length ?? 0)+1,answerSegments.context.segmentIds)
+    let pendingAnswerCorrection = restoreAnswerCorrection(context.executionSteps,(session.request?.revisions.length ?? 0)+1,answerSegments.correctionSources,answerSegments.context.segmentIds)
     if((deepModel.publicTextContinuation==='typed-message-v1'||fastModel?.publicTextContinuation==='typed-message-v1')&&answerSegments.restoreMessageHistory(session,work.id))await host.saveSession(work,session)
     let pendingReplacement = false
     let lastGood: { text: string; envelope: ResponseEnvelope; publicTextPartId?: string; publicTextSources?: PublicTextSources } | undefined
@@ -659,7 +660,7 @@ export class AgentRuntime {
           ?'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes):'')})
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
         +'\nAppend adds text; replace selects active revision IDs in source order. A terminal null answer uses the assembled body.'})
-      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection), answerSegments.context.segmentIds) : undefined
+      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection), answerSegments.correctionSources) : undefined
       if (requestedCorrection && canonicalJson(requestedCorrection) !== canonicalJson(pendingAnswerCorrection ?? null)) {
         await host.saveStep(work,{id:'answer-correction:'+createHash('sha256').update(JSON.stringify([runId,(session.request?.revisions.length ?? 0)+1,requestedCorrection])).digest('hex'),
           kind:'runtime.answer_correction',requestVersion:(session.request?.revisions.length ?? 0)+1,input:{operation:requestedCorrection},output:'{}',artifacts:[]})
@@ -667,8 +668,8 @@ export class AgentRuntime {
       }
       const correctionOperation = react ? pendingAnswerCorrection : undefined
       if (correctionOperation) supplementalItems.push({ role: 'user', content:
-        'This generation repairs an already sealed candidate. If you emit substantive answer text, return the complete corrected answer using exactly this operation: '
-        + JSON.stringify(correctionOperation) + '. Do not append a rewritten answer to the old candidate. Preserve fulfilled results and recorded effects. '
+        'This generation repairs the explicitly selected candidate sources. They may be failed drafts, which are not accepted answer text. If you emit substantive answer text, return the corrected text for only those sources using exactly this operation: '
+        + JSON.stringify(correctionOperation) + '. Do not append a rewritten answer or repeat unaffected sealed sources. Preserve fulfilled results and recorded effects. '
         + 'You may still call necessary business tools. A terminal null answer may reuse the assembled body when no wording change is needed; normal outcome and delivery validation still apply.' })
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
@@ -804,7 +805,15 @@ export class AgentRuntime {
                 const requestVersion=(session.request?.revisions.length ?? 0)+1
                 const partId='public:'+createHash('sha256').update(JSON.stringify([runId,requestVersion,work.fence,callId,0])).digest('hex')
                 this.publications.set(runId,new PublicTextAttemptWriter({version:1,requestVersion,fence:work.fence,attemptId:callId,partId,partIndex:0,...react?{messageId:answerSegments.messageId}:{}},
-                  event=>this.event(work,runId,event),generationSignal,
+                  async event=>{
+                    const result=await this.event(work,runId,event)
+                    // The host atomically stores this metadata with the ended
+                    // event. Mirror only acknowledged failed answer candidates;
+                    // failed writes and commentary cannot become replace targets.
+                    if(event.kind==='public.text.ended'&&event.data?.['version']===3&&event.data['purpose']==='answer'&&event.data['reason']==='failed')
+                      answerSegments.fail(event.data as unknown as PublicTextIdentity)
+                    return result
+                  },generationSignal,
                   this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined,model.publicTextProtocol))
               }
               // Reserve the reply first; optional compaction must not consume its budget.
@@ -1512,7 +1521,7 @@ export class AgentRuntime {
       if (failures.length) {
         const failure = JSON.stringify(failures.map(receipt => [receipt.action, receipt.result.code ?? receipt.result.executionState ?? 'tool_error']))
         if (!budget.consume('kernel_error', failure)) throw new AgentOSError('kernel_error_exhausted', 'Tool execution failed after bounded correction')
-        correction = { role: 'user', content: 'Inspect the recorded failures before proceeding. Reconcile unknown effects; do not repeat them under a new identity.' }
+        correction = { role: 'user', content: 'Inspect the recorded failures before proceeding. For invalid_input with executionState=no_effect, correct the arguments against the exposed schema and recorded safe cause code, then submit a new call. Request references must select exact current human text, never rewritten or whitespace-normalized quotations. Reconcile unknown effects; do not repeat them under a new identity.' }
       } else {
         const facts = progressFacts({ artifacts: execution.artifacts, observations: receipts.map(receipt => ({ action: receipt.action, result: receipt.result })) })
         if (JSON.stringify(facts) !== '{}') budget.observe(facts)
