@@ -93,7 +93,19 @@ export function publicTextPublication(pool:SqlPool,policy:PublicTextPolicy|undef
         if(prior?.['kind']==='public.text.ended'||prior?.['kind']==='public.text.sealed')throw new Error('public text part is already closed')
         const chunks=previous&&prior?.['kind']!=='public.text.operation'?Number(previous['chunkIndex'])+1:0
         if('text' in data?data.chunkIndex!==chunks:!('chunkCount' in data)||!chunks||data.chunkCount!==chunks)throw new Error('public text chunk sequence is incomplete')
-        return append(database)
+        const inserted=await append(database)
+        if(inserted&&event.kind==='public.text.ended'&&data.version===3&&'reason' in data&&data.reason==='failed'){
+          const input={version:data.version,purpose:data.purpose,messageId:data.messageId,segmentId:data.segmentId,
+            requestVersion:data.requestVersion,fence:data.fence,attemptId:data.attemptId,partId:data.partId,partIndex:data.partIndex,
+            operation:data.operation,supersedes:data.supersedes,endedSeq:event.seq}
+          const stepId='failed:'+createHash('sha256').update(data.partId).digest('hex')
+          // Failed candidates are recovery identities only. Atomically record the
+          // acknowledged end without ever creating a sealed source or copying text.
+          await database.query(`INSERT INTO lingxios.agent_steps(work_id,step_id,request_version,kind,input_hash,input,output,artifacts,completed_at)
+            VALUES($1,$2,$3,'runtime.answer_candidate_failure',$4,$5::jsonb,$6::jsonb,'[]'::jsonb,NOW())`,
+          [work.id,stepId,data.requestVersion,createHash('sha256').update(JSON.stringify(input)).digest('hex'),JSON.stringify(input),JSON.stringify('{}')])
+        }
+        return inserted
       })
     },
   }
