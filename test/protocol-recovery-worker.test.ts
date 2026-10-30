@@ -52,7 +52,8 @@ for(const scenario of ['empty-answer','incomplete','tool-once','persistent','pro
           assert.doesNotMatch(correction,/field order, string encoding|PRIVATE_UNKNOWN_KEY|Tool-turn assistant content example|\"public_output\":|\"outcome\":/)
           assert.match(correction,/trusted model driver/)
         }
-        const content=JSON.stringify({operation:{kind:'append',supersedes:[]},commentary:'',answer:'The answer is 42.',outcome:wire===1?null:{status:'satisfied',gaps:[]}})
+        const repair=(await pool.query("SELECT input->'operation' AS operation FROM lingxios.agent_steps WHERE work_id=$1 AND kind='runtime.answer_correction' ORDER BY step_seq DESC LIMIT 1",[identity.runId])).rows[0]?.['operation']
+        const content=JSON.stringify({operation:repair??{kind:'append',supersedes:[]},commentary:'',answer:'The answer is 42.',outcome:wire===1?null:{status:'satisfied',gaps:[]}})
         const tool_calls=wire===1&&scenario==='envelope-field'?[{index:0,id:'bad-envelope',function:{name:'fixture__read',arguments:'{\"PRIVATE_UNKNOWN_KEY\":'}}]:undefined
         return new Response('data: '+JSON.stringify({choices:[{delta:tool_calls?{tool_calls}:{content},finish_reason:tool_calls?'tool_calls':'stop'}],usage:{prompt_tokens:11,completion_tokens:7}})+'\n\ndata: [DONE]\n\n')
         } catch(error) { fetchAssertions.push(error); throw error }

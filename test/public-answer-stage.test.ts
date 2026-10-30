@@ -128,7 +128,9 @@ async function fixture(steps: Step[], options: Options = {}) {
       else if (step.kind === 'save') { toolName = 'documents__save'; args = '{}' }
       else {
         const supersedes = step.replace === 'all' ? (await pool.query("SELECT input->>'partId' AS part FROM lingxios.agent_steps WHERE work_id=$1 AND kind='runtime.answer_segment' ORDER BY step_seq", [current.id])).rows.map(row => String(row['part'])) : step.replace ?? []
-        toolName = 'public_answer'; args = JSON.stringify({ operation: { kind: step.replace ? 'replace' : 'append', supersedes },
+        const instruction=payload.messages.findLast(message=>message.role==='user'&&typeof message.content==='string'&&message.content.includes('This generation repairs the explicitly selected candidate sources.'))?.content
+        const selected=typeof instruction==='string'?instruction.match(/using exactly this operation: (\{"kind":"replace","supersedes":\[[^\n]*?\]\})\./)?.[1]:undefined
+        toolName = 'public_answer'; args = JSON.stringify({ operation: step.text&&selected?JSON.parse(selected):{ kind: step.replace ? 'replace' : 'append', supersedes },
           ...(step.commentary ? { commentary: step.commentary } : {}), answer: step.text, outcome: step.intermediate ? null : { status: 'satisfied', gaps: [] } })
         if (step.invalid) args = args.slice(0, -1)
       }

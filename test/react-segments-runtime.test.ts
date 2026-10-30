@@ -76,7 +76,10 @@ async function fixture(replies:Reply[],allowed=true,text='Read the synthetic rec
     const reply=replies[modelCalls++]??{answer:null,partial:true}
     const rows=await pool.query("SELECT input FROM lingxios.agent_steps WHERE kind='runtime.answer_segment' ORDER BY step_seq")
     const supersedes=reply.replace?rows.rows.map(row=>String((row['input'] as Record<string,unknown>)['partId'])):[]
-    const content=JSON.stringify({operation:{kind:reply.replace?'replace':'append',supersedes},...(reply.omitCommentary?{}:{commentary:''}),answer:reply.answer,outcome:reply.tool===undefined&&!reply.intermediate?{status:reply.partial?'partial':'satisfied',gaps:reply.partial?['Synthetic limitation.']:[]}:null})
+    const instruction=request.messages.findLast(message=>typeof message.content==='string'&&message.content.includes('This generation repairs the explicitly selected candidate sources.'))?.content
+    const selected=typeof instruction==='string'?instruction.match(/using exactly this operation: (\{"kind":"replace","supersedes":\[[^\n]*?\]\})\./)?.[1]:undefined
+    const operation=reply.answer&&selected?JSON.parse(selected):{kind:reply.replace?'replace':'append',supersedes}
+    const content=JSON.stringify({operation,...(reply.omitCommentary?{}:{commentary:''}),answer:reply.answer,outcome:reply.tool===undefined&&!reply.intermediate?{status:reply.partial?'partial':'satisfied',gaps:reply.partial?['Synthetic limitation.']:[]}:null})
     const calls=reply.tool===undefined?undefined:[{index:0,id:`call-${modelCalls}`,function:{name:probe.name,arguments:JSON.stringify({value:reply.tool})}},...reply.badSecond?[{index:1,id:`bad-${modelCalls}`,function:{name:probe.name,arguments:'{"value":"invalid"}'}}]:[]]
     const frame=(delta:unknown,finish:string|null)=>`data: ${JSON.stringify({choices:[{delta,finish_reason:finish}],usage:{prompt_tokens:20,completion_tokens:10}})}\n\n`
     return new Response(frame({content},null)+frame(calls?{tool_calls:calls}:{},calls?'tool_calls':'stop')+'data: [DONE]\n\n')
