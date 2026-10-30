@@ -864,6 +864,7 @@ export class AgentRuntime {
         await this.event(work, runId, {
           kind: 'model.failed', stage: 'failed', visibility: 'internal',
           data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: publicFailure(error),
+            ...(error instanceof ModelBudgetExceededError ? { budgetLimit: error.diagnostics } : {}),
             ...(error instanceof ModelDriverError ? { modelDiagnostics: publicModelDiagnostics(error.diagnostics) } : {}),
           },
         })
