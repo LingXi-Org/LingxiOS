@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FlashAttention · 机制与边界</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0;background:#fbfaf7;font-family:"Noto Sans SC","Source Han Sans SC",system-ui,-apple-system,"Helvetica Neue",sans-serif;font-variant-numeric:tabular-nums}
+a{color:#8f4a2b}a:hover{color:#6d361e}
+</style>
+</helmet>
+<div style="width: 100%; max-width: 1440px; margin: 0 auto; box-sizing: border-box; padding: 64px 72px 96px; display: flex; flex-direction: column; gap: 56px; color: #211a13">
+
+  <header style="display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid #e2dbcf">
+    <div style="display: flex; flex-direction: column; gap: 14px; max-width: 760px">
+      <span style="font: 600 13px/1 system-ui, sans-serif; letter-spacing: 0.18em; color: #8f4a2b">机制说明 · IO 感知</span>
+      <h1 style="margin: 0; font-family: Georgia,\"Songti SC\",serif; font-size: 54px; line-height: 1.15; letter-spacing: -0.01em">FlashAttention：把注意力搬进片上 SRAM</h1>
+      <p style="margin: 0; font-size: 18px; line-height: 1.75; color: #4b4239">标准注意力把 N×N 的分数矩阵写回高带宽内存（HBM）再读回；FlashAttention 对 Q 分块，<strong style="color:#211a13">一次一块地流式计算 softmax 并累积输出</strong>，让大矩阵从不完整落到 HBM。省下来的是显存读写，不是算术量。</p>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 6px; font: 13px/1.5 system-ui, sans-serif; color: #6b6157; text-align: right">
+      <span>来源：Dao, Fu, Ermon, Rudra &amp; Ré · <em>FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness</em> · 2022（含 v2/论文修订版要点）</span>
+    </div>
+  </header>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 48px; align-items: flex-start">
+    <div style="flex: 999 1 760px; min-width: 0; display: flex; flex-direction: column; gap: 56px">
+
+      <section style="display: flex; flex-direction: column; gap: 20px" aria-labelledby="s1">
+        <h2 id="s1" style="margin: 0; font: 600 15px/1 system-ui, sans-serif; letter-spacing: 0.12em; color: #8f4a2b">01 · 问题</h2>
+        <h3 style="margin: 0; font-family: Georgia,\"Songti SC\",serif; font-size: 32px; line-height: 1.3">瓶颈在显存往返，不在 FLOPs</h3>
+        <p style="margin: 0; font-size: 17px; line-height: 1.8; color: #4b4239">GPU 的 SRAM 带宽和 HBM 带宽相差一到两个数量级。标准实现每一步都要把中间结果写进 HBM：分数矩阵 S = QKᵀ（N×N）、softmax 矩阵 P、输出 O，再加反向传播缓存的 S 与 P。序列越长，这些读写越主导运行时间；显存占用也随 N² 增长。</p>
+        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px">
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #f2ede4; border-radius: 12px">
+            <span style="font: 600 12px/1 system-ui, sans-serif; letter-spacing: 0.1em; color: #6b6157">标准注意力 · HBM 读写</span>
+            <span style="font-family: Georgia, serif; font-size: 26px; line-height: 1.2">Θ(N·d + N²)</span>
+            <span style="font-size: 14px; line-height: 1.65; color: #5d5348">S 与 P 各写出、再读回一遍，即 4N² 量级的元素搬运</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #f2ede4; border-radius: 12px">
+            <span style="font: 600 12px/1 system-ui, sans-serif; letter-spacing: 0.1em; color: #6b6157">FlashAttention · HBM 读写</span>
+            <span style="font-family: Georgia, serif; font-size: 26px; line-height: 1.2">Θ(N²·d²·M⁻¹)</span>
+            <span style="font-size: 14px; line-height: 1.65; color: #5d5348">只读写 Q、K、V 与 O；中间量留在 SRAM（M 为 SRAM 容量）</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 20px; background: #f2ede4; border-radius: 12px">
+            <span style="font: 600 12px/1 system-ui, sans-serif; letter-spacing: 0.1em; color: #6b6157">额外计算</span>
+            <span style="font-family: Georgia, serif; font-size: 26px; line-height: 1.2">≈ 0 渐近</span>
+            <span style="font-size: 14px; line-height: 1.65; color: #5d5348">分块重算带来常数级额外 FLOPs，远小于省下的访存时间</span>
+          </div>
+        </div>
+        <p style="margin: 0; font-size: 14px; line-height: 1.7; color: #6b6157">N 为序列长度，d 为头维度（v1 论文按 M ≪ N·d 的常见情形给阶数）。</p>
+      </section>
+
+      <section style="display: flex; flex-direction: column; gap: 20px" aria-labelledby="s2">
+        <h2 id="s2" style="margin: 0; font: 600 15px/1 system-ui, sans-serif; letter-spacing: 0.12em; color: #8f4a2b">02 · 机制</h2>
+        <h3 style="margin: 0; font-family: Georgia,\"Songti SC\",serif; font-size: 32px; line-height: 1.3">分块流式 softmax：一个 Q 块走完全部 K/V</h3>
+        <p style="margin: 0; font-size: 17px; line-height: 1.8; color: #4b4239">关键在于 softmax 不需要先见到整行分数就能算。<strong style="color:#211a13">在线 softmax</strong>只用两个游标——行最大值 m 与指数和 ℓ——遇到新块时修正旧值、吸收新值，于是 O 可以在分块之间保持为 O = diag(ℓ)⁻¹ · Õ 的形式逐步累积。</p>
+
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px">
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 24px; border: 1px solid #e2dbcf; border-radius: 12px; background: #fffdf9">
+            <span style="font: 600 12px/1.4 system-ui, sans-serif; letter-spacing: 0.1em; color: #8f4a2b">STEP 1 — 装入</span>
+            <span style="font-size: 16px; line-height: 1.75; color: #3b332b">把 Q 的一个块放进 SRAM。K、V 按更小的块顺序读入，每一对 Kⱼ、Vⱼ 只与当前 Q 块相乘后即被丢弃。</span>
+            <span style="font-family: \"SF Mono\", Menlo, monospace; font-size: 13px; color: #6b6157">for j in blocks(K, V): load Kⱼ, Vⱼ</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 24px; border: 1px solid #e2dbcf; border-radius: 12px; background: #fffdf9">
+            <span style="font: 600 12px/1.4 system-ui, sans-serif; letter-spacing: 0.1em; color: #8f4a2b">STEP 2 — 打分</span>
+            <span style="font-size: 16px; line-height: 1.75; color: #3b332b">在 SRAM 中算 Sᵢⱼ = Qᵢ Kⱼᵀ（乘缩放 1/√d，先减一个安全常数以免溢出）。这个块只活在片上，从不写出。</span>
+            <span style="font-family: \"SF Mono\", Menlo, monospace; font-size: 13px; color: #6b6157">Sᵢⱼ = Qᵢ Kⱼᵀ · scale</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 24px; border: 1px solid #e2dbcf; border-radius: 12px; background: #fffdf9">
+            <span style="font: 600 12px/1.4 system-ui, sans-serif; letter-spacing: 0.1em; color: #8f4a2b">STEP 3 — 在线更新</span>
+            <span style="font-size: 16px; line-height: 1.75; color: #3b332b">用块内最大值与当前 m 比较得到新 m；旧累积量乘 e^(m_old − m_new) 缩小，再并入本块的 exp 与和。ℓ 同步更新。</span>
+            <span style="font-family: \"SF Mono\", Menlo, monospace; font-size: 13px; color: #6b6157">m′ = max(m, rowmax(Sᵢⱼ))</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 24px; border: 1px solid #e2dbcf; border-radius: 12px; background: #fffdf9">
+            <span style="font: 600 12px/1.4 system-ui, sans-serif; letter-spacing: 0.1em; color: #8f4a2b">STEP 4 — 累积与写回</span>
+            <span style="font-size: 16px; line-height: 1.75; color: #3b332b">Õ += e^(m_old − m′) · Õ_old + P̃ᵢⱼ Vⱼ。全部 K/V 块走完后，只把 O = diag(ℓ)⁻¹ Õ 写回 HBM。</span>
+            <span style="font-family: \"SF Mono\", Menlo, monospace; font-size: 13px; color: #6b6157">O = diag(ℓ)⁻¹ · Õ</span>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 12px; padding: 20px 24px; background: #f2ede4; border-radius: 12px">
+          <span style="font: 600 12px/1.4 system-ui, sans-serif; letter-spacing: 0.1em; color: #6b6157">在线 softmax 递推（单个 Q 块内，逐 K/V 块）</span>
+          <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; font-family: \"SF Mono\", Menlo, monospace; font-size: 14px; line-height: 1.8; color: #2b241d">
+            <span>m′ = max(m, rowmax(Sᵢⱼ))</span>
+            <span>ℓ′ = e^(m − m′) · ℓ + rowsum(e^(Sᵢⱼ − m′))</span>
+            <span>Õ′ = e^(m − m′) · Õ + e^(Sᵢⱼ − m′) · Vⱼ</span>
+          </div>
+        </div>
+      </section>
+
+      <section style="display: flex; flex-direction: column; gap: 20px" aria-labelledby="s3">
+        <h2 id="s3" style="margin: 0; font: 600 15px/1 system-ui, sans-serif; letter-spacing: 0.12em; color: #8f4a2b">03 · 反向</h2>
+        <h3 style="margin: 0; font-family: Georgia,\"Songti SC\",serif; font-size: 32px; line-height: 1.3">不存 N×N 矩阵，重算分块</h3>
+        <p style="margin: 0; font-size: 17px; line-height: 1.8; color: #4b4239">反向传播需要 softmax 矩阵的梯度。FlashAttention 在前向只保存输出 O 与每行的 (m, ℓ)；反向时重新载入 Q、K、V 块，在 SRAM 里重算出 S 和 P，顺手得到 dQ、dK、dV。存储从 Θ(N²) 降到 Θ(N)，代价是一次额外的分块前向计算。</p>
+        <div style="display: flex; flex-wrap: wrap; gap: 12px">
+          <span style="padding: 10px 16px; background: #fffdf9; border: 1px solid #e2dbcf; border-radius: 999px; font-size: 14px; color: #3b332b">前向只存 O、m、ℓ</span>
+          <span style="padding: 10px 16px; background: #fffdf9; border: 1px solid #e2dbcf; border-radius: 999px; font-size: 14px; color: #3b332b">反向逐块重算 Sᵢⱼ</span>
+          <span style="padding: 10px 16px; background: #fffdf9; border: 1px solid #e2dbcf; border-radius: 999px; font-size: 14px; color: #3b332b">dQ = Σⱼ dSᵢⱼ Kⱼᵀ · scale</span>
+          <span style="padding: 10px 16px; background: #fffdf9; border: 1px solid #e2dbcf; border-radius: 999px; font-size: 14px; color: #3b332b">dKⱼ += dSᵢⱼᵀ Qᵢ · scale</span>
+          <span style="padding: 10px 16px; background: #fffdf9; border: 1px solid #e2dbcf; border-radius: 999px; font-size: 14px; color: #3b332b">dVⱼ += Pᵢⱼᵀ dOᵢ</span>
+        </div>
+      </section>
+
+      <section style="display: flex; flex-direction: column; gap: 20px" aria-labelledby="s4">
+        <h2 id="s4" style="margin: 0; font: 600 15px/1 system-ui, sans-serif; letter-spacing: 0.12em; color: #8f4a2b">04 · 边界</h2>
+        <h3 style="margin: 0; font-family: Georgia,\"Songti SC\",serif; font-size: 32px; line-height: 1.3">它换掉的是 IO，不是复杂度下界</h3>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px">
+          <div style="display: flex; flex-direction: column; gap: 10px; padding: 24px; border-radius: 12px; background: #f6f0e6">
+            <span style="font: 600 12px/1.4 system-ui, sans-serif; letter-spacing: 0.1em; color: #8f4a2b">机制上的限制</span>
+            <ul style="margin: 0; padding-left: 20px; font-size: 15px; line-height: 1.9; color: #3b332b">
+              <li>仍是 <strong>精确</strong>注意力：结果与标准 softmax 注意力数值等价（浮点上差在舍入误差量级）。</li>
+              <li>FLOPs 仍是 O(N²·d)，长序列下算力本身没减少。</li>
+              <li>v1 的 SRAM 用量随头维度 d 增长，头维度很大时 SRAM 会溢出到 HBM；v2 改为只沿 K/V 并行、减少非矩阵乘运算以改善这一点。</li>
+              <li>线程块间同步仍是 O(N²·d²·M⁻¹)。</li>
+            </ul>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 10px; padding: 24px; border-radius: 12px; background: #f6f0e6">
+            <span style="font: 600 12px/1.4 system-ui, sans-serif; letter-spacing: 0.1em; color: #8f4a2b">工程与比较上的限制</span>
+            <ul style="margin: 0; padding-left: 20px; font-size: 15px; line-height: 1.9; color: #3b332b">
+              <li>收益系数取决于硬件（SRAM 大小、HBM 带宽、张量核利用率）与序列长度、块大小选择。</li>
+              <li>对比 <strong>近似</strong>注意力（稀疏、线性、低秩）：FlashAttention 不损失精度，但也不提供线性时间的 N 依赖。</li>
+              <li>它解决的是「固定数学下的访存效率」，不替代更好的注意力结构本身。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+    </div>
+
+    <aside style="flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 16px; padding: 24px; border: 1px solid #e2dbcf; border-radius: 12px; background: #fffdf9" aria-label="符号表">
+      <span style="font: 600 12px/1 system-ui, sans-serif; letter-spacing: 0.12em; color: #8f4a2b">符号</span>
+      <dl style="margin: 0; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.5; color: #3b332b">
+        <div style="display: flex; gap: 10px"><dt style="font-family: \"SF Mono\", Menlo, monospace; min-width: 34px; color: #8f4a2b">N</dt><dd style="margin: 0">序列长度</dd></div>
+        <div style="display: flex; gap: 10px"><dt style="font-family: \"SF Mono\", Menlo, monospace; min-width: 34px; color: #8f4a2b">d</dt><dd style="margin: 0">头维度</dd></div>
+        <div style="display: flex; gap: 10px"><dt style="font-family: \"SF Mono\", Menlo, monospace; min-width: 34px; color: #8f4a2b">M</dt><dd style="margin: 0">SRAM 容量</dd></div>
+        <div style="display: flex; gap: 10px"><dt style="font-family: \"SF Mono\", Menlo, monospace; min-width: 34px; color: #8f4a2b">m</dt><dd style="margin: 0">运行中的行最大值</dd></div>
+        <div style="display: flex; gap: 10px"><dt style="font-family: \"SF Mono\", Menlo, monospace; min-width: 34px; color: #8f4a2b">ℓ</dt><dd style="margin: 0">运行中的指数和</dd></div>
+        <div style="display: flex; gap: 10px"><dt style="font-family: \"SF Mono\", Menlo, monospace; min-width: 34px; color: #8f4a2b">Õ</dt><dd style="margin: 0">未归一化输出</dd></div>
+      </dl>
+    </aside>
+  </div>
+
+  <footer style="display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; padding-top: 20px; border-top: 1px solid #e2dbcf; font-size: 13px; line-height: 1.6; color: #6b6157">
+    <span>分块大小与 SRAM/HBM 数值随硬件而异；图中的阶数为论文结论，未附具体基准测试数字。</span>
+    <a href="https://arxiv.org/abs/2205.14135">论文原文：arXiv:2205.14135</a>
+  </footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"density":{"editor":"enum","options":["comfortable","compact"],"default":"comfortable"},"accent":{"editor":"color","options":["#8f4a2b","#2f6f4e","#2b5570"],"default":"#8f4a2b"},"$preview":{"width":1440,"height":2400}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      density: this.props.density ?? 'comfortable',
+      accent: this.props.accent ?? '#8f4a2b'
+    };
+  }
+}
+</script>
+</body>
+</html>

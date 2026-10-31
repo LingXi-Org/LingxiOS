@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>为什么 Attention 慢</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>body{margin:0}
+a{color:#7d8b96}a:hover{color:#cdd8de}
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; box-sizing: border-box; background: #0f1216; color: #e8edf0; font-family: 'Inter', 'Noto Sans SC', system-ui, sans-serif; display: flex; flex-direction: column; padding: 56px 72px 48px; overflow: hidden">
+  <div style="display: flex; align-items: baseline; gap: 20px; border-bottom: 1px solid #262d34; padding-bottom: 16px">
+    <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: {{accent}}">01</span>
+    <h2 style="margin: 0; font-size: 38px; font-weight: 600; letter-spacing: 0.01em">Attention 慢在哪里？不是没算完，而是搬得多</h2>
+  </div>
+  <div style="display: flex; flex: 1; gap: 48px; padding-top: 34px">
+    <div style="width: 760px; display: flex; flex-direction: column; gap: 22px">
+      <div style="display: flex; flex-direction: column; gap: 12px">
+        <span style="font-size: 15px; color: #7d8b96; letter-spacing: 0.1em">GPU 内存层次</span>
+        <div style="display: flex; flex-direction: column; gap: 8px">
+          <div style="display: flex; align-items: center; gap: 0">
+            <div style="width: 148px; height: 58px; background: #2a1f12; border: 1px solid {{accent}}; display: flex; flex-direction: column; justify-content: center; padding-left: 14px; gap: 2px; box-sizing: border-box">
+              <span style="font-size: 16px; color: #f0c88a">SRAM（片上）</span>
+              <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #c9a06a">~20 MB / 每个 SM 数百 KB</span>
+            </div>
+            <div style="width: 132px; display: flex; align-items: center; justify-content: center; gap: 6px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; color: #6b7a85">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2 7h9M7.5 3.5 11 7l-3.5 3.5" stroke="#6b7a85" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>带宽高
+            </div>
+            <div style="flex: 1; height: 58px; background: #171d21; border: 1px solid #33414b; display: flex; flex-direction: column; justify-content: center; padding-left: 16px; gap: 2px; box-sizing: border-box">
+              <span style="font-size: 16px; color: #c6d3da">HBM（显存）</span>
+              <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; color: #8a9aa5">数十 GB / 带宽相对低</span>
+            </div>
+          </div>
+          <span style="font-size: 14px; color: #6b7a85; padding-left: 2px">两者相差 2–3 个数量级的容量与带宽：算力再快，数据只能一块一块搬进去。</span>
+        </div>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 14px; border-top: 1px solid #262d34; padding-top: 20px">
+        <span style="font-size: 15px; color: #7d8b96; letter-spacing: 0.1em">标准 Attention 的显存往返（N = 序列长度，d = 头维度）</span>
+        <div style="display: flex; align-items: stretch; gap: 10px">
+          <div style="flex: 1; border: 1px solid #33414b; background: #141a1f; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+            <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: #e8edf0">S = Q Kᵀ</span>
+            <span style="font-size: 13px; color: #8a9aa5; line-height: 1.45">读取 Q、K（N×d）；写出 S（N×N）</span>
+          </div>
+          <div style="display: flex; align-items: center; color: #6b7a85">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h10M8.5 4 12.5 8l-4 4" stroke="#6b7a85" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div style="flex: 1; border: 1px solid #33414b; background: #141a1f; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+            <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: #e8edf0">P = softmax(S)</span>
+            <span style="font-size: 13px; color: #8a9aa5; line-height: 1.45">读回 S；再写出 P（N×N）</span>
+          </div>
+          <div style="display: flex; align-items: center; color: #6b7a85">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2 8h10M8.5 4 12.5 8l-4 4" stroke="#6b7a85" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <div style="flex: 1; border: 1px solid #33414b; background: #141a1f; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px">
+            <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; color: #e8edf0">O = P V</span>
+            <span style="font-size: 13px; color: #8a9aa5; line-height: 1.45">读回 P、V；写出 O（N×d）</span>
+          </div>
+        </div>
+        <div style="display: flex; gap: 10px">
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; padding: 5px 10px; border: 1px solid #4a2b2b; color: #e8a08a">中间矩阵尺寸 ∝ N²</span>
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; padding: 5px 10px; border: 1px solid #33414b; color: #9aa9b4">HBM 读写字节数 ∝ N² · d</span>
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 13px; padding: 5px 10px; border: 1px solid #33414b; color: #9aa9b4">FLOPs ∝ N² · d</span>
+        </div>
+      </div>
+    </div>
+    <div style="flex: 1; display: flex; flex-direction: column; gap: 16px; border-left: 1px solid #262d34; padding-left: 40px; justify-content: center">
+      <span style="font-size: 15px; color: #7d8b96; letter-spacing: 0.1em">结论</span>
+      <p style="margin: 0; font-family: 'Source Serif 4', 'Noto Serif SC', Georgia, serif; font-size: 30px; line-height: 1.45; color: #eef3f6">在长序列上，Attention 更常是<strong style="color: {{accent}}; font-weight: 600">显存带宽受限</strong>，而不是算力受限。</p>
+      <p style="margin: 0; font-size: 17px; line-height: 1.65; color: #b9c6ce">标准实现的计算量其实不大（两次 N×N×d 矩阵乘），但 N×N 的 S、P 要被完整写出再读回；N 翻倍，这部分显存流量变成四倍。</p>
+      <p style="margin: 0; font-size: 17px; line-height: 1.65; color: #b9c6ce">如果能把“算出的中间结果”限制在片上 SRAM 里，不写回显存，瓶颈就回到真实的矩阵乘上。这正是 FlashAttention 的起点。</p>
+      <div style="display: flex; align-items: center; gap: 12px; margin-top: 4px; padding: 14px 16px; background: #171d21; border: 1px solid #33414b">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="7.5" stroke="#f2a33c" stroke-width="1.3"/><path d="M9 8v5M9 5.2v.1" stroke="#f2a33c" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <span style="font-size: 15px; color: #c6d3da; line-height: 1.5">这叫做“IO 感知（IO-aware）”的算法设计：以最优方式把操作切块、按块搬运。</span>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#f2a33c"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { accent: this.props.accent ?? '#f2a33c' };
+  }
+}
+</script>
+</body>
+</html>

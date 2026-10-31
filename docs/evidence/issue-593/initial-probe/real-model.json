@@ -1,0 +1,93 @@
+{
+  "scope": "unpublished compatible SDK source; PGlite and scoped scratch artifact tools, NOT Loop product acceptance",
+  "binding": "native-v3",
+  "elapsedMs": 92414,
+  "status": "failed",
+  "protocolFailures": [],
+  "actions": [
+    {
+      "action": "skills.load",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.current",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_reference",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_file",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_reference",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "observations.read",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "observations.read",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_reference",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_reference",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "task.contract",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.write_files",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.write_files",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.write_files",
+      "ok": "true",
+      "code": null
+    }
+  ],
+  "checkProblems": 5,
+  "files": [
+    {
+      "path": "project/canvas.json",
+      "sha256": "60b7ef355cffe6d70ad4589e35f3b5dafaae3714bdea2f03d35e95f971af61b9"
+    },
+    {
+      "path": "project/00_Cover.dc.html",
+      "sha256": "cf032b326edb1ea9fcd1475b59b1c879d103eea132184ddce520284824506c15"
+    },
+    {
+      "path": "project/01_Why.dc.html",
+      "sha256": "04d3a790bf6454032950d45fb71e14174af006941d47311ca3f480b02510781d"
+    }
+  ],
+  "accepted": false,
+  "browserValidated": false,
+  "measurementComplete": false,
+  "measurementNote": "Initial event read was paginated; empty protocolFailures is not proof of zero model failures. Run failed; files were retained without deleting planned boards."
+}

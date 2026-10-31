@@ -39,6 +39,9 @@ export interface ModelTurnResult {
 }
 
 export interface ModelTurnRequest {
+  /** Trusted precondition: the next batch may contain only this authorized business tool. */
+  requiredTool?: string
+
   /** Runtime-owned diagnostic classification; never provider instructions. */
   operation?: 'generation' | 'correction'
   /** Runtime-owned final gate; queue wrappers run it after obtaining capacity. */
@@ -107,12 +110,12 @@ export interface ModelDriver {
   /** Explicit public text generation protocol; absent means unknown purpose. */
   readonly publicTextProtocol?: PublicTextProtocol | undefined
   readonly publicTextContinuation?: 'typed-message-v1' | undefined
-  readonly publicAnswerTool?: 'native-v1' | 'native-v2' | undefined
+  readonly publicAnswerTool?: 'native-v1' | 'native-v2' | 'native-v3' | undefined
   readonly profile?: ModelProfile
   /** A provider tokenizer or calibrated upper bound; never a fixed bytes/constant guess. */
   countTokens?(text: string): number
   /** Optional actual generation wire estimate; never used for auxiliary calls. */
-  generationInputTokens?(request: Pick<ModelTurnRequest, 'instructions' | 'items' | 'tools' | 'codeExecution'>): number | undefined
+  generationInputTokens?(request: Pick<ModelTurnRequest, 'instructions' | 'items' | 'tools' | 'codeExecution' | 'requiredTool'>): number | undefined
   readonly maxThinkingTokens?: number
   /** Runtime owns retries so each outbound request reserves and settles its own budget. */
   singleAttempt?(): ModelDriver

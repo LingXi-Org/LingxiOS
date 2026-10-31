@@ -1,6 +1,6 @@
 {
   "name": "@lyyzka/lingxios",
-  "version": "3.8.19",
+  "version": "3.8.20",
   "description": "Durable agent execution for PostgreSQL with fenced workers, native tools, verified outcomes, and sandboxed Python.",
   "type": "module",
   "license": "MIT",
@@ -62,7 +62,9 @@
     "test:postgres-stores": "npm run build && node scripts/test-postgres-stores.mjs",
     "worker": "node dist/src/worker/main.js",
     "test:worker-image": "node scripts/test-worker-image.mjs",
-    "test:worker-recovery": "npm run build && node scripts/test-worker-recovery.mjs"
+    "test:worker-recovery": "npm run build && node scripts/test-worker-recovery.mjs",
+    "test:native-selection": "node --test scripts/test-native-tool-selection.mjs",
+    "probe:native-selection": "node scripts/probe-native-tool-selection.mjs"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",

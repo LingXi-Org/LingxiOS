@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FlashAttention 讲解</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+a{color:#2a5b8a}a:hover{color:#1b3d5e}
+</style>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+</helmet>
+<div style="position: relative; width: 2400px; height: 1960px; box-sizing: border-box; background: #F5F2EA; font-family: 'Noto Sans SC', system-ui, sans-serif; color: #1E2A32; overflow: hidden">
+
+  <div style="position: absolute; left: 96px; top: 72px; width: 10px; height: 64px; background: #0E5C63"></div>
+  <div style="position: absolute; left: 128px; top: 66px; width: 900px; font-size: 18px; line-height: 26px; letter-spacing: 2px; color: #0E5C63">FLASHATTENTION 讲解 · 机制与局限</div>
+  <div style="position: absolute; left: 96px; top: 104px; width: 1260px; font-family: 'Noto Serif SC', serif; font-size: 56px; line-height: 74px; font-weight: 700">不把 \"注意力矩阵\\\" 写进显存</div>
+  <div style="position: absolute; left: 1400px; top: 104px; width: 480px; height: 122px; box-sizing: border-box; border: 1px solid #8C2F39; background: #FBEFEC; padding: 12px 16px; display: flex; align-items: center; font-size: 15px; line-height: 22px; color: #6E1F2B">
+    <span><b>一句话</b>：用分块 + 在线 softmax 把注意力算完，全程只保留 O(N·d) 的状态，并用反向重算换显存。</span>
+  </div>
+
+  <!-- 1 问题 -->
+  <div style="position: absolute; left: 96px; top: 280px; width: 640px; height: 270px; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center; gap: 10px"><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #0E5C63">01</span><span style="font-family: 'Noto Serif SC', serif; font-size: 22px; font-weight: 700">标准注意力的瓶颈</span></div>
+    <span style="font-size: 14px; line-height: 22px; color: #4A5A62">Q、K 各 N 行 · 头维 d（64–256）· S 为 N×N 分数矩阵</span>
+    <div style="display: flex; gap: 8px; margin-top: 4px">
+      <div style="width: 36px; height: 36px; box-sizing: border-box; border: 1px solid #B9CDD1; background: #EAF1F2; font-size: 11px; color: #34535A; display: flex; align-items: center; justify-content: center">1/4</div>
+      <div style="width: 36px; height: 36px; box-sizing: border-box; border: 1px solid #B9CDD1; background: #EAF1F2; font-size: 11px; color: #34535A; display: flex; align-items: center; justify-content: center">2/4</div>
+      <div style="width: 36px; height: 36px; box-sizing: border-box; border: 1px solid #B9CDD1; background: #EAF1F2; font-size: 11px; color: #34535A; display: flex; align-items: center; justify-content: center">3/4</div>
+      <div style="width: 36px; height: 36px; box-sizing: border-box; border: 1px solid #B9CDD1; background: #EAF1F2; font-size: 11px; color: #34535A; display: flex; align-items: center; justify-content: center">4/4</div>
+    </div>
+    <span style="font-size: 14px; line-height: 22px; color: #4A5A62">S = QKᵀ / √d　→　P = softmax(S)　→　O = PV</span>
+    <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 4px">
+      <span style="font-size: 14px; line-height: 22px; color: #6E1F2B">① S 与 P 都必须落到片外显存（SRAM 只有几十 KB 一行放不下），读写慢于片上计算</span>
+      <span style="font-size: 14px; line-height: 22px; color: #6E1F2B">② 显存占用 O(N²)，序列越长，越先撞上限</span>
+    </div>
+  </div>
+
+  <!-- 2 tiling -->
+  <div style="position: absolute; left: 780px; top: 280px; width: 640px; height: 270px; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center; gap: 10px"><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #0E5C63">02</span><span style="font-family: 'Noto Serif SC', serif; font-size: 22px; font-weight: 700">分块：一个查询块 × 一个键块</span></div>
+    <span style="font-size: 14px; line-height: 22px; color: #4A5A62">S 切成 128×128 的分块，一次只算一块；K、V 与当前块一起装进 SRAM</span>
+    <div style="display: flex; align-items: flex-start; gap: 20px; margin-top: 4px">
+      <div style="width: 150px; height: 150px; box-sizing: border-box; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(0, 1fr)); border: 1px solid #1F3238">
+        <div style="border-right: 1px solid #8FA3A8; border-bottom: 1px solid #8FA3A8; background: #E6D3B6; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #3A2E1C">S₁₁</div>
+        <div style="border-right: 1px solid #8FA3A8; border-bottom: 1px solid #8FA3A8; background: #EAF1F2; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #34535A">S₁₂</div>
+        <div style="border-bottom: 1px solid #8FA3A8; background: #EAF1F2; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #34535A">S₁₃</div>
+        <div style="border-right: 1px solid #8FA3A8; border-bottom: 1px solid #8FA3A8; background: #F8F4EC; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #7A7F80">·</div>
+        <div style="border-right: 1px solid #8FA3A8; border-bottom: 1px solid #8FA3A8; background: #F8F4EC; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #7A7F80">·</div>
+        <div style="border-bottom: 1px solid #8FA3A8; background: #F8F4EC; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #7A7F80">·</div>
+        <div style="border-right: 1px solid #8FA3A8; background: #F8F4EC"></div>
+        <div style="border-right: 1px solid #8FA3A8; background: #F8F4EC"></div>
+        <div style="background: #F8F4EC"></div>
+      </div>
+      <div style="flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 20px; color: #4A5A62">
+        <div style="display: flex; align-items: center; gap: 8px"><span style="width: 12px; height: 12px; background: #E6D3B6; border: 1px solid #B39B77"></span><span>当前正在算的分块 S₁₁</span></div>
+        <div style="display: flex; align-items: center; gap: 8px"><span style="width: 12px; height: 12px; background: #EAF1F2; border: 1px solid #B9CDD1"></span><span>同一个 Q 块的其他 K 块（循环）</span></div>
+        <div style="display: flex; align-items: center; gap: 8px"><span style="width: 12px; height: 12px; background: #F8F4EC; border: 1px solid #C9C7BF"></span><span>其他 Q 块（不同程序）</span></div>
+        <span style="margin-top: 6px">每块从 HBM 读入 → 片上算 → 只把结果累加回去，<b>不写回 S、P</b>。</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3 online softmax -->
+  <div style="position: absolute; left: 1464px; top: 280px; width: 840px; height: 270px; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center; gap: 10px"><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #0E5C63">03</span><span style="font-family: 'Noto Serif SC', serif; font-size: 22px; font-weight: 700">机制二 · 在线 softmax（rescaling）</span></div>
+    <span style="font-size: 14px; line-height: 22px; color: #4A5A62">softmax 的分母要看完所有 K 块才知道。所以边走边维护 <b>m</b>（已见最大值）与 <b>ℓ</b>（已见指数和）：</span>
+    <div style="display: flex; flex-direction: column; gap: 6px; background: #EEEBE2; padding: 12px 16px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 20px; color: #1E2A32">
+      <span>m_new = max(m_old, max(S_ij))</span>
+      <span>ℓ_new = e^(m_old − m_new) · ℓ_old + ∑ e^(S_ij − m_new)</span>
+      <span>O_ij = e^(m_old − m_new) · O_ij + e^(S_ij − m_new) · V_j</span>
+    </div>
+    <span style="font-size: 14px; line-height: 22px; color: #4A5A62">换新最大值时，旧的 O 与 ℓ 乘一个修正因子再相加——结果与一次性 softmax 数学上相同，但不必存下任何一列。</span>
+  </div>
+
+  <!-- mechanism board -->
+  <div style="position: absolute; left: 96px; top: 600px; width: 2210px; height: 610px; box-sizing: border-box; border: 1px solid #CFCBC0; background: #FBF9F4">
+    <div style="position: absolute; left: 32px; top: 24px; width: 560px; font-family: 'Noto Serif SC', serif; font-size: 24px; line-height: 34px; font-weight: 700">一次前向计算：分块 + 在线 softmax + 重算</div>
+    <div style="position: absolute; left: 1180px; top: 28px; width: 900px; font-size: 14px; line-height: 22px; color: #4A5A62">K、V 分块缓存在片上（外循环遍历 Q 块、内循环遍历 K 块）；前向只保存 O、ℓ、m。</div>
+
+    <!-- 外循环 -->
+    <div style="position: absolute; left: 32px; top: 84px; width: 560px; height: 100px; box-sizing: border-box; border: 2px solid #0E5C63; background: #E2EDEE; display: flex; align-items: center; justify-content: center; font-size: 20px; line-height: 30px; font-weight: 700; color: #0E5C63">for 每个 Q 块 i（外循环）</div>
+    <div style="position: absolute; left: 32px; top: 204px; width: 560px; height: 100px; box-sizing: border-box; border: 1px solid #8FA3A8; background: #EAF1F2; display: flex; align-items: center; justify-content: center; font-size: 20px; line-height: 30px; font-weight: 700; color: #1F3238">把 Qᵢ 读进片上 SRAM</div>
+    <div style="position: absolute; left: 32px; top: 384px; width: 560px; height: 100px; box-sizing: border-box; border: 1px solid #8FA3A8; background: #EAF1F2; display: flex; align-items: center; justify-content: center; font-size: 20px; line-height: 30px; font-weight: 700; color: #1F3238">把 Oᵢ、ℓᵢ 写回 HBM</div>
+
+    <!-- 内循环 -->
+    <div style="position: absolute; left: 760px; top: 84px; width: 448px; height: 100px; box-sizing: border-box; border: 2px solid #8C2F39; background: #F7E6E1; display: flex; align-items: center; justify-content: center; font-size: 20px; line-height: 30px; font-weight: 700; color: #6E1F2B">for 每个 K/V 块 j（内循环）</div>
+    <div style="position: absolute; left: 760px; top: 204px; width: 448px; height: 100px; box-sizing: border-box; border: 1px solid #8FA3A8; background: #EAF1F2; display: flex; align-items: center; justify-content: center; font-size: 19px; line-height: 28px; color: #1F3238">读 Kⱼ、Vⱼ → 算 Sᵢⱼ</div>
+    <div style="position: absolute; left: 760px; top: 384px; width: 448px; height: 100px; box-sizing: border-box; border: 1px solid #8FA3A8; background: #EAF1F2; display: flex; align-items: center; justify-content: center; font-size: 19px; line-height: 28px; color: #1F3238">用 m、ℓ 更新 Oᵢ</div>
+
+    <!-- 反向 -->
+    <div style="position: absolute; left: 1514px; top: 84px; width: 560px; height: 100px; box-sizing: border-box; border: 2px solid #A5762B; background: #F3E8D0; display: flex; align-items: center; justify-content: center; font-size: 20px; line-height: 30px; font-weight: 700; color: #6B4A12">反向：重算 S、P（不读它）</div>
+    <div style="position: absolute; left: 1514px; top: 204px; width: 560px; height: 100px; box-sizing: border-box; border: 1px solid #C2AE85; background: #FAF3E3; display: flex; align-items: center; justify-content: center; font-size: 19px; line-height: 28px; color: #4A3A1C">由 O、dO、ℓ、m 还原 P</div>
+    <div style="position: absolute; left: 1514px; top: 384px; width: 560px; height: 100px; box-sizing: border-box; border: 1px solid #C2AE85; background: #FAF3E3; display: flex; align-items: center; justify-content: center; font-size: 19px; line-height: 28px; color: #4A3A1C">得到 dQ 并累加 dK、dV</div>
+
+    <!-- arrows -->
+    <svg width="168" height="20" viewBox="0 0 168 20" style="position: absolute; left: 592px; top: 124px" aria-hidden="true">
+      <defs><marker id="dc-arrow-head-filled-1" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4 L0,8 Z" fill="#3A4B52" style="fill: #3A4B52"></path></marker></defs>
+      <path d="M0 10 H164" fill="none" stroke="#3A4B52" stroke-width="2" style="stroke: #3A4B52; stroke-width: 2" marker-end="url(#dc-arrow-head-filled-1)"></path>
+    </svg>
+    <div style="position: absolute; left: 592px; top: 92px; width: 168px; font-size: 13px; line-height: 16px; text-align: center; color: #2A3A41">开始</div>
+
+    <svg width="168" height="20" viewBox="0 0 168 20" style="position: absolute; left: 592px; top: 244px" aria-hidden="true">
+      <defs><marker id="dc-arrow-head-filled-2" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4 L0,8 Z" fill="#3A4B52" style="fill: #3A4B52"></path></marker></defs>
+      <path d="M0 10 H164" fill="none" stroke="#3A4B52" stroke-width="2" style="stroke: #3A4B52; stroke-width: 2" marker-end="url(#dc-arrow-head-filled-2)"></path>
+    </svg>
+    <div style="position: absolute; left: 592px; top: 272px; width: 168px; font-size: 13px; line-height: 16px; text-align: center; color: #2A3A41">m=−∞, ℓ=0, O=0</div>
+
+    <svg width="168" height="20" viewBox="0 0 168 20" style="position: absolute; left: 592px; top: 424px" aria-hidden="true">
+      <defs><marker id="dc-arrow-head-filled-3" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4 L0,8 Z" fill="#3A4B52" style="fill: #3A4B52"></path></marker></defs>
+      <path d="M0 10 H164" fill="none" stroke="#3A4B52" stroke-width="2" style="stroke: #3A4B52; stroke-width: 2" marker-end="url(#dc-arrow-head-filled-3)"></path>
+    </svg>
+
+    <svg width="20" height="220" viewBox="0 0 20 220" style="position: absolute; left: 1212px; top: 134px" aria-hidden="true">
+      <defs><marker id="dc-arrow-head-filled-4" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4 L0,8 Z" fill="#8C2F39" style="fill: #8C2F39"></path></marker></defs>
+      <path d="M10 0 V216" fill="none" stroke="#8C2F39" stroke-width="2" style="stroke: #8C2F39; stroke-width: 2" marker-end="url(#dc-arrow-head-filled-4)"></path>
+    </svg>
+    <div style="position: absolute; left: 1224px; top: 234px; width: 64px; font-size: 13px; line-height: 16px; color: #6E1F2B">逐块</div>
+
+    <svg width="168" height="20" viewBox="0 0 168 20" style="position: absolute; left: 592px; top: 540px" aria-hidden="true">
+      <defs><marker id="dc-arrow-head-filled-5" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4 L0,8 Z" fill="#3A4B52" style="fill: #3A4B52"></path></marker></defs>
+      <path d="M0 10 H164" fill="none" stroke="#3A4B52" stroke-width="2" style="stroke: #3A4B52; stroke-width: 2" marker-end="url(#dc-arrow-head-filled-5)"></path>
+    </svg>
+
+    <svg width="20" height="190" viewBox="0 0 20 190" style="position: absolute; left: 596px; top: 204px" aria-hidden="true">
+      <defs><marker id="dc-arrow-head-filled-6" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4 L0,8 Z" fill="#3A4B52" style="fill: #3A4B52"></path></marker></defs>
+      <path d="M10 0 V186" fill="none" stroke="#3A4B52" stroke-width="2" style="stroke: #3A4B52; stroke-width: 2" marker-end="url(#dc-arrow-head-filled-6)"></path>
+    </svg>
+
+    <svg width="168" height="20" viewBox="0 0 168 20" style="position: absolute; left: 590px; top: 514px" aria-hidden="true">
+      <defs><marker id="dc-arrow-head-filled-7" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4 L0,8 Z" fill="#3A4B52" style="fill: #3A4B52"></path></marker></defs>
+      <path d="M0 10 H164" fill="none" stroke="#3A4B52" stroke-width="2" style="stroke: #3A4B52; stroke-width: 2" marker-end="url(#dc-arrow-head-filled-7)"></path>
+    </svg>
+
+    <div style="position: absolute; left: 1514px; top: 134px; width: 236px; height: 32px; box-sizing: border-box; font-size: 13px; line-height: 16px; color: #C3B48F; display: flex; align-items: flex-start">（显式不存 S、P）</div>
+
+    <div style="position: absolute; left: 32px; top: 504px; width: 1360px; height: 80px; box-sizing: border-box; border-left: 3px solid #0E5C63; background: #EEEBE2; display: flex; align-items: center; padding: 0 16px; font-size: 14px; line-height: 22px; color: #2A3A41">
+      <span>内存由 O(N²) 降到 O(N·d)：注意力矩阵只存在于片上 SRAM 的一小块里，随算随弃；HBM 中不保留。</span>
+    </div>
+  </div>
+
+  <!-- 4 IO 来源与收益 -->
+  <div style="position: absolute; left: 96px; top: 1250px; width: 640px; height: 260px; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center; gap: 10px"><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #0E5C63">04</span><span style="font-family: 'Noto Serif SC', serif; font-size: 22px; font-weight: 700">机制三 · 用重算换显存</span></div>
+    <span style="font-size: 14px; line-height: 22px; color: #4A5A62">反向需要 P。既然没存，就再算一遍：前向只留 O、ℓ、m，反向按块重算 Sᵢⱼ 与 Pᵢⱼ，拿到 dQ 的块后立刻丢掉。</span>
+    <span style="font-size: 14px; line-height: 22px; color: #4A5A62">代价是<b>多一次前向的运算量</b>，换来：</span>
+    <div style="display: flex; flex-direction: column; gap: 2px; font-size: 14px; line-height: 22px; color: #1E2A32">
+      <span>· HBM 读写从 O(N²) 量级降到 O(N²·d²/M) 量级（M = 片上 SRAM 大小），长序列时减少数倍</span>
+      <span>· 不存 N×N 的 S/P → 省显存，可训更长的上下文</span>
+    </div>
+  </div>
+
+  <!-- 5 数值 -->
+  <div style="position: absolute; left: 780px; top: 1250px; width: 640px; height: 260px; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px">
+    <div style="display: flex; align-items: center; gap: 10px"><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #0E5C63">05</span><span style="font-family: 'Noto Serif SC', serif; font-size: 22px; font-weight: 700">数值影响</span></div>
+    <span style="font-size: 14px; line-height: 22px; color: #4A5A62">在线 softmax 与一次性 softmax 在实数上等价；浮点上每次换最大值都要乘 e^(m_old − m_new) <i>≤</i> 1 做缩放，误差随块数累积得更多。</span>
+    <span style="font-size: 14px; line-height: 22px; color: #4A5A62">论文报告的实测结论是：反向结果（dQ、dK、dV）与标准实现在容差内一致，不因为重算而变差；FP16 前向时，长序列的极端情况下仍应做梯度检查。</span>
+    <span style="font-size: 14px; line-height: 22px; color: #6E1F2B">另：FlashAttention 只是<b>更快更省</b>的标准 softmax 注意力——不是稀疏、近似或线性注意力。</span>
+  </div>
+
+  <!-- 6 局限 -->
+  <div style="position: absolute; left: 1464px; top: 1250px; width: 840px; height: 260px; box-sizing: border-box; border: 1px solid #8C2F39; background: #FBF0ED; display: flex; flex-direction: column; gap: 6px; padding: 20px 24px">
+    <div style="display: flex; align-items: center; gap: 10px"><span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8C2F39">06</span><span style="font-family: 'Noto Serif SC', serif; font-size: 22px; line-height: 30px; font-weight: 700; color: #6E1F2B">局限：它不解决什么</span></div>
+    <div style="display: flex; flex-direction: column; gap: 4px; font-size: 14px; line-height: 22px; color: #4A2A24">
+      <span>· 计算量仍是 O(N²·d)：省的是访存与显存，不是 FLOPs；超长序列最终仍受算力限制</span>
+      <span>· 收益依赖 GPU 的片上内存与专用硬件（分块大小要与 SRAM、寄存器匹配）；在 CPU 或片上空间不足的设备上收益有限</span>
+      <span>· 需要额外实现与融合：自定义反向、分块调度、对变体（因果掩码、GQA/MQA、滑动窗口）逐一定制</span>
+      <span>· 实现复杂度高，调参、精度调优成本随之上升；生态（自动微分、算子融合库）配合不到位时优势打折</span>
+    </div>
+  </div>
+
+  <!-- footer -->
+  <div style="position: absolute; left: 96px; top: 1580px; width: 1000px; height: 1px; background: #CFCBC0"></div>
+  <div style="position: absolute; left: 96px; top: 1600px; width: 1200px; font-size: 13px; line-height: 20px; color: #6C7579">引用自 Tri Dao et al., “FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness”, 2022（NeurIPS）。文中 
+  “减少数倍” 为论文量级描述，非精确倍数；如需具体倍数，请以论文表格与硬件实测为准。</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#0E5C63"},"boardTitle":{"editor":"text","default":"不把 \"注意力矩阵\" 写进显存"},"$preview":{"width":2400,"height":1960}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      accent: this.props.accent ?? '#0E5C63',
+      boardTitle: this.props.boardTitle ?? '不把 "注意力矩阵" 写进显存'
+    };
+  }
+}
+</script>
+</body>
+</html>

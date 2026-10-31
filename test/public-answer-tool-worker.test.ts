@@ -12,6 +12,7 @@ import type { SqlPool } from '../src/control-plane/pg-store.js'
 import { LeaseLostError } from '../src/errors.js'
 import { nullLogger } from '../src/logging.js'
 import { DefaultRuntimePolicy } from '../src/runtime/policy.js'
+import type { TurnContext } from '../src/protocol/types.js'
 import type { RunState } from '../src/app/jobs.js'
 
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
@@ -20,7 +21,7 @@ const known = 'Gather collects the items. Check reviews them. '
 type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; forceAppend?: boolean; callId?: string; reads?: boolean; save?: boolean; lateCommentary?: boolean }
   | { business: true; read?: string }
   | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' | 'misordered' }
-type WireRequest = { stream?: boolean; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
+type WireRequest = { stream?: boolean; tool_choice?: unknown; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
 type AnswerOperation = { kind: 'append' | 'replace'; supersedes: string[] }
 // The synthetic model follows the exact runtime-selected correction target.
 // Failed drafts are not among the sealed answer sources in native context.
@@ -32,7 +33,7 @@ function requestedCorrection(request: WireRequest): AnswerOperation | undefined 
   assert.ok(serialized, 'the runtime correction must supply an exact replacement operation')
   return JSON.parse(serialized) as AnswerOperation
 }
-async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart' | 'publication-reject' | 'read-partial', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.', nativeV2 = false, requireApproval = false) {
+async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart' | 'publication-reject' | 'read-partial' | 'required-selection', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.', nativeV2 = false, requireApproval = false, nativeV3 = false, forceRead = false) {
   const db = new PGlite(), home = await mkdtemp(join(tmpdir(), 'public-answer-worker-'))
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
   let tail = Promise.resolve(), calls = 0, effects = 0, auxiliary = 0, seals = 0, faulted = false, strippedBindings = 0
@@ -147,8 +148,13 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
   }
   // Provider circuits are process-wide. Each independent synthetic fixture has
   // its own key; workers restarted inside the fixture keep that same driver.
-  const model = new OpenAIChatDriver('public-output-worker-fixture', { apiKey: `synthetic-${randomUUID()}`, publicTextProtocol: 'purpose-json-v3', publicTextContinuation: 'typed-message-v1', publicAnswerTool: nativeV2 ? 'native-v2' : 'native-v1',
-    maxAttempts: 1, capabilities: { parallelTools: nativeV2, jsonObjectWithTools: false }, fetchImpl })
+  const model = new OpenAIChatDriver('public-output-worker-fixture', { apiKey: `synthetic-${randomUUID()}`, publicTextProtocol: 'purpose-json-v3', publicTextContinuation: 'typed-message-v1', publicAnswerTool: nativeV3 ? 'native-v3' : nativeV2 ? 'native-v2' : 'native-v1',
+    maxAttempts: 1, capabilities: { parallelTools: nativeV2 || nativeV3, jsonObjectWithTools: false }, fetchImpl })
+  if (fault === 'required-selection') {
+    const run = model.run.bind(model)
+    model.run = request => { const { requiredTool: _required, ...unconstrained } = request; return run(unconstrained) }
+    model.singleAttempt = () => model
+  }
   if (fault === 'missing-binding') {
     const run = model.run.bind(model)
     model.run = async request => { const result = await run(request); assert.ok(result.publicAnswerCall); strippedBindings++; delete result.publicAnswerCall; return result }
@@ -156,7 +162,9 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
     // this fault-injected single-attempt instance so the negative is exercised.
     model.singleAttempt = () => model
   }
-  const policy = new DefaultRuntimePolicy()
+  const policy = new class extends DefaultRuntimePolicy {
+    requiredTool(context: TurnContext) { return forceRead && !context.executionSteps?.some(step => step.kind === 'probe__read' && step.output !== undefined) ? 'probe__read' : undefined }
+  }()
   if (fault === 'repair-answer' || fault === 'repair-restart') policy.validateAssistantText = text => text.includes('Superseded synthetic answer.') ? 'Replace the superseded synthetic answer with the corrected result' : null
   const newWorker = (id: string) => createWorker({ controlPlane: app, model, policy, modelBudget: { maxModelCalls: maxCalls }, logger: nullLogger, kernel: { homesRoot: home }, worker: { id, healthPort: 0 } })
   const worker = newWorker('public-output-worker')
@@ -617,4 +625,25 @@ it('native-v2 binding-only repair preserves an existing sealed content-correctio
     assert.equal(state.message?.publicTextSources?.segments.length, 1)
     assert.equal(events.filter(event => event.kind === 'tool.started').length, 0)
   } finally { await f.close() }
+})
+
+
+it('native-v3 real Worker forces the authorized first read, then accepts business-only work and verified terminal output', async () => {
+  const f = await fixture([{business:true,read:'one'},{business:true},{answer:'Gather and Check'}],undefined,8,'Read and save the synthetic record, then report the result.',false,false,true,true)
+  try {
+    const state=await f.run()
+    assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'Gather and Check')
+    assert.equal(f.effects,1);assert.equal(f.calls,3);assert.ok(f.resourceChecks>0)
+    assert.deepEqual(f.requests[0]!.tool_choice,{type:'function',function:{name:'probe__read'}})
+    assert.equal(f.requests[1]!.tool_choice,'auto')
+    assert.equal(f.rawPublicCalls.length,1,'pure business turns never fabricate public output')
+  } finally {await f.close()}
+})
+it('native-v3 required selection rejects a different provider tool before its effect', async () => {
+  const f=await fixture([{business:true},{business:true},{business:true}],undefined,3,'Read before saving.',false,false,true,true)
+  try {const state=await f.run();assert.equal(state.run.status,'failed');assert.equal(f.effects,0);assert.equal(f.rawPublicCalls.length,0)}finally{await f.close()}
+})
+it('a custom driver cannot skip required selection with an otherwise valid terminal public answer', async () => {
+  const f=await fixture([{answer:'Gather and Check'}],'required-selection',3,'Read before answering.',false,false,true,true)
+  try {const state=await f.run();assert.equal(state.run.status,'failed');assert.equal(f.effects,0);assert.equal(f.calls,1);assert.equal(state.message?.body,undefined)}finally{await f.close()}
 })
