@@ -5,7 +5,7 @@ import {readFile,mkdtemp,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import {PGlite} from '@electric-sql/pglite'
-import {createLingxiOS} from '../src/index.js'
+import {createLingxiOS,DefaultRuntimePolicy} from '../src/index.js'
 import {createWorker} from '../src/worker/index.js'
 import {OpenAIChatDriver} from '../src/model/openai.js'
 import {AnswerSegmentSet,type SealedAnswerSegment} from '../src/runtime/answer-segments.js'
@@ -44,20 +44,22 @@ it('all catalog arguments are checked without coercion or side effects before an
   assert.throws(()=>compileToolSchemas([{...probe,parameters:{...probe.parameters,properties:{value:{unrecognizedAssertion:true}}}}]),/unknown keyword/)
 })
 
-type Reply={answer:string|null;tool?:number;badSecond?:boolean;replace?:boolean;partial?:boolean;intermediate?:boolean;omitCommentary?:boolean}
-async function fixture(replies:Reply[],allowed=true,text='Read the synthetic record and explain the result.',continuation=false,fault?:'seal'|'second-seal'|'cancel',maxCalls?:number,fastOnly=false){
+type Reply={answer:string|null;tool?:number;badSecond?:boolean;replace?:boolean;partial?:boolean;intermediate?:boolean;omitCommentary?:boolean;protocolFailure?:boolean}
+async function fixture(replies:Reply[],allowed=true,text='Read the synthetic record and explain the result.',continuation=false,fault?:'seal'|'second-seal'|'cancel',maxCalls?:number,fastOnly=false,suspend=false,rejectSeal=false){
   const db=new PGlite(),home=await mkdtemp(join(tmpdir(),'react-runtime-'))
   await db.exec(await readFile(new URL('../../db/schema.sql',import.meta.url),'utf8'))
+  await db.exec('CREATE TABLE synthetic_saved_pages(id text PRIMARY KEY,body text NOT NULL)')
   let tail=Promise.resolve(),modelCalls=0,effects=0,auxiliaryCalls=0,faulted=false,seals=0
   const requests:Array<{messages:Array<{content:unknown}>}>=[]
   const acquire=async()=>{let release!:()=>void;const previous=tail;tail=new Promise<void>(r=>{release=r});await previous;return release}
   const query:SqlPool['query']=async(sql,params)=>{const r=await db.query<Record<string,unknown>>(sql,params);return {rows:r.rows,rowCount:r.affectedRows??r.rows.length}}
   const pool:SqlPool={async query(sql,params){const release=await acquire();try{return await query(sql,params)}finally{release()}},async connect(){return {query,release:await acquire()}}}
-  const app=await createLingxiOS({...(fastOnly?{responsePolicy:'auto' as const}:{}),database:pool,homesRoot:home,logger:nullLogger,delivery:{onEvent:async()=>{},deliverMessage:async()=>({messageId:'synthetic-receipt'})},realtime:{allowPublicText:()=>allowed},tools:[{...probe,parse:args=>args as Record<string,unknown>,authorize:async()=>{},execute:async()=>{effects++;return {ok:true,value:{value:2}}}}]})
+  const app=await createLingxiOS({...(fastOnly?{responsePolicy:'auto' as const}:{}),database:pool,homesRoot:home,logger:nullLogger,delivery:{onEvent:async()=>{},deliverMessage:async()=>({messageId:'synthetic-receipt'})},realtime:{allowPublicText:()=>allowed},tools:[{...probe,parse:args=>args as Record<string,unknown>,authorize:async()=>{},execute:async context=>{effects++;if(rejectSeal)await context.database.query("INSERT INTO synthetic_saved_pages VALUES('one','Saved page')");return {ok:true,value:{value:2}}}}]})
   const connect=app.connectWorker.bind(app)
   app.connectWorker=options=>{
     const host=connect(options),emit=host.emitEvent.bind(host)
     host.emitEvent=async(work,event,signal)=>{
+      if(rejectSeal&&event.kind==='public.text.sealed')throw Error('synthetic seal storage rejection')
       await emit(work,event,signal)
       if(event.kind==='public.text.sealed')seals++
       if(fault&&!faulted&&event.kind==='public.text.sealed'&&(fault!=='second-seal'||seals===2)){
@@ -82,12 +84,21 @@ async function fixture(replies:Reply[],allowed=true,text='Read the synthetic rec
     const content=JSON.stringify({operation,...(reply.omitCommentary?{}:{commentary:''}),answer:reply.answer,outcome:reply.tool===undefined&&!reply.intermediate?{status:reply.partial?'partial':'satisfied',gaps:reply.partial?['Synthetic limitation.']:[]}:null})
     const calls=reply.tool===undefined?undefined:[{index:0,id:`call-${modelCalls}`,function:{name:probe.name,arguments:JSON.stringify({value:reply.tool})}},...reply.badSecond?[{index:1,id:`bad-${modelCalls}`,function:{name:probe.name,arguments:'{"value":"invalid"}'}}]:[]]
     const frame=(delta:unknown,finish:string|null)=>`data: ${JSON.stringify({choices:[{delta,finish_reason:finish}],usage:{prompt_tokens:20,completion_tokens:10}})}\n\n`
-    return new Response(frame({content},null)+frame(calls?{tool_calls:calls}:{},calls?'tool_calls':'stop')+'data: [DONE]\n\n')
+    if(suspend&&reply.answer){
+      const split=content.indexOf(reply.answer)+3
+      return new Response(new ReadableStream({async start(controller){
+        controller.enqueue(new TextEncoder().encode(frame({tool_calls:[{index:0,id:'paused-public-answer',type:'function',function:{name:'public_answer',arguments:content.slice(0,split)}}]},null)))
+        await new Promise(resolve=>setTimeout(resolve,1150))
+        controller.enqueue(new TextEncoder().encode(frame({tool_calls:[{index:0,function:{arguments:content.slice(split)}}]},null)+frame({},'tool_calls')+'data: [DONE]\n\n'));controller.close()
+      }}))
+    }
+    return new Response(frame({content:reply.protocolFailure?content.slice(0,-1)+',"invalid":true}':content},null)+frame(calls?{tool_calls:calls}:{},calls?'tool_calls':'stop')+'data: [DONE]\n\n')
   }
   const options={apiKey:'fixture',publicTextProtocol:'purpose-json-v3' as const,maxAttempts:1,capabilities:{parallelTools:true,jsonObjectWithTools:true},fetchImpl}
-  const driver=new OpenAIChatDriver('react-fixture',{...options,...(continuation?{publicTextContinuation:'typed-message-v1' as const}:{})})
+  const driver=new OpenAIChatDriver('react-fixture',{...options,...(suspend?{publicAnswerTool:'native-v3' as const,capabilities:{parallelTools:true,jsonObjectWithTools:false}}:{}),...(continuation||suspend?{publicTextContinuation:'typed-message-v1' as const}:{})})
   const model=fastOnly?new OpenAIChatDriver('deep-terminal-only',options):driver
-  const worker=createWorker({...(maxCalls?{modelBudget:{maxModelCalls:maxCalls}}:{}),controlPlane:app,model,...(fastOnly?{fastModel:driver}:{}),logger:nullLogger,kernel:{homesRoot:home},worker:{id:'react-worker',healthPort:0}})
+  class PausedPolicy extends DefaultRuntimePolicy {override publicTextSafety(input:import('../src/index.js').PublicTextSafetyInput){return {safeThrough:input.isFinal?input.text.length:Math.min(1,input.text.length)}}}
+  const worker=createWorker({...(suspend?{policy:new PausedPolicy()}:{}),...(maxCalls?{modelBudget:{maxModelCalls:maxCalls}}:{}),controlPlane:app,model,...(fastOnly?{fastModel:driver}:{}),logger:nullLogger,kernel:{homesRoot:home},worker:{id:'react-worker',healthPort:0}})
   const identity={runId:'react-runtime',tenantId:'tenant',principalId:'human',agentId:'agent',sessionId:'room'}
   await app.enqueue({id:identity.runId,...identity,text,mode:'execute',codeExecution:'disabled',deliveryMode:'auto'})
   return {app,pool,identity,driver,worker,requests,async restart(){await worker.stop();const replacement=createWorker({controlPlane:app,model,...(fastOnly?{fastModel:driver}:{}),logger:nullLogger,kernel:{homesRoot:home},worker:{id:'replacement-worker',healthPort:0}});try{await replacement.runNext();return (await app.readRunState(identity))!}finally{await replacement.stop()}},get calls(){return modelCalls},get effects(){return effects},get auxiliary(){return auxiliaryCalls},setAllowed(value:boolean){allowed=value},async run(){await worker.runNext();return (await app.readRunState(identity))!},async close(){await worker.stop();await app.stop();await db.close();await rm(home,{recursive:true,force:true})}}
@@ -253,4 +264,27 @@ it('optional commentary completes intermediate → native tool → terminal with
     const failures=await f.pool.query("SELECT 1 FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='model.failed'",[f.identity.runId])
     assert.equal(failures.rows.length,0)
   }finally{await f.close()}
+})
+
+
+it('native-v3 Worker seals an EOF-approved answer after optional publication suspension',async()=>{
+ const f=await fixture([{answer:'OK safe answer.'}],true,'Explain the result.',false,undefined,undefined,false,true)
+ try{const state=await f.run();assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'OK safe answer.');assert.equal(f.calls,1);const events=(await f.app.readEvents(f.identity)).events;assert.equal(events.filter(e=>e.kind==='public.text.sealed').length,1);assert.ok(!events.some(e=>e.kind==='public.text.ended'&&e.data['reason']==='interrupted'))}finally{await f.close()}
+})
+it('full Worker keeps completed business effects but refuses a result when final seal storage rejects',async()=>{
+ const f=await fixture([{answer:'',tool:1},{answer:'Saved action verified.'}],true,'Save then explain.',false,undefined,undefined,false,false,true)
+ try{const state=await f.run();assert.equal(f.effects,1);assert.deepEqual((await f.pool.query('SELECT * FROM synthetic_saved_pages')).rows,[{id:'one',body:'Saved page'}]);assert.equal(f.calls,2);assert.equal(state.run.status,'failed');assert.equal(state.run.resultId,null);assert.equal(state.message,null);assert.equal((await f.app.readEvents(f.identity)).events.filter(e=>e.kind==='public.text.sealed').length,0)}finally{await f.close()}
+})
+
+for(const failures of [1,2])it(`full Worker replaces failed protocol drafts after ${failures} correction failures`,async()=>{
+ const f=await fixture([...Array.from({length:failures},()=>({answer:'Rejected draft.',protocolFailure:true})),{answer:'Corrected answer.'}])
+ try{
+  const state=await f.run(),events=(await f.app.readEvents(f.identity)).events
+  assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'Corrected answer.')
+  assert.equal(f.calls,failures+1);assert.equal(state.message?.publicTextSources?.segments.length,1)
+  assert.equal(events.filter(e=>e.kind==='public.text.sealed').length,1)
+  assert.ok(events.filter(e=>e.kind==='public.text.ended'&&e.data['reason']==='failed').length>=failures)
+  const finalOperation=events.filter(e=>e.kind==='public.text.operation').at(-1)
+  assert.equal(finalOperation?.data['operation'],'replace')
+ }finally{await f.close()}
 })

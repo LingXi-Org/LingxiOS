@@ -7,6 +7,7 @@ import { PGlite } from '@electric-sql/pglite'
 import { createLingxiOS } from '../src/index.js'
 import type { SqlPool } from '../src/control-plane/pg-store.js'
 import type { RunEvent, WorkItem } from '../src/protocol/types.js'
+import { PublicTextAttemptWriter } from '../src/runtime/public-text.js'
 import { nullLogger } from '../src/logging.js'
 import { consumePublicTextAttempts, consumeRunEvent, consumeRunState, consumeRunStreamEvent, createRunView } from '../src/ui/index.js'
 
@@ -175,4 +176,24 @@ it('purpose is immutable in durable v2 parts and survives fresh authorized event
     f.setAllowed(false)
     await assert.rejects(f.host.emitEvent(f.work,f.delta(2,'revoked',{version:2,purpose:'commentary'})),/authorized/)
   }finally{await f.close()}
+})
+
+
+it('suspended v3 answer reaches the real durable seal without reopening interrupted text',async()=>{
+  const f=await fixture();let seq=0
+  const writer=new PublicTextAttemptWriter({version:3,requestVersion:1,fence:1,attemptId:'model:6',partId:'model:6',partIndex:1,messageId:'answer:run:v1'},
+    async event=>f.host.emitEvent(f.work,{...event,runId:f.work.id,seq:++seq}),new AbortController().signal,
+    ({text,isFinal})=>({safeThrough:isFinal?text.length:Math.min(3,text.length)}),'purpose-json-v3')
+  try{
+    await writer.begin({kind:'append',supersedes:[]})
+    await writer.push('OK ',{purpose:'answer'});await writer.push('safe suffix',{purpose:'answer'})
+    await new Promise(resolve=>setTimeout(resolve,1150))
+    await writer.finish('OK safe suffix');await writer.end('completed');await writer.seal('OK safe suffix')
+    const events=(await f.app.readEvents(f.identity)).events
+    assert.equal(events.at(-1)?.kind,'public.text.sealed')
+    assert.deepEqual(events.filter(e=>e.kind==='public.text.ended').map(e=>e.data['reason']),['completed'])
+    const records=await f.pool.query("SELECT output FROM lingxios.agent_steps WHERE kind='runtime.answer_segment'")
+    assert.equal(records.rows.length,1)
+    assert.equal(JSON.parse(String(records.rows[0]?.['output'])).text,'OK safe suffix')
+  }finally{writer.dispose();await f.close()}
 })
