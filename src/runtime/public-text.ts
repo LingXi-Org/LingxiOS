@@ -61,6 +61,8 @@ export class PublicTextWriter {
   private assessedLength=0
   private assessments=0
   private chunks=0
+  private publishedLength=0
+  private readonly publishedHash=createHash('sha256')
   private closed=false
   private suspended=false
   private finished=false
@@ -70,7 +72,8 @@ export class PublicTextWriter {
   private heldTimer:ReturnType<typeof setTimeout>|undefined
   constructor(private readonly identity:PublicTextIdentity,
     private readonly emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>,private readonly signal:AbortSignal,
-    private readonly assess?:((input:Readonly<PublicTextSafetyInput>)=>PublicTextSafetyDecision)|undefined){}
+    private readonly assess?:((input:Readonly<PublicTextSafetyInput>)=>PublicTextSafetyDecision)|undefined,
+    private readonly sealable=false){}
 
   /** Only successfully appended deltas can be associated with a final candidate. */
   get partId():string|undefined{return this.chunks?this.identity.partId:undefined}
@@ -149,8 +152,20 @@ export class PublicTextWriter {
     if(this.finished)return
     this.clearHeldTimer()
     if(this.timer){clearTimeout(this.timer);this.timer=undefined}
+    // A coalescing assessment may already be awaiting its durable append.
+    // Hash/length must describe that ACK before deriving the final suffix.
+    await this.tail
+    this.signal.throwIfAborted()
     const through=this.approval(finalText,true)
-    if(!this.suspended){
+    if(this.suspended&&this.sealable){
+      // EOF is the existing validated model result, not another growing buffer.
+      // Resume only an exact acknowledged prefix after final safety approval.
+      if(Buffer.byteLength(finalText)>MAX_RECEIVED_BYTES||finalText.length<this.publishedLength
+        ||createHash('sha256').update(finalText.slice(0,this.publishedLength)).digest('hex')!==this.publishedHash.copy().digest('hex'))
+        throw new PublicTextSafetyError('invalid_decision')
+      await this.publish(finalText.slice(this.publishedLength))
+      this.approvedThrough=through
+    }else if(!this.suspended){
       if(!finalText.startsWith(this.received))throw new PublicTextSafetyError('invalid_decision')
       // EOF safety checks the whole result, but publication only archives
       // bytes actually received through onTextDelta. A non-streaming driver
@@ -170,7 +185,9 @@ export class PublicTextWriter {
     if(this.suspended||this.closed)return
     this.suspended=true;this.received='';this.receivedMessage=undefined;this.text='';this.clearHeldTimer()
     if(this.timer)clearTimeout(this.timer);this.timer=undefined
-    await this.close('interrupted')
+    // A v3 answer still needs its final safety decision and durable seal.
+    // Commentary/legacy streams retain their bounded interrupted preview.
+    if(!this.sealable)await this.close('interrupted')
   }
   private flush():Promise<void>{
     if(this.timer){clearTimeout(this.timer);this.timer=undefined}
@@ -183,6 +200,7 @@ export class PublicTextWriter {
         if(!chunk)return
         this.signal.throwIfAborted()
         await this.emit({kind:'public.text.delta',stage:'delta',visibility:'user',data:{...this.identity,chunkIndex:this.chunks,text:chunk}})
+        if(this.sealable){this.publishedLength+=chunk.length;this.publishedHash.update(chunk)}
         this.chunks++;chunk='';bytes=0
       }
       for(const point of pending){const size=Buffer.byteLength(point);if(bytes+size>4096)await append();chunk+=point;bytes+=size}
@@ -255,7 +273,7 @@ export class PublicTextAttemptWriter {
     if(!writer){
       const {messageId:_message,segmentId:_segment,operation:_operation,supersedes:_supersedes,...legacy}=this.identity
       writer=new PublicTextWriter(key==='legacy'?this.identity:key==='answer'&&this.protocol==='purpose-json-v3'?this.segmentIdentity!:
-        {...legacy,version:2,purpose:key,partIndex:key==='answer'?1:0,partId:this.identity.partId+':'+key},this.emit,this.signal,this.assess)
+        {...legacy,version:2,purpose:key,partIndex:key==='answer'?1:0,partId:this.identity.partId+':'+key},this.emit,this.signal,this.assess,key==='answer'&&this.protocol==='purpose-json-v3')
       this.writers.set(key,writer)
     }
     await writer.push(text)
