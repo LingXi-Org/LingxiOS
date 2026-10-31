@@ -1,0 +1,88 @@
+{
+  "scope": "unpublished compatible SDK source; PGlite and scoped scratch artifact tools, NOT Loop product acceptance",
+  "binding": "native-v3",
+  "elapsedMs": 117919,
+  "status": "partial",
+  "protocolFailures": [],
+  "failureEvents": [],
+  "actions": [
+    {
+      "action": "skills.load",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.current",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_reference",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_file",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_reference",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_reference",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "observations.read",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "observations.read",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "task.contract",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.write_files",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.write_files",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.check",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "task.inspect",
+      "ok": "true",
+      "code": null
+    }
+  ],
+  "checkProblems": 0,
+  "files": [
+    {
+      "path": "project/canvas.json",
+      "sha256": "48cbda47b4b003373b25b1f8fc2d8d23d955898d3e9cb4d7ba8962f647d8a478"
+    },
+    {
+      "path": "project/Main.dc.html",
+      "sha256": "3725498db1cab79d96168572b2b96b51679408ba82cd30a7bb1b9be29d0f3399"
+    }
+  ],
+  "accepted": false,
+  "browserValidated": false
+}

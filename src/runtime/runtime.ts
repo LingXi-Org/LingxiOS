@@ -663,7 +663,7 @@ export class AgentRuntime {
           ?'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes):'')})
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
         +'\nAppend adds text; replace selects active revision IDs in source order or the exact failed-candidate target supplied by a runtime correction. Failed candidates are not sealed body sources. A terminal null answer uses only the assembled sealed body.'})
-      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !bindingOnlyProtocolCorrection && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection), answerSegments.correctionSources) : undefined
+      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !bindingOnlyProtocolCorrection && !((model.publicAnswerTool==='native-v2'||model.publicAnswerTool==='native-v3')&&toolObservationCorrection), answerSegments.correctionSources) : undefined
       if (requestedCorrection && canonicalJson(requestedCorrection) !== canonicalJson(pendingAnswerCorrection ?? null)) {
         await host.saveStep(work,{id:'answer-correction:'+createHash('sha256').update(JSON.stringify([runId,(session.request?.revisions.length ?? 0)+1,requestedCorrection])).digest('hex'),
           kind:'runtime.answer_correction',requestVersion:(session.request?.revisions.length ?? 0)+1,input:{operation:requestedCorrection},output:'{}',artifacts:[]})
@@ -677,7 +677,8 @@ export class AgentRuntime {
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
       const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
-        items: observationItems(stripMemorySources([...projectHistory(history), ...supplementalItems]), 'turn-context'), tools: modelTools, codeExecution })
+        items: observationItems(stripMemorySources([...projectHistory(history), ...supplementalItems]), 'turn-context'), tools: modelTools, codeExecution,
+        ...(execution.requiredTool ? { requiredTool: execution.requiredTool } : {}) })
       const profile = modelProfile(model), reservedTokens = profile.maxOutputTokens + profile.maxThinkingTokens + 512
       const estimateOverhead = () => inputTokens(model, modelInputFor([]),true) + reservedTokens
       let overheadTokens = estimateOverhead()
@@ -785,7 +786,7 @@ export class AgentRuntime {
       const preview = !publishes && liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
       let providerBegan = performance.now()
       let firstBody = false
-      const generationOperation = protocolCorrection && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection) || correctionOperation ? 'correction' : 'generation'
+      const generationOperation = protocolCorrection && !((model.publicAnswerTool==='native-v2'||model.publicAnswerTool==='native-v3')&&toolObservationCorrection) || correctionOperation ? 'correction' : 'generation'
       try {
         protocolCorrection = null
         toolObservationCorrection = false
@@ -797,6 +798,7 @@ export class AgentRuntime {
           ...(session.promptContext.manifest ? { prompt: session.promptContext.manifest } : {}),
           items: modelItems,
           tools: modelTools,
+          ...(execution.requiredTool ? { requiredTool: execution.requiredTool } : {}),
           codeExecution,
           ...(react ? {answerContext:answerSegments.context} : {}),
           signal: generationSignal,
@@ -890,7 +892,7 @@ export class AgentRuntime {
           if(budget.consume(correction.category,error.diagnostics.protocolCode ?? 'model protocol violation')){
             protocolCorrection={role:'user',content:correction.content}
             const sources=answerSegments.correctionSources,sealed=answerSegments.context.segmentIds
-            bindingOnlyProtocolCorrection=model.publicAnswerTool==='native-v2'
+            bindingOnlyProtocolCorrection=(model.publicAnswerTool==='native-v2'||model.publicAnswerTool==='native-v3')
               &&error.diagnostics.protocolCode==='public_answer_first_required'
               &&sources.length===sealed.length&&sources.every((source,index)=>source===sealed[index])
             continue
@@ -962,7 +964,7 @@ export class AgentRuntime {
       if (model.publicTextProtocol === 'purpose-json-v2' || react || turn.outcomeDeclaration !== undefined || turn.publicTextPhase!==undefined) {
         try {
           if ((!react && model.publicTextProtocol !== 'purpose-json-v2') || turn.finalCandidate !== undefined) throw new Error('outcome declaration requires an explicit outcome protocol')
-          if(turn.publicTextPhase!==undefined && (!intermediate || !react || model.publicTextContinuation!=='typed-message-v1' || calls.length && model.publicAnswerTool!=='native-v2' || !turn.text.trim() || !turn.answerOperation || turn.answerIsNull===true || turn.outcomeDeclaration!==undefined))throw new Error('invalid intermediate public message')
+          if(turn.publicTextPhase!==undefined && (!intermediate || !react || model.publicTextContinuation!=='typed-message-v1' || calls.length && !['native-v2','native-v3'].includes(model.publicAnswerTool??'') || !turn.text.trim() || !turn.answerOperation || turn.answerIsNull===true || turn.outcomeDeclaration!==undefined))throw new Error('invalid intermediate public message')
           if (calls.length) { if (turn.outcomeDeclaration !== undefined) throw new Error('tool turns cannot declare a terminal outcome') }
           else if(!intermediate) declaration = snapshotOutcomeDeclaration(turn.outcomeDeclaration)
         } catch {
@@ -984,15 +986,16 @@ export class AgentRuntime {
         try {
           // Validate the entire batch before sealing any candidate or dispatching any effect.
           validateToolBatch(calls,modelTools,codeExecution,model.profile?.parallelTools)
+          if(execution.requiredTool&&(calls.length!==1||calls[0]?.name!==execution.requiredTool))throw new Error('required tool selection changed')
           if(model.publicAnswerTool==='native-v2'&&!turn.publicAnswerCall)throw new Error('mixed batch requires public output binding')
-          if(model.publicAnswerTool==='native-v1'&&!turn.publicAnswerCall
+          if((model.publicAnswerTool==='native-v1'||model.publicAnswerTool==='native-v3')&&!turn.publicAnswerCall
             &&(!calls.length||turn.text!==''||turn.answerOperation!==undefined||turn.answerIsNull!==undefined
               ||turn.publicTextPhase!==undefined||turn.outcomeDeclaration!==undefined
               ||turn.output.some(item=>'role' in item||item.type!=='function_call')))throw new Error('public output requires its native call binding')
           if(turn.publicAnswerCall){
             const decoded=decodePublicAnswerCall(turn.publicAnswerCall)
             if(!model.publicAnswerTool||(model.publicAnswerTool==='native-v1'&&(calls.length||turn.output.length))
-              ||model.publicAnswerTool==='native-v2'&&(turn.output.length!==calls.length||calls.length>0&&!intermediate||calls.some(call=>call.callId===turn.publicAnswerCall!.callId))
+              ||(model.publicAnswerTool==='native-v2'||model.publicAnswerTool==='native-v3')&&(turn.output.length!==calls.length||calls.length>0&&!intermediate||calls.some(call=>call.callId===turn.publicAnswerCall!.callId))
               || decoded.text!==(turn.answerIsNull?null:turn.text)
               || canonicalJson(decoded.operation)!==canonicalJson(turn.answerOperation)
               || canonicalJson(decoded.outcome)!==canonicalJson(intermediate?null:turn.outcomeDeclaration))throw new Error('invalid public output binding')

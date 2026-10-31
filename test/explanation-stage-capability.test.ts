@@ -64,3 +64,16 @@ for(const [label,binding,privateChild] of [
     if(!privateChild){const normal=await f.host.executeAction(work,action(work,'normal',selection));assert.equal(normal.ok,true,JSON.stringify(normal))}
   }finally{await f.close()}
 })
+
+
+it('native-v3 retains exact request-bound explanation activation with a pinned public capability',async()=>{
+ const f=await fixture()
+ try{
+  const work=await f.start(),model=new OpenAIChatDriver('native-v3-stage',{apiKey:'synthetic-only',maxAttempts:1,publicTextProtocol:'purpose-json-v3',publicTextContinuation:'typed-message-v1',publicAnswerTool:'native-v3',capabilities:{parallelTools:true,jsonObjectWithTools:false},fetchImpl:async()=>{throw Error('action-only fixture')}})
+  await f.host.saveStep(work,{id:'runtime:binding',kind:'runtime.binding',requestVersion:1,input:{runtime:releaseVersions.runtime,semanticReview:'selective',harness:null,prompt:PROMPT_CONTRACT_VERSION,model:model.modelId,provider:model.configurationFingerprint,publicTextProtocol:model.publicTextProtocol,publicTextContinuation:model.publicTextContinuation,publicAnswerTool:model.publicAnswerTool},output:'{}',artifacts:[]})
+  const bad=await f.host.executeAction(work,action(work,'bad-declaration',{...selection,explanation:{...explanation,factQuotes:['Fabricated text.']}}))
+  assert.equal(bad.ok,false);assert.equal((await f.pool.query('SELECT count(*)::int AS n FROM lingxios.agent_skill_activations')).rows[0]!['n'],0)
+  const result=await f.host.executeAction(work,action(work,'bound-declaration',{...selection,explanation}))
+  assert.equal(result.ok,true,JSON.stringify(result));assert.equal(f.effects,0)
+ }finally{await f.close()}
+})

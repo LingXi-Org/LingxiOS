@@ -1,0 +1,90 @@
+{
+  "scope": "unpublished compatible SDK source; PGlite and scoped scratch artifact tools, NOT Loop product acceptance",
+  "binding": "native-v3",
+  "elapsedMs": 97910,
+  "status": "succeeded",
+  "verification": "inconclusive",
+  "gapCount": 0,
+  "verifications": [
+    {
+      "checker": "action:[\"sdk593-275996d3-1df0-4975-969d-46c94ff02b68\",\"step:29be60d6-7982-4883-90fd-5f2936541cf5\",0]",
+      "status": "passed"
+    },
+    {
+      "checker": "action:[\"sdk593-275996d3-1df0-4975-969d-46c94ff02b68\",\"step:d5a8837a-c35a-42c0-b77f-c3b43bf96a38\",0]",
+      "status": "passed"
+    }
+  ],
+  "protocolFailures": [],
+  "failureEvents": [],
+  "actions": [
+    {
+      "action": "skills.load",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.current",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_reference",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "observations.read",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_file",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "observations.read",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.read_reference",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.write_files",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.write_files",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "design.check",
+      "ok": "true",
+      "code": null
+    },
+    {
+      "action": "task.inspect",
+      "ok": "true",
+      "code": null
+    }
+  ],
+  "checkProblems": 0,
+  "files": [
+    {
+      "path": "project/canvas.json",
+      "sha256": "9a12e20c42116cd9fe37ac47d182b5387b31da9fe28ccf0924f5460d854cd3a7"
+    },
+    {
+      "path": "project/Explain.dc.html",
+      "sha256": "6618ca205ac3eeb6225356f54c1cad867cddbe5ad52b21e4194e9224af5fa7d3"
+    }
+  ],
+  "accepted": true,
+  "browserValidated": false
+}

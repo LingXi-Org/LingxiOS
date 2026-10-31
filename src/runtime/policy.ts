@@ -15,6 +15,9 @@ import type { GoalAssessment } from '../outcome/assessment.js'
 import { memorySnapshotBody } from '../memory/context.js'
 
 export interface RuntimePolicy {
+  /** Narrow the next decision to an existing authorized tool, for guidance dependencies. */
+  requiredTool?(context: TurnContext): string | undefined
+
   /** Approve only a known-safe prefix. Pure and synchronous; final-answer validation remains separate. */
   publicTextSafety?(input: Readonly<PublicTextSafetyInput>, context: TurnContext): PublicTextSafetyDecision
 

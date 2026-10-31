@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>封面 · FlashAttention</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>body{margin:0}
+a{color:#7d8b96}a:hover{color:#cdd8de}
+</style>
+</helmet>
+<div style="width: 1440px; height: 900px; box-sizing: border-box; background: #0f1216; color: #e8edf0; font-family: 'Inter', 'Noto Sans SC', system-ui, sans-serif; display: flex; flex-direction: column; padding: 68px 72px 60px; position: relative; overflow: hidden">
+  <div style="display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid #262d34; padding-bottom: 20px">
+    <span style="font-size: 15px; letter-spacing: 0.16em; color: #8fa3b0; text-transform: uppercase">Transformer 原理讲解 · 第 1 讲</span>
+    <span style="font-size: 15px; color: #6b7a85">画板可编辑 · 共 7 块</span>
+  </div>
+  <div style="display: flex; flex: 1; gap: 56px; padding-top: 52px">
+    <div style="width: 640px; display: flex; flex-direction: column; justify-content: center; gap: 26px">
+      <h1 style="margin: 0; font-family: 'Source Serif 4', 'Noto Serif SC', Georgia, serif; font-size: 84px; line-height: 1.04; font-weight: 600; color: {{titleColor}}">Flash<span style="color: {{accent}}">Attention</span></h1>
+      <p style="margin: 0; font-size: 26px; line-height: 1.55; color: #b9c6ce; max-width: 560px">不改变 Attention 的数学结果，只改变它访问显存的顺序——把本应写回显存、再读回来的巨大中间矩阵，永远留在 GPU 片上。</p>
+      <div style="display: flex; gap: 12px; margin-top: 6px">
+        <span style="font-size: 15px; padding: 7px 14px; border: 1px solid #3a4852; border-radius: 2px; color: #c6d3da">IO 感知算法</span>
+        <span style="font-size: 15px; padding: 7px 14px; border: 1px solid #3a4852; border-radius: 2px; color: #c6d3da">分块 · 在线 softmax</span>
+        <span style="font-size: 15px; padding: 7px 14px; border: 1px solid #3a4852; border-radius: 2px; color: #c6d3da">精确、近似无关</span>
+      </div>
+    </div>
+    <div style="flex: 1; display: flex; flex-direction: column; gap: 18px; justify-content: center">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 18px">
+        <div style="border: 1px solid #262d34; background: #141a1f; padding: 24px; display: flex; flex-direction: column; gap: 10px">
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; color: #6b7a85">标准实现</span>
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 19px; color: #9fb0bb; line-height: 1.5">S = Q·Kᵀ<br>P = softmax(S)<br>O = P·V</span>
+          <span style="font-size: 15px; color: #8a9aa5; line-height: 1.5">S、P 尺寸 N×N，都需写入显存</span>
+        </div>
+        <div style="border: 1px solid {{accentLine}}; background: #171d21; padding: 24px; display: flex; flex-direction: column; gap: 10px">
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; color: {{accent}}">FlashAttention</span>
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 19px; color: #dbe6eb; line-height: 1.5">for K, V 块：<br>　S̃ → 更新 m, ℓ → O<br>输出 O、ℓ 最终写出</span>
+          <span style="font-size: 15px; color: #9aa9b4; line-height: 1.5">N×N 矩阵从不落到显存</span>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 16px; border-top: 1px solid #262d34; padding-top: 18px">
+        <span style="font-size: 15px; color: #6b7a85">显存占用对比（示意，按 N=4096、d=64、fp16 估算）</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 12px">
+        <div style="display: flex; align-items: center; gap: 14px">
+          <span style="width: 96px; font-size: 14px; color: #9aa9b4">标准</span>
+          <div style="width: 300px; height: 22px; background: #2b343b"></div>
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; color: #9aa9b4">≈ 64 MB（仅 S 一次）</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 14px">
+          <span style="width: 96px; font-size: 14px; color: #c6d3da">Flash</span>
+          <div style="width: 9px; height: 22px; background: {{accent}}"></div>
+          <span style="font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 14px; color: #c6d3da">一个块 ≈ 128×64</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div style="display: flex; gap: 40px; border-top: 1px solid #262d34; padding-top: 22px; font-size: 15px; color: #7d8b96">
+    <span>01 问题所在</span><span>02 分块</span><span>03 在线 softmax</span><span>04 逐步演算</span><span>05 反向与 v2</span><span>06 总结</span>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#f2a33c"},"accentLine":{"editor":"color","default":"#4a3a22"},"titleColor":{"editor":"color","default":"#eef3f6"},"$preview":{"width":1440,"height":900}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      accent: this.props.accent ?? '#f2a33c',
+      accentLine: this.props.accentLine ?? '#4a3a22',
+      titleColor: this.props.titleColor ?? '#eef3f6'
+    };
+  }
+}
+</script>
+</body>
+</html>
