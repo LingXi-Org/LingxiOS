@@ -33,7 +33,7 @@ function requestedCorrection(request: WireRequest): AnswerOperation | undefined 
   assert.ok(serialized, 'the runtime correction must supply an exact replacement operation')
   return JSON.parse(serialized) as AnswerOperation
 }
-async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart' | 'publication-reject' | 'read-partial', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.', nativeV2 = false, requireApproval = false, nativeV3 = false, forceRead = false) {
+async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'history' | 'cancel' | 'tamper-call' | 'compacted-duplicate' | 'missing-binding' | 'repair-answer' | 'repair-restart' | 'publication-reject' | 'read-partial' | 'required-selection', maxCalls = 8, text = 'Gather collects items. Check reviews them. Explain these facts, then save the synthetic record.', nativeV2 = false, requireApproval = false, nativeV3 = false, forceRead = false) {
   const db = new PGlite(), home = await mkdtemp(join(tmpdir(), 'public-answer-worker-'))
   await db.exec(await readFile(new URL('../../db/schema.sql', import.meta.url), 'utf8'))
   let tail = Promise.resolve(), calls = 0, effects = 0, auxiliary = 0, seals = 0, faulted = false, strippedBindings = 0
@@ -150,6 +150,11 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
   // its own key; workers restarted inside the fixture keep that same driver.
   const model = new OpenAIChatDriver('public-output-worker-fixture', { apiKey: `synthetic-${randomUUID()}`, publicTextProtocol: 'purpose-json-v3', publicTextContinuation: 'typed-message-v1', publicAnswerTool: nativeV3 ? 'native-v3' : nativeV2 ? 'native-v2' : 'native-v1',
     maxAttempts: 1, capabilities: { parallelTools: nativeV2 || nativeV3, jsonObjectWithTools: false }, fetchImpl })
+  if (fault === 'required-selection') {
+    const run = model.run.bind(model)
+    model.run = request => { const { requiredTool: _required, ...unconstrained } = request; return run(unconstrained) }
+    model.singleAttempt = () => model
+  }
   if (fault === 'missing-binding') {
     const run = model.run.bind(model)
     model.run = async request => { const result = await run(request); assert.ok(result.publicAnswerCall); strippedBindings++; delete result.publicAnswerCall; return result }
@@ -637,4 +642,8 @@ it('native-v3 real Worker forces the authorized first read, then accepts busines
 it('native-v3 required selection rejects a different provider tool before its effect', async () => {
   const f=await fixture([{business:true},{business:true},{business:true}],undefined,3,'Read before saving.',false,false,true,true)
   try {const state=await f.run();assert.equal(state.run.status,'failed');assert.equal(f.effects,0);assert.equal(f.rawPublicCalls.length,0)}finally{await f.close()}
+})
+it('a custom driver cannot skip required selection with an otherwise valid terminal public answer', async () => {
+  const f=await fixture([{answer:'Gather and Check'}],'required-selection',3,'Read before answering.',false,false,true,true)
+  try {const state=await f.run();assert.equal(state.run.status,'failed');assert.equal(f.effects,0);assert.equal(f.calls,1);assert.equal(state.message?.body,undefined)}finally{await f.close()}
 })

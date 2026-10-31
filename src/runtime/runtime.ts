@@ -935,6 +935,10 @@ export class AgentRuntime {
       const calls = turn.output.filter(
         (item): item is Extract<ModelItem, { type: 'function_call' }> => 'type' in item && item.type === 'function_call',
       )
+      if (execution.requiredTool && (calls.length !== 1 || calls[0]?.name !== execution.requiredTool)) {
+        await this.publications.get(runId)?.end('failed')
+        throw new ModelDriverError('required tool selection changed', { kind: 'protocol', category: 'protocol', protocolCode: 'tool_identity_invalid', finishReasons: [] })
+      }
       try {
         if (!react) {
           await this.publications.get(runId)?.finish(turn.text)
@@ -986,7 +990,6 @@ export class AgentRuntime {
         try {
           // Validate the entire batch before sealing any candidate or dispatching any effect.
           validateToolBatch(calls,modelTools,codeExecution,model.profile?.parallelTools)
-          if(execution.requiredTool&&(calls.length!==1||calls[0]?.name!==execution.requiredTool))throw new Error('required tool selection changed')
           if(model.publicAnswerTool==='native-v2'&&!turn.publicAnswerCall)throw new Error('mixed batch requires public output binding')
           if((model.publicAnswerTool==='native-v1'||model.publicAnswerTool==='native-v3')&&!turn.publicAnswerCall
             &&(!calls.length||turn.text!==''||turn.answerOperation!==undefined||turn.answerIsNull!==undefined

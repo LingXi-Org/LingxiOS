@@ -68,3 +68,9 @@ the environment's default npm cache was unavailable. That unchanged case passed
 1/1 with the existing writable npm cache and npm CLI configured explicitly.
 No failure or original coverage was removed. Formal release-branch qualification,
 package publication, then Loop exact-package integration remain required.
+
+Final inspection additionally placed required selection validation before both
+business and terminal output handling, so a custom driver cannot bypass the
+precondition by returning an otherwise valid final answer. The three targeted
+native-v3 Worker cases (including that new negative) and eight selection/order
+contract cases passed after the final build. Original native-v2 cases remain.
