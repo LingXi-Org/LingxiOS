@@ -152,6 +152,10 @@ export class PublicTextWriter {
     if(this.finished)return
     this.clearHeldTimer()
     if(this.timer){clearTimeout(this.timer);this.timer=undefined}
+    // A coalescing assessment may already be awaiting its durable append.
+    // Hash/length must describe that ACK before deriving the final suffix.
+    await this.tail
+    this.signal.throwIfAborted()
     const through=this.approval(finalText,true)
     if(this.suspended&&this.sealable){
       // EOF is the existing validated model result, not another growing buffer.
