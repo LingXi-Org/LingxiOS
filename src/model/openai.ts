@@ -504,7 +504,7 @@ export class OpenAIChatDriver implements ModelDriver {
   }
 
   run(request: ModelTurnRequest): Promise<ModelTurnResult> {
-    const timing=new DriverTiming(request.onTiming)
+    const timing=new DriverTiming(request.onTiming,undefined,request.signal)
     return this.guarded(() => this.runOnce(request,timing), request.signal).finally(()=>timing.finish())
   }
   private toolChoice(request: Pick<ModelTurnRequest, 'tools' | 'requiredTool'>) {
@@ -794,7 +794,7 @@ export class OpenAIChatDriver implements ModelDriver {
   }
 
   structured(request: StructuredCallRequest): Promise<StructuredCallResult> {
-    const timing=new DriverTiming(request.onTiming)
+    const timing=new DriverTiming(request.onTiming,undefined,request.signal)
     return this.guarded(() => this.structuredOnce(request,timing), request.signal).finally(()=>timing.finish())
   }
 
@@ -852,7 +852,7 @@ export class OpenAIChatDriver implements ModelDriver {
   }
 
   compact(request: CompactionRequest): Promise<CompactionResult> {
-    const timing=new DriverTiming(request.onTiming)
+    const timing=new DriverTiming(request.onTiming,undefined,request.signal)
     return this.guarded(() => this.compactOnce(request,timing), request.signal).finally(()=>timing.finish())
   }
   private async compactOnce(request: CompactionRequest,timing:DriverTiming): Promise<CompactionResult> {

@@ -112,3 +112,24 @@ test('safe timing projection rejects unknown versions, bad numbers and hostile g
  assert.deepEqual(safe,{version:1,clock:'monotonic',providerTime:'unavailable',totalMs:0})
  assert.equal(readModelStageTimings({get version(){throw new Error('private-marker')}}),undefined)
 })
+
+test('a timed-out body and cancellation preserve known HTTP phases on failed ledger observations',async()=>{
+ for(const cancelled of [false,true]){
+  const observations=[],stop=new AbortController()
+  let entered
+  const ready=new Promise(resolve=>{entered=resolve})
+  const model=executionModel(host(observations),new OpenAIChatDriver('stalled-stream-'+cancelled,{...options,recovery:{maxAttempts:1},requestTimeoutMs:30,firstByteTimeoutMs:30,
+   fetchImpl:async()=>{entered();return new Response(new ReadableStream({pull:()=>new Promise(()=>{})}))}}),work,DEFAULT_MODEL_BUDGET)
+  const rejected=assert.rejects(model.run({...request,signal:stop.signal}))
+  await ready;await new Promise(resolve=>setImmediate(resolve))
+  const keepAlive=setTimeout(()=>{},1000)
+  try{
+   if(cancelled)stop.abort(new Error('synthetic cancellation'))
+   await rejected
+   const timing=observations[0].stageTimings
+   assert.equal(observations[0].status,'failed');assert.equal(timing.httpRequestCount,1)
+   assert.ok(timing.httpToHeadersMs>=0);assert.ok(timing.observedStreamMs>=0)
+   assert.equal(timing.streamCompleted,false);assert.equal(timing.httpToFirstContentMs,undefined)
+  }finally{clearTimeout(keepAlive)}
+ }
+})

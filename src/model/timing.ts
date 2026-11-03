@@ -72,15 +72,24 @@ export class DriverTiming {
   private httpBegan:number|undefined
   private validationBegan:number|undefined
   private values:ModelTimingUpdate={}
-  constructor(private readonly notify:((update:ModelTimingUpdate)=>void)|undefined,private readonly now=()=>performance.now()){}
-  request(){this.httpBegan=this.now();this.values={httpRequestCount:(this.values.httpRequestCount??0)+1}}
-  headers(){if(this.httpBegan!==undefined)this.values.httpToHeadersMs=this.now()-this.httpBegan}
-  content(){if(this.httpBegan!==undefined)this.values.httpToFirstContentMs??=this.now()-this.httpBegan}
+  private readonly cancelled=()=>{if(this.values.streamCompleted!==true)this.stream(false)}
+  constructor(private readonly notify:((update:ModelTimingUpdate)=>void)|undefined,private readonly now=()=>performance.now(),
+    private readonly signal?:AbortSignal){
+    signal?.addEventListener('abort',this.cancelled,{once:true})
+  }
+  private publish(){try{this.notify?.({...this.values})}catch{}}
+  request(){this.httpBegan=this.now();this.values={httpRequestCount:(this.values.httpRequestCount??0)+1};this.publish()}
+  headers(){if(this.httpBegan!==undefined)this.values.httpToHeadersMs=this.now()-this.httpBegan;this.publish()}
+  content(){if(this.httpBegan!==undefined&&this.values.httpToFirstContentMs===undefined){this.values.httpToFirstContentMs=this.now()-this.httpBegan;this.publish()}}
   tool(call:{id:string;name:string;arguments:string}){
     if(this.values.httpToFirstCompleteToolCallMs!==undefined||!call.id||!call.name||!call.arguments.trimEnd().endsWith('}'))return
-    try {const value:unknown=JSON.parse(call.arguments);if(value&&typeof value==='object'&&!Array.isArray(value)&&this.httpBegan!==undefined)this.values.httpToFirstCompleteToolCallMs=this.now()-this.httpBegan}catch{}
+    try {const value:unknown=JSON.parse(call.arguments);if(value&&typeof value==='object'&&!Array.isArray(value)&&this.httpBegan!==undefined){this.values.httpToFirstCompleteToolCallMs=this.now()-this.httpBegan;this.publish()}}catch{}
   }
-  stream(completed:boolean){if(this.httpBegan!==undefined)this.values.observedStreamMs=this.now()-this.httpBegan;this.values.streamCompleted=completed}
+  stream(completed:boolean){if(this.httpBegan!==undefined)this.values.observedStreamMs=this.now()-this.httpBegan;this.values.streamCompleted=completed;this.publish()}
   validation(){this.validationBegan=this.now()}
-  finish(){if(this.validationBegan!==undefined)this.values.finalProtocolValidationMs=this.now()-this.validationBegan;this.notify?.({...this.values})}
+  finish(){
+    this.signal?.removeEventListener('abort',this.cancelled)
+    if(this.validationBegan!==undefined)this.values.finalProtocolValidationMs=this.now()-this.validationBegan
+    this.publish()
+  }
 }

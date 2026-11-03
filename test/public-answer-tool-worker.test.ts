@@ -20,7 +20,7 @@ const ack = '{"status":"public_message_recorded"}'
 const known = 'Gather collects the items. Check reviews them. '
 type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; forceAppend?: boolean; callId?: string; reads?: boolean; save?: boolean; lateCommentary?: boolean }
   | { business: true; read?: string }
-  | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' | 'misordered' }
+  | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' | 'misordered' | 'no-call' }
 type WireRequest = { stream?: boolean; tool_choice?: unknown; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
 type AnswerOperation = { kind: 'append' | 'replace'; supersedes: string[] }
 // The synthetic model follows the exact runtime-selected correction target.
@@ -124,7 +124,7 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
       const invalidArgs = reply.invalid === 'missing-outcome'
         ? JSON.stringify({ operation, answer: 'Provisional only.' })
         : reply.invalid === 'truncated' ? args.slice(0, -1) : args
-      wire = reply.invalid === 'misordered'
+      wire = reply.invalid === 'no-call' ? frame({content:'Synthetic rejected prose.'},'stop') : reply.invalid === 'misordered'
         ? frame({ tool_calls: [call('probe__save', '{"key":"synthetic-record"}'), call('public_answer', args, 1, 'misordered-public')] }, 'tool_calls')
         : frame({ tool_calls: [call('public_answer', invalidArgs),
         ...(reply.invalid === 'mixed' ? [call('probe__save', '{"key":"synthetic-record"}', 1, 'second')]
@@ -659,4 +659,32 @@ it('native-v3 required selection rejects a different provider tool before its ef
 it('a custom driver cannot skip required selection with an otherwise valid terminal public answer', async () => {
   const f=await fixture([{answer:'Gather and Check'}],'required-selection',3,'Read before answering.',false,false,true,true)
   try {const state=await f.run();assert.equal(state.run.status,'failed');assert.equal(f.effects,0);assert.equal(f.calls,1);assert.equal(state.message?.body,undefined)}finally{await f.close()}
+})
+
+for (const failures of [1,2]) it(`native-v3 corrects ${failures} no-call responses through the native channel with one final answer`,async()=>{
+  const f=await fixture([...Array.from({length:failures},()=>({invalid:'no-call' as const})),{answer:'43'}],undefined,8,'What is 17 + 26? Only the number.',false,false,true)
+  try{
+    const state=await f.run()
+    assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'43')
+    assert.equal(f.effects,0);assert.equal(f.calls,failures+1)
+    assert.equal(state.message?.publicTextSources?.segments.length,1)
+    assert.ok(f.requests.every(request=>request.tool_choice==='required'))
+    const corrections=JSON.stringify(f.requests.at(-1)?.messages)
+    assert.match(corrections,/native tool_calls/);assert.match(corrections,/public_answer/)
+    const ledger=await f.pool.query("SELECT observation->>'status' AS status,observation->'stageTimings' AS timing,output_tokens FROM lingxios.agent_model_budget_calls WHERE work_id=$1 ORDER BY call_id",[f.identity.runId])
+    assert.deepEqual(ledger.rows.map(row=>row['status']),[...Array(failures).fill('failed'),'succeeded'])
+    assert.ok(ledger.rows.every(row=>Number(row['output_tokens'])===10 && (row['timing'] as Record<string,unknown>)['streamCompleted']===true))
+  }finally{await f.close()}
+})
+
+it('native-v3 stops repeated no-call correction at the existing lifetime bound',async()=>{
+  const f=await fixture([{invalid:'no-call'},{invalid:'no-call'},{invalid:'no-call'},{answer:'43'}],undefined,8,'What is 17 + 26? Only the number.',false,false,true)
+  try{
+    const state=await f.run()
+    assert.equal(state.run.status,'failed');assert.equal(state.run.resultId,null)
+    assert.equal(f.calls,3);assert.equal(f.effects,0)
+    assert.ok(f.requests.every(request=>request.tool_choice==='required'))
+    const ledger=await f.pool.query("SELECT output_tokens FROM lingxios.agent_model_budget_calls WHERE work_id=$1",[f.identity.runId])
+    assert.equal(ledger.rows.length,3);assert.ok(ledger.rows.every(row=>Number(row['output_tokens'])===10))
+  }finally{await f.close()}
 })
