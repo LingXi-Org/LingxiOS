@@ -2,7 +2,7 @@ import { readModelStageTimings } from './timing.js'
 import { providerCode } from './recovery.js'
 import { MODEL_PROTOCOL_DETAILS } from '../errors.js'
 
-const kinds = new Set(['provider', 'protocol'])
+const kinds = new Set(['provider', 'protocol', 'output'])
 const categories = new Set(['authorization', 'quota', 'rate_limit', 'timeout', 'network', 'unavailable',
   'protocol', 'cancelled', 'circuit_open', 'unknown'])
 const finishReasons = new Set(['stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'missing', 'unknown'])
@@ -28,6 +28,8 @@ export function publicModelDiagnostics(value: unknown): Record<string, unknown> 
   const stages=readModelStageTimings(field(value,'stageTimings'))
   if(stages)out['stageTimings']=stages
   if (field(value, 'publicText') === 'unpublished_tool_companion') out['publicText'] = 'unpublished_tool_companion'
+  const callback = field(value, 'outputCallback')
+  if (callback === 'operation' || callback === 'delta') out['outputCallback'] = callback
   for (const [key, allowed] of [['kind', kinds], ['category', categories], ['protocolCode', protocolCodes], ['protocolDetail', protocolDetails]] as const) {
     const candidate = field(value, key)
     if (typeof candidate === 'string' && allowed.has(candidate)) out[key] = candidate

@@ -406,7 +406,8 @@ export class OpenAIChatDriver implements ModelDriver {
   }
 
   private async consumeStream(response: Response, onTextDelta?: ModelTurnRequest['onTextDelta'],
-    onToolDelta?: (index: number, call: { id: string; name: string; arguments: string }, delta: string) => Promise<void>, timing?: DriverTiming): Promise<StreamAccumulator> {
+    onToolDelta?: (index: number, call: { id: string; name: string; arguments: string }, delta: string) => Promise<void>, timing?: DriverTiming,
+    callbackFailures?: WeakMap<object, 'operation' | 'delta'>): Promise<StreamAccumulator> {
     if (!response.body) throw new ModelDriverError('model provider returned no response body', { finishReasons: [] })
     const accumulator: StreamAccumulator = { text: '', toolCalls: new Map(), finishReasons: [] }
     try {
@@ -474,18 +475,19 @@ export class OpenAIChatDriver implements ModelDriver {
           if (onToolDelta) await onToolDelta(index, entry, typeof toolCall.function?.arguments === 'string' ? toolCall.function.arguments : '')
         }
       }
-    } catch (error) { timing?.stream(false); this.throwStreamFailure(error, accumulator) }
+    } catch (error) { timing?.stream(false); this.throwStreamFailure(error, accumulator, error && typeof error === 'object' ? callbackFailures?.get(error) : undefined) }
     timing?.stream(true)
     return accumulator
   }
 
-  private throwStreamFailure(error: unknown, accumulator: StreamAccumulator): never {
+  private throwStreamFailure(error: unknown, accumulator: StreamAccumulator, callback?: 'operation' | 'delta'): never {
     const usage = this.usageOf(accumulator)
     if (!usage.available && !(error instanceof ModelDriverError)) throw error
     const diagnostics = error instanceof ModelDriverError ? error.diagnostics
       : { kind: 'provider' as const, category: modelFailure(error).category, finishReasons: accumulator.finishReasons }
     throw new ModelDriverError(error instanceof ModelDriverError ? error.message : 'model stream failed',
       { ...diagnostics, category: diagnostics.category ?? modelFailure(error).category,
+        ...(callback ? { kind: diagnostics.kind === 'protocol' ? 'protocol' as const : 'output' as const, outputCallback: callback } : {}),
         finishReasons: diagnostics.finishReasons.length ? diagnostics.finishReasons : accumulator.finishReasons,
         ...(diagnostics.usage?.available ? { usage: diagnostics.usage } : usage.available ? { usage } : {}) }, { cause: error })
   }
@@ -505,7 +507,20 @@ export class OpenAIChatDriver implements ModelDriver {
 
   run(request: ModelTurnRequest): Promise<ModelTurnResult> {
     const timing=new DriverTiming(request.onTiming,undefined,request.signal)
-    return this.guarded(() => this.runOnce(request,timing), request.signal).finally(()=>timing.finish())
+    const failures = new WeakMap<object, 'operation' | 'delta'>()
+    const callbacks: ModelTurnRequest = { ...request,
+      ...(request.onTextOperation ? { onTextOperation: operation => this.outputCallback('operation', () => request.onTextOperation!(operation), failures, request.signal) } : {}),
+      ...(request.onTextDelta ? { onTextDelta: (delta, metadata) => this.outputCallback('delta', () => request.onTextDelta!(delta, metadata), failures, request.signal) } : {}) }
+    return this.guarded(() => this.runOnce(callbacks,timing,failures), request.signal).finally(()=>timing.finish())
+  }
+  private async outputCallback(stage: 'operation' | 'delta', callback: () => void | Promise<void>, failures: WeakMap<object, 'operation' | 'delta'>, signal?: AbortSignal): Promise<void> {
+    try { await callback() }
+    catch (error) {
+      // Scope attribution to this invocation without mutating or wrapping the
+      // original error. Existing stream handling owns usage and error identity.
+      if (!signal?.aborted && error && typeof error === 'object') failures.set(error, stage)
+      throw error
+    }
   }
   private toolChoice(request: Pick<ModelTurnRequest, 'tools' | 'requiredTool'>) {
     if (request.requiredTool === undefined) return this.publicAnswerTool === 'native-v3' ? 'required' as const : 'auto' as const
@@ -538,7 +553,7 @@ export class OpenAIChatDriver implements ModelDriver {
       request.items, nativeEnvelope), ...(tools.length ? { tools: tools.map(tool => ({ ...tool, function: { ...tool.function,
         parameters: wrapNativeToolSchema(tool.function.parameters) } })), tool_choice: this.toolChoice(request), parallel_tool_calls: false } : {}) }))
   }
-  private async runOnce(request: ModelTurnRequest, timing: DriverTiming): Promise<ModelTurnResult> {
+  private async runOnce(request: ModelTurnRequest, timing: DriverTiming, callbackFailures: WeakMap<object, 'operation' | 'delta'>): Promise<ModelTurnResult> {
     const allowPython = request.codeExecution === 'enabled' || request.codeExecution === undefined && request.tools === undefined
     const tools = [
       ...(allowPython ? [IPYTHON_TOOL] : []),
@@ -648,7 +663,7 @@ export class OpenAIChatDriver implements ModelDriver {
         await request.onTextDelta?.(part.text,{purpose:part.purpose})
         request.signal?.throwIfAborted()
       }
-    }:request.onTextDelta, this.publicAnswerTool ? acceptPublicDelta : nativeEnvelope ? acceptNativeDelta : undefined,timing)
+    }:request.onTextDelta, this.publicAnswerTool ? acceptPublicDelta : nativeEnvelope ? acceptNativeDelta : undefined,timing,callbackFailures)
     timing.validation()
     const diagnostics = { finishReasons: accumulator.finishReasons, usage: this.usageOf(accumulator) }
     if (request.signal?.aborted) throw new ModelDriverError('model request cancelled', {
@@ -685,7 +700,7 @@ export class OpenAIChatDriver implements ModelDriver {
       if(call.name===PUBLIC_ANSWER_TOOL_NAME) {
         if(/^\s*[\[{]/.test(accumulator.text)||companionHasJsonFraming(accumulator.text))throw new ModelDriverError('ambiguous public output channels',{
           ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_text_invalid',protocolDetail:'mixed_output_channels'})
-        try { await acceptPublicDelta(0,call,'',true) } catch(error) { this.throwStreamFailure(error,accumulator) }
+        try { await acceptPublicDelta(0,call,'',true) } catch(error) { this.throwStreamFailure(error,accumulator,error && typeof error === 'object' ? callbackFailures.get(error) : undefined) }
         publicAnswerCall={type:'function_call',callId:call.id,name:PUBLIC_ANSWER_TOOL_NAME,arguments:call.arguments}
         let decoded:ReturnType<typeof decodePublicAnswerCall>
         try {
@@ -707,7 +722,7 @@ export class OpenAIChatDriver implements ModelDriver {
         && completeCompanionTurn({ text: '', calls: accumulator.toolCalls, finishReasons: accumulator.finishReasons },
           tools.map(tool => tool.function.name), false)) {
         try { await acceptNativeDelta(0, accumulator.toolCalls.get(0)!, '', true) }
-        catch (error) { this.throwStreamFailure(error, accumulator) }
+        catch (error) { this.throwStreamFailure(error, accumulator,error && typeof error === 'object' ? callbackFailures.get(error) : undefined) }
       }
       if (!nativeOutput || contentObserved || companionHasJsonFraming(accumulator.text)) {
         throw new ModelDriverError('invalid native public output envelope', { ...diagnostics, kind: 'protocol', category: 'protocol', protocolCode: !nativeOutput ? 'native_envelope_invalid' : 'public_text_invalid' })

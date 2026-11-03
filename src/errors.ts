@@ -101,7 +101,9 @@ export type ModelProtocolDetail = typeof MODEL_PROTOCOL_DETAILS[number]
 export interface ModelDiagnostics {
   /** Provider usage remains billable when its completed response violates the protocol. */
   usage?: import('./model/driver.js').ModelUsage
-  kind?: 'provider' | 'protocol'
+  kind?: 'provider' | 'protocol' | 'output'
+  /** Local output callback boundary, never an exception message or source ID. */
+  outputCallback?: 'operation' | 'delta'
   /** Fixed contract failures only; never provider response text. */
   protocolCode?: 'native_envelope_invalid' | 'terminal_outcome_required' | 'public_text_invalid' | 'public_text_incomplete' | 'public_text_answer_required' | 'public_answer_first_required' | 'tool_identity_invalid' | 'response_empty'
   protocolDetail?: ModelProtocolDetail

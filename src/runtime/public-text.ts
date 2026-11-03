@@ -10,7 +10,7 @@ import { AIMessageChunk } from '@langchain/core/messages'
 /** Persistence failure never retries the provider or exposes an uncommitted buffer. */
 export class PublicTextPublicationError extends ModelDriverError {
   constructor(readonly stage: PublicationFailure['stage']='unknown', readonly rejection: PublicationFailure['code']='unknown', cause?: unknown){
-    super('public text could not be persisted',{kind:'provider',category:'unknown',finishReasons:[]},cause===undefined?undefined:{cause})
+    super('public text could not be persisted',{kind:'output',category:'unknown',finishReasons:[]},cause===undefined?undefined:{cause})
   }
 }
 export interface PublicationFailure {
