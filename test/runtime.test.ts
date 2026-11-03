@@ -166,13 +166,14 @@ it('reports every processor model call to the product ledger with durable work s
   runtime.registerProcessor('memory_synthesis', { process: async (_work, context) => { await context.model.structured({ instructions: 'i', input: {} }) } })
   await runtime.runWork(work)
   assert.equal(completed?.status, 'completed')
-  assert.deepEqual(observations.map(({ latencyMs: _latencyMs, elapsedMs: _elapsedMs, ...value }) => value), [{
+  assert.deepEqual(observations.map(({ latencyMs: _latencyMs, elapsedMs: _elapsedMs, stageTimings: _stageTimings, ...value }) => value), [{
     instructionsSha256: textSha256('i'),
-    attempt: 1, callId: 'ledger-work:3:model:1', purpose: 'structured', operation: 'structured', workId: 'ledger-work', tenantId: 'tenant',
+    attempt: 1, fence: 3, callId: 'ledger-work:3:model:1', purpose: 'structured', operation: 'structured', workId: 'ledger-work', tenantId: 'tenant',
     agentId: 'agent', sessionId: 'room', threadId: 'thread', principalId: 'human', model: 'model-v1',
     usage: { available: true, inputTokens: 11, outputTokens: 7 }, status: 'succeeded',
     cost: { amountMicros: 0, usage: 'measured', pricing: modelPricing(DEFAULT_MODEL_BUDGET) },
   }])
+  assert.deepEqual(observations[0]!.stageTimings,{version:1,clock:'monotonic',providerTime:'unavailable',totalMs:observations[0]!.latencyMs})
   assert.ok(observations[0]!.latencyMs >= 0)
   assert.ok(observations[0]!.elapsedMs! >= observations[0]!.latencyMs)
 })
