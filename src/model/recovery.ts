@@ -79,10 +79,12 @@ export function modelFailure(error: unknown, cancelled = false): ModelFailure {
     : status !== undefined ? status >= 500 && status !== 501 && status !== 505 ? 'unavailable' : 'unknown'
     : diagnostics && !field(error,'cause') ? 'protocol'
     : causeCode || diagnostics?.kind === 'provider' || diagnostics ? 'network' : 'unknown'
-  return { category, retryable: ['rate_limit', 'timeout', 'network', 'unavailable'].includes(category)
-      || category === 'protocol' && diagnostics?.kind !== 'protocol',
-    ...(diagnostics?.kind === 'output' ? { kind: 'output' as const } : {}),
-    ...(diagnostics?.outputCallback === 'operation' || diagnostics?.outputCallback === 'delta' ? { outputCallback: diagnostics.outputCallback } : {}),
+  const retryable = ['rate_limit', 'timeout', 'network', 'unavailable'].includes(category)
+    || category === 'protocol' && diagnostics?.kind !== 'protocol'
+  const kind = field(diagnostics, 'kind'), callback = field(diagnostics, 'outputCallback')
+  return { category, retryable,
+    ...(kind === 'output' ? { kind: 'output' as const } : {}),
+    ...(callback === 'operation' || callback === 'delta' ? { outputCallback: callback } : {}),
     ...(status !== undefined ? { status } : {}), ...(requestId ? { requestId } : {}), ...(code ? { providerCode: code } : {}),
     ...(causeCode ? { causeCode } : {}),
     ...(retryAfter !== undefined && Number.isFinite(retryAfter) && retryAfter >= 0 ? { retryAfterMs: retryAfter } : {}) }

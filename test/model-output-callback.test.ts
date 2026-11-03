@@ -104,6 +104,10 @@ it('callback diagnostic projection accepts only closed origin and stage values',
     finishReasons: [], message: marker, sourceId: marker }), { kind: 'output', outputCallback: 'operation', category: 'unknown', finishReasons: [] })
   assert.deepEqual(publicModelDiagnostics({ kind: marker, outputCallback: marker, cause: { message: marker } }), {})
   assert.deepEqual(publicModelDiagnostics({ get outputCallback() { throw new Error(marker) } }), {})
+  assert.deepEqual(modelFailure(new ModelDriverError('synthetic', { kind: 'provider', category: 'unknown', finishReasons: [],
+    get outputCallback(): 'operation' { throw new Error(marker) } })), { category: 'unknown', retryable: false })
+  assert.deepEqual(modelFailure(new ModelDriverError('synthetic', { category: 'unknown', finishReasons: [],
+    get kind(): 'output' { throw new Error(marker) } })), { category: 'unknown', retryable: false })
 })
 
 it('scopes callback attribution per invocation when concurrent callbacks reuse an error object', async () => {
