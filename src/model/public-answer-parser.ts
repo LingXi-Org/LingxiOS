@@ -61,7 +61,12 @@ export class PublicAnswerParser {
     if (!partial && stack.length === 1 && key === 'operation') {
       if (!value || typeof value !== 'object' || Array.isArray(value) || typeof Reflect.get(value, 'kind') !== 'string') throw publicPurposeError('public_text_invalid','operation_invalid')
       try { this.operation = snapshotPublicTextOperation(value) }
-      catch { throw publicPurposeError('public_text_invalid','operation_invalid') }
+      catch {
+        const item = value as Record<string, unknown>
+        const detail = Object.keys(item).length !== 2 || !Object.hasOwn(item,'kind') || !Object.hasOwn(item,'supersedes') ? 'operation_fields_invalid'
+          : !['append','replace'].includes(String(item['kind'])) ? 'operation_kind_invalid' : 'operation_supersedes_invalid'
+        throw publicPurposeError('public_text_invalid',detail)
+      }
       this.flush()
     }
     if (!partial && stack.length === 1 && key === 'outcome') {

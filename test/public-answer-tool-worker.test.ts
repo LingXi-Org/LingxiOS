@@ -20,7 +20,7 @@ const ack = '{"status":"public_message_recorded"}'
 const known = 'Gather collects the items. Check reviews them. '
 type Reply = { answer: string | null; intermediate?: boolean; partial?: boolean; replace?: boolean; forceAppend?: boolean; callId?: string; reads?: boolean; save?: boolean; lateCommentary?: boolean }
   | { business: true; read?: string }
-  | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' | 'misordered' }
+  | { invalid: 'mixed' | 'duplicate' | 'truncated' | 'missing-outcome' | 'misordered' | 'no-call' }
 type WireRequest = { stream?: boolean; tool_choice?: unknown; messages: Array<{ role: string; content?: unknown; tool_call_id?: string; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> }> }
 type AnswerOperation = { kind: 'append' | 'replace'; supersedes: string[] }
 // The synthetic model follows the exact runtime-selected correction target.
@@ -124,7 +124,7 @@ async function fixture(replies: Reply[], fault?: 'seal' | 'second-seal' | 'histo
       const invalidArgs = reply.invalid === 'missing-outcome'
         ? JSON.stringify({ operation, answer: 'Provisional only.' })
         : reply.invalid === 'truncated' ? args.slice(0, -1) : args
-      wire = reply.invalid === 'misordered'
+      wire = reply.invalid === 'no-call' ? frame({content:'Synthetic rejected prose.'},'stop') : reply.invalid === 'misordered'
         ? frame({ tool_calls: [call('probe__save', '{"key":"synthetic-record"}'), call('public_answer', args, 1, 'misordered-public')] }, 'tool_calls')
         : frame({ tool_calls: [call('public_answer', invalidArgs),
         ...(reply.invalid === 'mixed' ? [call('probe__save', '{"key":"synthetic-record"}', 1, 'second')]
@@ -205,6 +205,33 @@ it('real Worker delivers terminal public arithmetic in one generation with zero 
     const actions = (await f.pool.query("SELECT intent->'action'->>'action' AS action FROM lingxios.agent_action_intents WHERE intent->>'workId'=$1", [f.identity.runId])).rows.map(row => row['action'])
     assert.deepEqual(actions.filter(action => action === 'public_answer' || action === 'public.answer' || action === 'probe.save'), [], JSON.stringify(actions))
     assert.equal((await f.app.readEvents(f.identity)).events.filter(event => event.kind === 'tool.started').length, 0)
+    const stages=await f.pool.query("SELECT observation->'stageTimings' AS timing FROM lingxios.agent_model_budget_calls WHERE work_id=$1",[f.identity.runId])
+    const timing=stages.rows[0]?.['timing'] as Record<string,unknown>
+    assert.equal(timing['providerTime'],'unavailable');assert.equal(timing['streamCompleted'],true)
+    assert.equal(typeof timing['observedStreamMs'],'number')
+    const publications=await f.pool.query("SELECT data FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='output.publication.finished' ORDER BY seq",[f.identity.runId])
+    assert.equal(publications.rows.length,2,'end and seal snapshots persist through the real event store')
+    const publication=publications.rows.at(-1)?.['data'] as Record<string,unknown>
+    assert.equal(publication['revision'],2);assert.equal(publication['publicationCount'],publication['acknowledgedCount'])
+    assert.equal(typeof publication['publicationWaitMs'],'number')
+    const diagnostics=await f.app.readDiagnostics(f.identity)
+    assert.equal(diagnostics?.publicationTimings.length,1)
+    assert.equal(diagnostics?.publicationTimings[0]?.revision,2)
+    assert.equal(diagnostics?.publicationTimingsTruncated,false)
+    await f.pool.query("UPDATE lingxios.agent_run_events SET data=data||'{\"private\":\"PRIVATE_TIMING_MARKER\"}'::jsonb WHERE run_id=$1 AND kind='output.publication.finished'",[f.identity.runId])
+    assert.doesNotMatch(JSON.stringify((await f.app.readDiagnostics(f.identity))?.publicationTimings),/PRIVATE_TIMING_MARKER/)
+
+    assert.equal((await f.app.readDiagnostics({...f.identity,tenantId:'other-tenant'})),null)
+    assert.equal((await f.app.readDiagnostics({...f.identity,principalId:'other-human'})),null)
+    await f.pool.query(`INSERT INTO lingxios.agent_run_events(run_id,seq,tenant_id,agent_id,kind,stage,visibility,data,recorded_at)
+      SELECT $1,(SELECT MAX(seq) FROM lingxios.agent_run_events WHERE run_id=$1)+sample,$2,$3,
+        'output.publication.finished','completed','internal',$4::jsonb||jsonb_build_object(
+          'callId','synthetic-'||sample,'revision',1,'requestVersion',CASE WHEN sample=70 THEN 2 ELSE 1 END),NOW()
+      FROM generate_series(1,70) sample`,[f.identity.runId,f.identity.tenantId,f.identity.agentId,JSON.stringify(publication)])
+    const bounded=await f.app.readDiagnostics(f.identity)
+    assert.equal(bounded?.publicationTimings.length,64);assert.equal(bounded?.publicationTimingsTruncated,true)
+    assert.ok(bounded?.publicationTimings.every(value=>value.requestVersion===1&&value.callId!=='synthetic-70'))
+
   } finally { await f.close() }
 })
 
@@ -259,6 +286,11 @@ it('first successful intermediate answer followed by protocol and publication fa
     assert.equal((continued.rows[0]?.['data'] as Record<string, unknown>)['reason'], 'intermediate_outcome_null')
     const ledger = await f.pool.query("SELECT call_id,observation->>'status' AS status FROM lingxios.agent_model_budget_calls WHERE work_id=$1 ORDER BY call_id", [f.identity.runId])
     assert.deepEqual(ledger.rows.map(row => row['status']), ['succeeded', 'failed', 'succeeded'])
+    const publications=await f.pool.query("SELECT data FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='output.publication.finished' ORDER BY seq",[f.identity.runId])
+    const publication=publications.rows.at(-1)?.['data'] as Record<string,unknown>
+    assert.deepEqual(publication['failure'],{stage:'seal',code:'persistence_rejected'})
+    assert.equal(Number(publication['publicationCount']),Number(publication['acknowledgedCount'])+1)
+    assert.deepEqual(diagnostics?.publicationTimings[0]?.failure,{stage:'seal',code:'persistence_rejected'})
     assert.doesNotMatch(JSON.stringify({ diagnostics, events, continued }), /PRIVATE_518_STORAGE_BODY_TOKEN/)
     t.diagnostic(JSON.stringify({ scenario: '518-first-success-publication-failure', ledger: ledger.rows, continuation: continued.rows,
       publicationFailure: diagnostics?.runtimeFailure?.publicationFailure, finalStatus: state.run.status, resultId: state.run.resultId }))
@@ -351,6 +383,8 @@ for (const fault of ['seal', 'second-seal', 'history'] as const) it(`durable nat
     await f.run(); assert.equal(f.calls, fault === 'second-seal' ? 3 : 1)
     const state = await f.restart()
     assert.equal(state.run.status, 'succeeded'); assert.equal(state.run.fence, 2); assert.equal(state.message?.body, known + 'Observed.')
+    const timing=await f.app.readDiagnostics(f.identity)
+    assert.deepEqual([...new Set(timing?.publicationTimings.map(item=>item.fence))].sort(),[1,2])
     assert.deepEqual([f.calls, f.effects, f.auxiliary], [4, 1, 0])
     assertNativePair(f.requests[fault === 'second-seal' ? 3 : 1]!, f.rawPublicCalls[0]!)
     if (fault === 'second-seal') assertNativePair(f.requests[3]!, f.rawPublicCalls[1]!)
@@ -635,7 +669,7 @@ it('native-v3 real Worker forces the authorized first read, then accepts busines
     assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'Gather and Check')
     assert.equal(f.effects,1);assert.equal(f.calls,3);assert.ok(f.resourceChecks>0)
     assert.deepEqual(f.requests[0]!.tool_choice,{type:'function',function:{name:'probe__read'}})
-    assert.equal(f.requests[1]!.tool_choice,'auto')
+    assert.equal(f.requests[1]!.tool_choice,'required')
     assert.equal(f.rawPublicCalls.length,1,'pure business turns never fabricate public output')
   } finally {await f.close()}
 })
@@ -646,4 +680,32 @@ it('native-v3 required selection rejects a different provider tool before its ef
 it('a custom driver cannot skip required selection with an otherwise valid terminal public answer', async () => {
   const f=await fixture([{answer:'Gather and Check'}],'required-selection',3,'Read before answering.',false,false,true,true)
   try {const state=await f.run();assert.equal(state.run.status,'failed');assert.equal(f.effects,0);assert.equal(f.calls,1);assert.equal(state.message?.body,undefined)}finally{await f.close()}
+})
+
+for (const failures of [1,2]) it(`native-v3 corrects ${failures} no-call responses through the native channel with one final answer`,async()=>{
+  const f=await fixture([...Array.from({length:failures},()=>({invalid:'no-call' as const})),{answer:'43'}],undefined,8,'What is 17 + 26? Only the number.',false,false,true)
+  try{
+    const state=await f.run()
+    assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'43')
+    assert.equal(f.effects,0);assert.equal(f.calls,failures+1)
+    assert.equal(state.message?.publicTextSources?.segments.length,1)
+    assert.ok(f.requests.every(request=>request.tool_choice==='required'))
+    const corrections=JSON.stringify(f.requests.at(-1)?.messages)
+    assert.match(corrections,/native tool_calls/);assert.match(corrections,/public_answer/)
+    const ledger=await f.pool.query("SELECT observation->>'status' AS status,observation->'stageTimings' AS timing,output_tokens FROM lingxios.agent_model_budget_calls WHERE work_id=$1 ORDER BY call_id",[f.identity.runId])
+    assert.deepEqual(ledger.rows.map(row=>row['status']),[...Array(failures).fill('failed'),'succeeded'])
+    assert.ok(ledger.rows.every(row=>Number(row['output_tokens'])===10 && (row['timing'] as Record<string,unknown>)['streamCompleted']===true))
+  }finally{await f.close()}
+})
+
+it('native-v3 stops repeated no-call correction at the existing lifetime bound',async()=>{
+  const f=await fixture([{invalid:'no-call'},{invalid:'no-call'},{invalid:'no-call'},{answer:'43'}],undefined,8,'What is 17 + 26? Only the number.',false,false,true)
+  try{
+    const state=await f.run()
+    assert.equal(state.run.status,'failed');assert.equal(state.run.resultId,null)
+    assert.equal(f.calls,3);assert.equal(f.effects,0)
+    assert.ok(f.requests.every(request=>request.tool_choice==='required'))
+    const ledger=await f.pool.query("SELECT output_tokens FROM lingxios.agent_model_budget_calls WHERE work_id=$1",[f.identity.runId])
+    assert.equal(ledger.rows.length,3);assert.ok(ledger.rows.every(row=>Number(row['output_tokens'])===10))
+  }finally{await f.close()}
 })

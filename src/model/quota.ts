@@ -8,12 +8,19 @@ export function limitModel(source: ModelDriver, quota: ResourceQuota, background
     if (property === 'singleAttempt') return () => limitModel(target.singleAttempt?.() ?? target, quota, background)
     const value = Reflect.get(target, property, target) as unknown
     if (['run', 'structured', 'compact'].includes(String(property))) {
-      return (request: { signal?: AbortSignal; admission?: ResourcePriority; interruptible?: boolean; beforeProvider?: () => void | Promise<void> }) => {
+      return (request: { signal?: AbortSignal; admission?: ResourcePriority; interruptible?: boolean; beforeProvider?: () => void | Promise<void>; onTiming?: (timing:import('./timing.js').ModelTimingUpdate)=>void }) => {
         const priority = request.admission ?? (property === 'compact' ? 'background' : 'foreground')
         // At capacity one there is no spare slot: interrupt cancellable auxiliary generation, never fake a release.
         if (priority === 'foreground' && quota.capacity === 1) for (const stop of background) stop.abort(new Error('foreground model admission'))
         const stop = new AbortController(), signal = AbortSignal.any([stop.signal, ...request.signal ? [request.signal] : []])
-        return quota.run(() => {
+        const queued=performance.now()
+        let admitted=false
+        const cancelled=()=>{if(!admitted)request.onTiming?.({modelPermitWaitMs:performance.now()-queued})}
+        signal.addEventListener('abort',cancelled,{once:true})
+        const pending=quota.run(() => {
+          admitted=true
+          signal.removeEventListener('abort',cancelled)
+          request.onTiming?.({modelPermitWaitMs:performance.now()-queued})
           if (priority === 'background' && property === 'compact' && request.interruptible === true) background.add(stop)
           const finished = () => { background.delete(stop) }
           try {
@@ -28,6 +35,9 @@ export function limitModel(source: ModelDriver, quota: ResourceQuota, background
             return pending
           } catch (error) { finished(); throw error }
         }, signal, priority)
+        const settled=()=>signal.removeEventListener('abort',cancelled)
+        void pending.then(settled,()=>{cancelled();settled()})
+        return pending
       }
     }
     return typeof value === 'function' ? value.bind(target) : value

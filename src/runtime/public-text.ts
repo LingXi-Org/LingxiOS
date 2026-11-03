@@ -1,3 +1,4 @@
+import { PublicationTiming, type PublicTextPublicationTiming } from './publication-timing.js'
 import type { PublicTextProtocol } from '../model/outcome-declaration.js'
 import type { PublicTextEndReason, PublicTextIdentity, PublicTextSafetyInput, PublicTextSafetyDecision } from '../protocol/public-text.js'
 import type { RunEvent } from '../protocol/types.js'
@@ -239,10 +240,16 @@ export class PublicTextAttemptWriter {
   private answerStarted=false
   private operation:PublicTextOperation|undefined
   private sealed=false
+  private readonly emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>
+  private readonly timing:PublicationTiming
   constructor(private readonly identity:PublicTextIdentity,
-    private readonly emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>,private readonly signal:AbortSignal,
+    emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>,private readonly signal:AbortSignal,
     private readonly assess:((input:Readonly<PublicTextSafetyInput>)=>PublicTextSafetyDecision)|undefined,
-    private readonly protocol:PublicTextProtocol|undefined){}
+    private readonly protocol:PublicTextProtocol|undefined,
+    onTiming?:((timing:PublicTextPublicationTiming)=>Promise<unknown>)|undefined){
+      this.timing=new PublicationTiming(identity,signal,onTiming)
+      this.emit=event=>this.timing.measure(event,()=>emit(event))
+    }
   get partId(){return this.writers.get(this.protocol?'answer':'legacy')?.partId}
   get answerRevisionId(){return this.identity.partId+':answer'}
   get segmentIdentity():PublicTextIdentity|undefined {
@@ -282,7 +289,9 @@ export class PublicTextAttemptWriter {
     await this.writers.get('commentary')?.finish()
     await this.writers.get(this.protocol?'answer':'legacy')?.finish(text)
   }
-  async end(reason:PublicTextEndReason){for(const writer of this.writers.values())await writer.end(reason)}
+  async end(reason:PublicTextEndReason){
+    try {for(const writer of this.writers.values())await writer.end(reason)}finally{await this.timing.flush()}
+  }
   async seal(text:string,publicTextRecovery?:import('../protocol/public-text-recovery.js').PublicTextRecovery){
     const writer=this.writers.get('answer'),identity=this.segmentIdentity
     if(!identity||!writer?.partId||this.sealed)throw new PublicTextPublicationError('seal','source_state')
@@ -295,7 +304,7 @@ export class PublicTextAttemptWriter {
       // A storage/authorization rejection is not a model-format correction.
       // Never continue into a business tool after failing to persist its output.
       throw new PublicTextPublicationError('seal','persistence_rejected',error)
-    }
+    } finally { await this.timing.flush() }
     this.sealed=true
     return {identity,text,bodyHash,...(publicTextRecovery?{recovery:publicTextRecovery}:{})}
   }

@@ -45,6 +45,8 @@ export interface ModelTurnRequest {
   /** Runtime-owned diagnostic classification; never provider instructions. */
   operation?: 'generation' | 'correction'
   /** Runtime-owned final gate; queue wrappers run it after obtaining capacity. */
+  /** Local numeric telemetry, never sent to the provider. */
+  onTiming?: ((timings: import('./timing.js').ModelTimingUpdate) => void) | undefined
   beforeProvider?: (() => void | Promise<void>) | undefined
   admission?: import('../resource-quota.js').ResourcePriority
   purpose?: Extract<ModelPurpose, 'execute' | 'approval-explanation'>
@@ -67,6 +69,8 @@ export interface ModelTurnRequest {
 }
 
 export interface StructuredCallRequest {
+  /** Local numeric telemetry, never sent to the provider. */
+  onTiming?: ((timings: import('./timing.js').ModelTimingUpdate) => void) | undefined
   beforeProvider?: (() => void | Promise<void>) | undefined
   admission?: import('../resource-quota.js').ResourcePriority
   purpose?: Extract<ModelPurpose, 'content-review' | 'memory-synthesis' | 'approval-explanation'>
@@ -84,6 +88,8 @@ export interface StructuredCallResult {
 }
 
 export interface CompactionRequest {
+  /** Local numeric telemetry, never sent to the provider. */
+  onTiming?: ((timings: import('./timing.js').ModelTimingUpdate) => void) | undefined
   beforeProvider?: (() => void | Promise<void>) | undefined
   /** Only optional candidates may be interrupted to admit foreground work. */
   interruptible?: boolean
