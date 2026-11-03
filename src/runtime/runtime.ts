@@ -821,7 +821,7 @@ export class AgentRuntime {
                     return result
                   },generationSignal,
                   this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined,model.publicTextProtocol,
-                  timing=>this.event(work,runId,{kind:'public.text.publication.finished',stage:timing.failure?'failed':'completed',visibility:'internal',data:{...timing}})))
+                  timing=>this.event(work,runId,{kind:'output.publication.finished',stage:timing.failure?'failed':'completed',visibility:'internal',data:{...timing}})))
               }
               // Reserve the reply first; optional compaction must not consume its budget.
               if (this.asyncCompaction && !pendingCompaction && session.history.length > 0

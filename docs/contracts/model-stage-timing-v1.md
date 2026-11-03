@@ -42,7 +42,7 @@ acknowledgement, and unexplained run time remain distinct host-owned stages.
 These model metrics do not claim to measure final delivery.
 
 Public-output confirmation has a separate internal event:
-`public.text.publication.finished`. Public exported type:
+`output.publication.finished`. Public exported type:
 `PublicTextPublicationTiming`. It includes `callId` (the same attempt ID), fence,
 requestVersion and monotonically increasing `revision`. The containing run event
 provides runId. The model observation also provides workId, fence and

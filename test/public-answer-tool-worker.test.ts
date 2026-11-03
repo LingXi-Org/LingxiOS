@@ -205,6 +205,15 @@ it('real Worker delivers terminal public arithmetic in one generation with zero 
     const actions = (await f.pool.query("SELECT intent->'action'->>'action' AS action FROM lingxios.agent_action_intents WHERE intent->>'workId'=$1", [f.identity.runId])).rows.map(row => row['action'])
     assert.deepEqual(actions.filter(action => action === 'public_answer' || action === 'public.answer' || action === 'probe.save'), [], JSON.stringify(actions))
     assert.equal((await f.app.readEvents(f.identity)).events.filter(event => event.kind === 'tool.started').length, 0)
+    const stages=await f.pool.query("SELECT observation->'stageTimings' AS timing FROM lingxios.agent_model_budget_calls WHERE work_id=$1",[f.identity.runId])
+    const timing=stages.rows[0]?.['timing'] as Record<string,unknown>
+    assert.equal(timing['providerTime'],'unavailable');assert.equal(timing['streamCompleted'],true)
+    assert.equal(typeof timing['observedStreamMs'],'number')
+    const publications=await f.pool.query("SELECT data FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='output.publication.finished' ORDER BY seq",[f.identity.runId])
+    assert.equal(publications.rows.length,2,'end and seal snapshots persist through the real event store')
+    const publication=publications.rows.at(-1)?.['data'] as Record<string,unknown>
+    assert.equal(publication['revision'],2);assert.equal(publication['publicationCount'],publication['acknowledgedCount'])
+    assert.equal(typeof publication['publicationWaitMs'],'number')
   } finally { await f.close() }
 })
 
@@ -259,6 +268,10 @@ it('first successful intermediate answer followed by protocol and publication fa
     assert.equal((continued.rows[0]?.['data'] as Record<string, unknown>)['reason'], 'intermediate_outcome_null')
     const ledger = await f.pool.query("SELECT call_id,observation->>'status' AS status FROM lingxios.agent_model_budget_calls WHERE work_id=$1 ORDER BY call_id", [f.identity.runId])
     assert.deepEqual(ledger.rows.map(row => row['status']), ['succeeded', 'failed', 'succeeded'])
+    const publications=await f.pool.query("SELECT data FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='output.publication.finished' ORDER BY seq",[f.identity.runId])
+    const publication=publications.rows.at(-1)?.['data'] as Record<string,unknown>
+    assert.deepEqual(publication['failure'],{stage:'seal',code:'persistence_rejected'})
+    assert.equal(Number(publication['publicationCount']),Number(publication['acknowledgedCount'])+1)
     assert.doesNotMatch(JSON.stringify({ diagnostics, events, continued }), /PRIVATE_518_STORAGE_BODY_TOKEN/)
     t.diagnostic(JSON.stringify({ scenario: '518-first-success-publication-failure', ledger: ledger.rows, continuation: continued.rows,
       publicationFailure: diagnostics?.runtimeFailure?.publicationFailure, finalStatus: state.run.status, resultId: state.run.resultId }))
