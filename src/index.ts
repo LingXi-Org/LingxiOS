@@ -81,3 +81,4 @@ export { compileContext, compileAuxiliaryPrompt, type ContextBlock, type Compile
 export type { ModelStageTimings, ModelTimingUpdate } from './model/timing.js'
 export { readModelStageTimings } from './model/timing.js'
 export type { PublicTextPublicationTiming } from './runtime/publication-timing.js'
+export { readPublicTextPublicationTiming } from './runtime/publication-timing.js'

@@ -5,6 +5,7 @@ import {executionModel,DEFAULT_MODEL_BUDGET} from '../dist/src/model/execution.j
 import {ModelTimingCollector,readModelStageTimings} from '../dist/src/model/timing.js'
 import {PublicTextAttemptWriter,PublicTextPublicationError} from '../dist/src/runtime/public-text.js'
 import {limitModel} from '../dist/src/model/quota.js'
+import {readPublicTextPublicationTiming} from '../dist/src/runtime/publication-timing.js'
 import {ResourceQuota} from '../dist/src/resource-quota.js'
 const work={id:'synthetic-work',fence:2,requestVersion:3,tenantId:'tenant',agentId:'agent',sessionId:'session'}
 const host=observations=>({reserveModelCall:async()=>({allowed:true,deadlineAt:new Date(Date.now()+60000).toISOString(),remainingCalls:10,remainingTokens:100000,remainingCostMicros:1000000}),recordModelUsage:async(_work,_id,_usage,observation)=>{observations.push(observation)}})
@@ -132,4 +133,11 @@ test('a timed-out body and cancellation preserve known HTTP phases on failed led
    assert.equal(timing.streamCompleted,false);assert.equal(timing.httpToFirstContentMs,undefined)
   }finally{clearTimeout(keepAlive)}
  }
+})
+
+test('publication diagnostic projection is closed and rejects invalid counters and unsafe failures',()=>{
+ const value={version:1,clock:'monotonic',callId:'synthetic',fence:1,requestVersion:1,revision:1,publicationCount:2,acknowledgedCount:1,publicationTotalMs:0,publicationWaitMs:0}
+ assert.deepEqual(readPublicTextPublicationTiming({...value,prompt:'private-marker'}),value)
+ for(const invalid of [{...value,acknowledgedCount:3},{...value,revision:0},{...value,publicationWaitMs:NaN},{...value,failure:{stage:'private-marker',code:'persistence_rejected'}}])assert.equal(readPublicTextPublicationTiming(invalid),undefined)
+ assert.equal(readPublicTextPublicationTiming({get version(){throw Error('private-marker')}}),undefined)
 })

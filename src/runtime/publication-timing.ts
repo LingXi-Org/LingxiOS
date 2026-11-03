@@ -16,6 +16,38 @@ export interface PublicTextPublicationTiming {
   failure?:{stage:'operation'|'delta'|'end'|'seal';code:'persistence_rejected'|'cancelled'}
 }
 
+
+/** Fresh closed projection for public diagnostic readers; never copy event extensions. */
+export function readPublicTextPublicationTiming(value:unknown):PublicTextPublicationTiming|undefined {
+  try {
+    if(!value||typeof value!=='object'||Reflect.get(value,'version')!==1||Reflect.get(value,'clock')!=='monotonic')return undefined
+    const callId=Reflect.get(value,'callId')
+    if(typeof callId!=='string'||!callId||callId.length>256)return undefined
+    const positive=['fence','requestVersion','revision'] as const
+    const counts=['publicationCount','acknowledgedCount'] as const
+    for(const key of [...positive,...counts]){
+      const number=Reflect.get(value,key)
+      if(!Number.isSafeInteger(number)||Number(number)<(positive.includes(key as typeof positive[number])?1:0))return undefined
+    }
+    for(const key of ['publicationTotalMs','publicationWaitMs']){
+      const number=Reflect.get(value,key)
+      if(typeof number!=='number'||!Number.isFinite(number)||number<0||number>Number.MAX_SAFE_INTEGER)return undefined
+    }
+    if(Number(Reflect.get(value,'acknowledgedCount'))>Number(Reflect.get(value,'publicationCount')))return undefined
+    const out:PublicTextPublicationTiming={version:1,clock:'monotonic',callId,
+      fence:Number(Reflect.get(value,'fence')),requestVersion:Number(Reflect.get(value,'requestVersion')),revision:Number(Reflect.get(value,'revision')),
+      publicationTotalMs:Number(Reflect.get(value,'publicationTotalMs')),publicationWaitMs:Number(Reflect.get(value,'publicationWaitMs')),
+      publicationCount:Number(Reflect.get(value,'publicationCount')),acknowledgedCount:Number(Reflect.get(value,'acknowledgedCount'))}
+    const failure=Reflect.get(value,'failure')
+    if(failure!==undefined){
+      if(!failure||typeof failure!=='object'||!['operation','delta','end','seal'].includes(Reflect.get(failure,'stage'))
+        ||!['persistence_rejected','cancelled'].includes(Reflect.get(failure,'code')))return undefined
+      out.failure={stage:Reflect.get(failure,'stage'),code:Reflect.get(failure,'code')} as NonNullable<PublicTextPublicationTiming['failure']>
+    }
+    return out
+  }catch{return undefined}
+}
+
 export class PublicationTiming {
   private total=0
   private union=0

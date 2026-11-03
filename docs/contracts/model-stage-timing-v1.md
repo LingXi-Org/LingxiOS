@@ -42,7 +42,11 @@ acknowledgement, and unexplained run time remain distinct host-owned stages.
 These model metrics do not claim to measure final delivery.
 
 Public-output confirmation has a separate internal event:
-`output.publication.finished`. Public exported type:
+`output.publication.finished`. The existing authorized `readDiagnostics(identity)`
+returns `publicationTimings` (highest revision per call, current requestVersion across attempt fences, latest 64 calls) and `publicationTimingsTruncated`. An empty list means no
+available measurement, not zero publication time. Use the exported
+`readPublicTextPublicationTiming` for a closed safe projection. Internal events
+remain outside the user-only `readEvents` stream. Public exported type:
 `PublicTextPublicationTiming`. It includes `callId` (the same attempt ID), fence,
 requestVersion and monotonically increasing `revision`. The containing run event
 provides runId. The model observation also provides workId, fence and

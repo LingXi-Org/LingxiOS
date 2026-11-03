@@ -1,3 +1,4 @@
+import { readPublicTextPublicationTiming } from '../runtime/publication-timing.js'
 import type { SqlQueryable } from '../control-plane/pg-store.js'
 import type { MetricsRegistry } from '../metrics.js'
 import { readRun, runSnapshot, type RunIdentity, type RunSnapshot } from './jobs.js'
@@ -128,7 +129,7 @@ export async function readOperations(database: SqlQueryable) {
 export async function readDiagnostics(database: SqlQueryable, identity: RunIdentity) {
   const run = await readRun(database, identity)
   if (!run) return null
-  const [actions, delivery, execution, terminal, failures] = await Promise.all([
+  const [actions, delivery, execution, terminal, failures, publications] = await Promise.all([
     database.query(`SELECT intent.idempotency_key,intent.intent->'action'->>'action' AS action,
       COALESCE(resolved.result,receipt.result) AS result FROM lingxios.agent_action_intents intent
       LEFT JOIN lingxios.agent_action_ledger receipt USING(idempotency_key)
@@ -150,6 +151,10 @@ export async function readDiagnostics(database: SqlQueryable, identity: RunIdent
         AND event.data->>'requestVersion'=$2::text AND event.data->>'fence'=$3::text
         AND work.fence=$3::bigint AND jsonb_array_length(work.steer_inputs)+1=$2::integer
       ORDER BY event.seq DESC LIMIT 1`, [run.id, run.requestVersion, run.fence]),
+    database.query(`SELECT data FROM (SELECT DISTINCT ON (data->>'callId',data->>'fence') data,seq
+      FROM lingxios.agent_run_events WHERE run_id=$1 AND kind='output.publication.finished' AND visibility='internal'
+        AND data->>'requestVersion'=$2::text ORDER BY data->>'callId',data->>'fence',seq DESC) latest
+      ORDER BY seq DESC LIMIT 65`,[run.id,run.requestVersion]),
   ])
   const row = execution.rows[0]!, now = Date.now()
   const age = (date: string | null) => date ? Math.max(0,(now-Date.parse(date))/1000) : null
@@ -160,7 +165,9 @@ export async function readDiagnostics(database: SqlQueryable, identity: RunIdent
     actions: actions.rows.slice(0,64).map(row => ({ actionKey: String(row['idempotency_key']), action: String(row['action']),
       result: row['result'] as import('../protocol/types.js').HostActionResult | null })), actionsTruncated: actions.rows.length > 64,
     delivery: delivery.rows[0] ?? null, terminal,
-    runtimeFailure: readRuntimeFailureDiagnostic(failures.rows[0]?.['data']) }
+    runtimeFailure: readRuntimeFailureDiagnostic(failures.rows[0]?.['data']),
+    publicationTimings:publications.rows.slice(0,64).flatMap(row=>{const value=readPublicTextPublicationTiming(row['data']);return value?[value]:[]}),
+    publicationTimingsTruncated:publications.rows.length>64 }
 }
 
 export async function retryDelivery(database: SqlQueryable, identity: RunIdentity, channel: 'message' | 'events' | 'usage' | 'terminal') {

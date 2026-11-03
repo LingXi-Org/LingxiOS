@@ -214,6 +214,24 @@ it('real Worker delivers terminal public arithmetic in one generation with zero 
     const publication=publications.rows.at(-1)?.['data'] as Record<string,unknown>
     assert.equal(publication['revision'],2);assert.equal(publication['publicationCount'],publication['acknowledgedCount'])
     assert.equal(typeof publication['publicationWaitMs'],'number')
+    const diagnostics=await f.app.readDiagnostics(f.identity)
+    assert.equal(diagnostics?.publicationTimings.length,1)
+    assert.equal(diagnostics?.publicationTimings[0]?.revision,2)
+    assert.equal(diagnostics?.publicationTimingsTruncated,false)
+    await f.pool.query("UPDATE lingxios.agent_run_events SET data=data||'{\"private\":\"PRIVATE_TIMING_MARKER\"}'::jsonb WHERE run_id=$1 AND kind='output.publication.finished'",[f.identity.runId])
+    assert.doesNotMatch(JSON.stringify((await f.app.readDiagnostics(f.identity))?.publicationTimings),/PRIVATE_TIMING_MARKER/)
+
+    assert.equal((await f.app.readDiagnostics({...f.identity,tenantId:'other-tenant'})),null)
+    assert.equal((await f.app.readDiagnostics({...f.identity,principalId:'other-human'})),null)
+    await f.pool.query(`INSERT INTO lingxios.agent_run_events(run_id,seq,tenant_id,agent_id,kind,stage,visibility,data,recorded_at)
+      SELECT $1,(SELECT MAX(seq) FROM lingxios.agent_run_events WHERE run_id=$1)+sample,$2,$3,
+        'output.publication.finished','completed','internal',$4::jsonb||jsonb_build_object(
+          'callId','synthetic-'||sample,'revision',1,'requestVersion',CASE WHEN sample=70 THEN 2 ELSE 1 END),NOW()
+      FROM generate_series(1,70) sample`,[f.identity.runId,f.identity.tenantId,f.identity.agentId,JSON.stringify(publication)])
+    const bounded=await f.app.readDiagnostics(f.identity)
+    assert.equal(bounded?.publicationTimings.length,64);assert.equal(bounded?.publicationTimingsTruncated,true)
+    assert.ok(bounded?.publicationTimings.every(value=>value.requestVersion===1&&value.callId!=='synthetic-70'))
+
   } finally { await f.close() }
 })
 
@@ -272,6 +290,7 @@ it('first successful intermediate answer followed by protocol and publication fa
     const publication=publications.rows.at(-1)?.['data'] as Record<string,unknown>
     assert.deepEqual(publication['failure'],{stage:'seal',code:'persistence_rejected'})
     assert.equal(Number(publication['publicationCount']),Number(publication['acknowledgedCount'])+1)
+    assert.deepEqual(diagnostics?.publicationTimings[0]?.failure,{stage:'seal',code:'persistence_rejected'})
     assert.doesNotMatch(JSON.stringify({ diagnostics, events, continued }), /PRIVATE_518_STORAGE_BODY_TOKEN/)
     t.diagnostic(JSON.stringify({ scenario: '518-first-success-publication-failure', ledger: ledger.rows, continuation: continued.rows,
       publicationFailure: diagnostics?.runtimeFailure?.publicationFailure, finalStatus: state.run.status, resultId: state.run.resultId }))
@@ -364,6 +383,8 @@ for (const fault of ['seal', 'second-seal', 'history'] as const) it(`durable nat
     await f.run(); assert.equal(f.calls, fault === 'second-seal' ? 3 : 1)
     const state = await f.restart()
     assert.equal(state.run.status, 'succeeded'); assert.equal(state.run.fence, 2); assert.equal(state.message?.body, known + 'Observed.')
+    const timing=await f.app.readDiagnostics(f.identity)
+    assert.deepEqual([...new Set(timing?.publicationTimings.map(item=>item.fence))].sort(),[1,2])
     assert.deepEqual([f.calls, f.effects, f.auxiliary], [4, 1, 0])
     assertNativePair(f.requests[fault === 'second-seal' ? 3 : 1]!, f.rawPublicCalls[0]!)
     if (fault === 'second-seal') assertNativePair(f.requests[3]!, f.rawPublicCalls[1]!)
