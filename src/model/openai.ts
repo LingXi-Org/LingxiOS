@@ -1,3 +1,4 @@
+import { DriverTiming } from './timing.js'
 import { PublicAnswerParser } from './public-answer-parser.js'
 import { PUBLIC_ANSWER_TOOL, PUBLIC_ANSWER_TOOL_INSTRUCTIONS, PUBLIC_ANSWER_BATCH_INSTRUCTIONS, PUBLIC_ANSWER_BATCH_TOOL, PUBLIC_ANSWER_OPTIONAL_TOOL, PUBLIC_ANSWER_OPTIONAL_INSTRUCTIONS } from './public-answer-tool.js'
 import { PUBLIC_ANSWER_TOOL_NAME, decodePublicAnswerCall, type PublicAnswerCall } from '../protocol/public-answer-call.js'
@@ -22,7 +23,7 @@ import { IPYTHON_TOOL_NAME } from '../protocol/constants.js'
 import { createHash } from 'node:crypto'
 import { COMPACTION_INSTRUCTIONS, observationItems } from '../context/compiler.js'
 import type { ModelItem } from '../protocol/types.js'
-import { ModelDriverError } from '../errors.js'
+import { ConfigError, ModelDriverError } from '../errors.js'
 import type { ModelProfile } from './profile.js'
 import { describeTool } from '../tools/catalog.js'
 import { acquireCircuit, modelFailure, readProviderErrorCode, providerRequestId, retryAfterMs, recoveryPolicy, type ModelRecoveryPolicy } from './recovery.js'
@@ -46,7 +47,7 @@ export interface OpenAIDriverOptions {
   /** Explicit native output binding; business schemas remain unchanged. */
   publicAnswerTool?: 'native-v1' | 'native-v2' | 'native-v3' | undefined
   recovery?: Partial<ModelRecoveryPolicy>
-  capabilities?: Partial<Pick<ModelProfile, 'toolCalls' | 'jsonObject' | 'jsonObjectWithTools' | 'parallelTools'>>
+  capabilities?: Partial<Pick<ModelProfile, 'toolCalls' | 'jsonObject' | 'jsonObjectWithTools' | 'parallelTools' | 'requiredToolChoice'>>
   /** Calibrated tokenizer for this exact model configuration. */
   countTokens?: (text: string) => number
   maxThinkingTokens?: number
@@ -133,6 +134,7 @@ interface StreamAccumulator {
   model?: string
   usage?: ProviderUsage
   malformedToolCalls?: boolean
+  malformedToolDetail?: import('../errors.js').ModelProtocolDetail
 }
 
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -262,6 +264,8 @@ export class OpenAIChatDriver implements ModelDriver {
       || this.publicTextProtocol !== 'purpose-json-v3' || this.publicTextContinuation !== 'typed-message-v1'
       || options.nativeToolPublicOutput !== undefined || !this.profile.toolCalls || !this.profile.jsonObject
       || this.profile.jsonObjectWithTools !== false || this.profile.parallelTools !== (this.publicAnswerTool !== 'native-v1'))) throw new Error('public answer tool requires v3 typed messages, original business schemas, and its declared batch capability')
+    if (this.publicAnswerTool === 'native-v3' && this.profile.requiredToolChoice === false) throw new ConfigError('native-v3 requires provider support for required tool choice')
+    if (this.profile.requiredToolChoice !== undefined && typeof this.profile.requiredToolChoice !== 'boolean') throw new ConfigError('invalid required tool choice capability')
     this.protocolTokens=this.publicAnswerTool ? this.countTokens(this.publicAnswerInstructions) : this.publicTextProtocol?this.countTokens(publicPurposeInstructions(this.publicTextProtocol,this.profile,this.publicTextContinuation)):0
     // Default and explicit support share the same capability representation;
     // only an opt-out adds that capability field. Parsing policy is separately
@@ -280,14 +284,14 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(options.compactionReasoningEffort ? { compactionReasoningEffort: options.compactionReasoningEffort } : {}),
       ...(options.auxiliaryStreaming ? { auxiliaryStreaming: true } : {}),
       ...(this.publicTextContinuation ? { publicTextContinuation: this.publicTextContinuation } : {}),
-      ...(this.publicAnswerTool ? { publicAnswerTool:this.publicAnswerTool, publicAnswerHistoryPolicy:'sealed-native-call-ack-v1', publicAnswerParserPolicy:'streamparser-partial-null-v2', publicAnswerToolChoice:this.publicAnswerTool==='native-v3'?'authorized-selection-v1':'auto-v1', publicAnswerInstructionsHash:createHash('sha256').update(this.publicAnswerInstructions).digest('hex') } : {}),
+      ...(this.publicAnswerTool ? { publicAnswerTool:this.publicAnswerTool, publicAnswerHistoryPolicy:'sealed-native-call-ack-v1', publicAnswerParserPolicy:'streamparser-partial-null-v2', publicAnswerToolChoice:this.publicAnswerTool==='native-v3'?'required-authorized-selection-v2':'auto-v1', publicAnswerInstructionsHash:createHash('sha256').update(this.publicAnswerInstructions).digest('hex') } : {}),
       ...(this.publicAnswerTool === 'native-v2' ? { publicAnswerCatalogPolicy:'output-first-v1' } : this.publicAnswerTool === 'native-v3' ? { publicAnswerCatalogPolicy:'optional-output-first-v1' } : {}),
       ...(options.nativeToolPublicOutput ? { nativeToolPublicOutput: options.nativeToolPublicOutput,
         nativeToolIdentityPolicy: 'bounded-unambiguous-prefix-v1' } : {}),
     })).digest('hex')
   }
 
-  private async request(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
+  private async request(body: Record<string, unknown>, signal?: AbortSignal, timing?: DriverTiming): Promise<Response> {
     const encoded = JSON.stringify({ max_tokens: this.maxOutputTokens,
       ...(this.options.maxThinkingTokens !== undefined || this.options.reasoningEffort ? { enable_thinking: this.maxThinkingTokens > 0 } : {}),
       ...(this.maxThinkingTokens ? { thinking_budget: this.maxThinkingTokens } : {}),
@@ -307,6 +311,7 @@ export class OpenAIChatDriver implements ModelDriver {
       const headersSignal = AbortSignal.any([combined, firstByte.signal])
       let response: Response
       try {
+        timing?.request()
         response = await abortable(this.fetchImpl(`${this.baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
@@ -324,6 +329,7 @@ export class OpenAIChatDriver implements ModelDriver {
         await this.sleep(this.backoffMs(attempt), totalSignal)
         continue
       }
+      timing?.headers()
       if (response.ok) return this.boundedResponse(response, headersSignal, firstByte.signal, clearFirstByte)
       clearFirstByte()
       const status = response.status
@@ -400,7 +406,7 @@ export class OpenAIChatDriver implements ModelDriver {
   }
 
   private async consumeStream(response: Response, onTextDelta?: ModelTurnRequest['onTextDelta'],
-    onToolDelta?: (index: number, call: { id: string; name: string; arguments: string }, delta: string) => Promise<void>): Promise<StreamAccumulator> {
+    onToolDelta?: (index: number, call: { id: string; name: string; arguments: string }, delta: string) => Promise<void>, timing?: DriverTiming): Promise<StreamAccumulator> {
     if (!response.body) throw new ModelDriverError('model provider returned no response body', { finishReasons: [] })
     const accumulator: StreamAccumulator = { text: '', toolCalls: new Map(), finishReasons: [] }
     try {
@@ -432,11 +438,16 @@ export class OpenAIChatDriver implements ModelDriver {
         if (choice.finish_reason) accumulator.finishReasons.push(choice.finish_reason)
         const content = choice.delta?.content
         if (typeof content === 'string' && content.length > 0) {
+          timing?.content()
           accumulator.text += content
           await onTextDelta?.(content)
         }
         for (const toolCall of choice.delta?.tool_calls ?? []) {
           const index = toolCall.index ?? 0
+          const detail = !Number.isSafeInteger(index) || index < 0 ? 'tool_index_invalid'
+            : toolCall.type != null && toolCall.type !== 'function' ? 'tool_type_invalid'
+            : toolCall.function != null && (typeof toolCall.function !== 'object' || Array.isArray(toolCall.function)) ? 'tool_function_invalid' : undefined
+          if (detail) accumulator.malformedToolDetail ??= detail
           if (!Number.isSafeInteger(index) || index < 0 || toolCall.index !== undefined && !Number.isSafeInteger(toolCall.index)
             || toolCall.type != null && toolCall.type !== 'function'
             || toolCall.function != null && (typeof toolCall.function !== 'object' || Array.isArray(toolCall.function))) accumulator.malformedToolCalls = true
@@ -459,10 +470,12 @@ export class OpenAIChatDriver implements ModelDriver {
             if (typeof toolCall.function.arguments !== 'string') accumulator.malformedToolCalls = true
             else entry.arguments += toolCall.function.arguments
           }
+          timing?.tool(entry)
           if (onToolDelta) await onToolDelta(index, entry, typeof toolCall.function?.arguments === 'string' ? toolCall.function.arguments : '')
         }
       }
-    } catch (error) { this.throwStreamFailure(error, accumulator) }
+    } catch (error) { timing?.stream(false); this.throwStreamFailure(error, accumulator) }
+    timing?.stream(true)
     return accumulator
   }
 
@@ -491,10 +504,12 @@ export class OpenAIChatDriver implements ModelDriver {
   }
 
   run(request: ModelTurnRequest): Promise<ModelTurnResult> {
-    return this.guarded(() => this.runOnce(request), request.signal)
+    const timing=new DriverTiming(request.onTiming)
+    return this.guarded(() => this.runOnce(request,timing), request.signal).finally(()=>timing.finish())
   }
   private toolChoice(request: Pick<ModelTurnRequest, 'tools' | 'requiredTool'>) {
-    if (request.requiredTool === undefined) return 'auto' as const
+    if (request.requiredTool === undefined) return this.publicAnswerTool === 'native-v3' ? 'required' as const : 'auto' as const
+    if (this.profile.requiredToolChoice === false) throw new ConfigError('required tool choice is unsupported by this provider configuration')
     if (!request.tools?.some(tool => tool.name === request.requiredTool) || this.publicAnswerTool === 'native-v2') throw new Error('required tool is unavailable for this binding')
     return { type: 'function' as const, function: { name: request.requiredTool } }
   }
@@ -523,7 +538,7 @@ export class OpenAIChatDriver implements ModelDriver {
       request.items, nativeEnvelope), ...(tools.length ? { tools: tools.map(tool => ({ ...tool, function: { ...tool.function,
         parameters: wrapNativeToolSchema(tool.function.parameters) } })), tool_choice: this.toolChoice(request), parallel_tool_calls: false } : {}) }))
   }
-  private async runOnce(request: ModelTurnRequest): Promise<ModelTurnResult> {
+  private async runOnce(request: ModelTurnRequest, timing: DriverTiming): Promise<ModelTurnResult> {
     const allowPython = request.codeExecution === 'enabled' || request.codeExecution === undefined && request.tools === undefined
     const tools = [
       ...(allowPython ? [IPYTHON_TOOL] : []),
@@ -620,7 +635,7 @@ export class OpenAIChatDriver implements ModelDriver {
       ...(tools.length ? { tools: wireTools, tool_choice: this.toolChoice(request), parallel_tool_calls: this.profile.parallelTools } : {}),
       stream: true,
       stream_options: { include_usage: true },
-    }, request.signal)
+    }, request.signal,timing)
     const accumulator = await this.consumeStream(response, this.publicAnswerTool ? undefined : purposeParser?async chunk=>{
       request.signal?.throwIfAborted()
       if (companion) { const framed = companion.push(chunk); if (framed === null) return; chunk = framed }
@@ -633,7 +648,8 @@ export class OpenAIChatDriver implements ModelDriver {
         await request.onTextDelta?.(part.text,{purpose:part.purpose})
         request.signal?.throwIfAborted()
       }
-    }:request.onTextDelta, this.publicAnswerTool ? acceptPublicDelta : nativeEnvelope ? acceptNativeDelta : undefined)
+    }:request.onTextDelta, this.publicAnswerTool ? acceptPublicDelta : nativeEnvelope ? acceptNativeDelta : undefined,timing)
+    timing.validation()
     const diagnostics = { finishReasons: accumulator.finishReasons, usage: this.usageOf(accumulator) }
     if (request.signal?.aborted) throw new ModelDriverError('model request cancelled', {
       ...diagnostics, kind: 'provider', category: 'cancelled',
@@ -643,7 +659,7 @@ export class OpenAIChatDriver implements ModelDriver {
     }
     if(this.publicTextProtocol==='purpose-json-v3'&&(accumulator.malformedToolCalls||accumulator.finishReasons.length!==1
       ||accumulator.finishReasons[0] !== (accumulator.toolCalls.size?'tool_calls':'stop'))){
-      throw new ModelDriverError('invalid model turn boundary',{...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid'})
+      throw new ModelDriverError('invalid model turn boundary',{...diagnostics,kind:'protocol',category:'protocol',protocolCode:'tool_identity_invalid',protocolDetail:accumulator.malformedToolDetail ?? 'tool_batch_invalid'})
     }
     const output: ModelItem[] = []
     let text = accumulator.text
@@ -652,7 +668,7 @@ export class OpenAIChatDriver implements ModelDriver {
     let publicAnswerCall:PublicAnswerCall|undefined
     if(this.publicAnswerTool) {
       if(!accumulator.toolCalls.size)throw new ModelDriverError('public answer requires the declared output tool',{
-        ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_text_answer_required'})
+        ...diagnostics,kind:'protocol',category:'protocol',protocolCode:'public_text_answer_required',protocolDetail:'native_call_missing'})
       // Validate identities first. The public-output parser below owns its JSON
       // completion diagnostics; truncation is not a malformed tool identity.
       const identityFailure=companionIdentityFailure({text:'',calls:accumulator.toolCalls,finishReasons:accumulator.finishReasons,
@@ -778,24 +794,29 @@ export class OpenAIChatDriver implements ModelDriver {
   }
 
   structured(request: StructuredCallRequest): Promise<StructuredCallResult> {
-    return this.guarded(() => this.structuredOnce(request), request.signal)
+    const timing=new DriverTiming(request.onTiming)
+    return this.guarded(() => this.structuredOnce(request,timing), request.signal).finally(()=>timing.finish())
   }
 
-  private async auxiliaryPayload(response: Response): Promise<{
+  private async auxiliaryPayload(response: Response,timing:DriverTiming): Promise<{
     content: string | null | undefined
     model: string
     diagnostics: { finishReasons: string[]; usage: ModelUsage }
   }> {
     if (this.options.auxiliaryStreaming) {
       // Auxiliary content is internal: never pass a preview callback or expose reasoning fields.
-      const accumulator = await this.consumeStream(response)
+      const accumulator = await this.consumeStream(response,undefined,undefined,timing)
+      timing.validation()
       const diagnostics = { finishReasons: accumulator.finishReasons, usage: this.usageOf(accumulator) }
       if (!diagnostics.finishReasons.length || diagnostics.finishReasons.some(reason => reason !== 'stop') || accumulator.toolCalls.size) {
         throw new ModelDriverError('model response did not finish normally', diagnostics)
       }
       return { content: accumulator.text, model: accumulator.model ?? this.modelId, diagnostics }
     }
-    const payload = await responseJson(response) as {
+    let body:unknown
+    try {body=await responseJson(response);timing.stream(true)}catch(error){timing.stream(false);throw error}
+    timing.validation()
+    const payload = body as {
       model?: string
       usage?: ProviderUsage
       choices?: Array<{ finish_reason?: string | null; message?: { content?: string | null } }>
@@ -805,7 +826,7 @@ export class OpenAIChatDriver implements ModelDriver {
     return { content: payload.choices?.[0]?.message?.content, model: payload.model ?? this.modelId, diagnostics }
   }
 
-  private async structuredOnce(request: StructuredCallRequest): Promise<StructuredCallResult> {
+  private async structuredOnce(request: StructuredCallRequest,timing:DriverTiming): Promise<StructuredCallResult> {
     if (!this.profile.jsonObject) throw new Error('selected model does not support JSON object output')
     const response = await this.request({
       model: this.modelId,
@@ -816,8 +837,8 @@ export class OpenAIChatDriver implements ModelDriver {
       response_format: { type: 'json_object' },
       stream: this.options.auxiliaryStreaming ?? false,
       ...(this.options.auxiliaryStreaming ? { stream_options: { include_usage: true } } : {}),
-    }, request.signal)
-    const { content, model, diagnostics } = await this.auxiliaryPayload(response)
+    }, request.signal,timing)
+    const { content, model, diagnostics } = await this.auxiliaryPayload(response,timing)
     if (typeof content !== 'string' || !content.trim()) {
       throw new ModelDriverError('structured call returned no content', { ...diagnostics, finishReasons: [] })
     }
@@ -831,9 +852,10 @@ export class OpenAIChatDriver implements ModelDriver {
   }
 
   compact(request: CompactionRequest): Promise<CompactionResult> {
-    return this.guarded(() => this.compactOnce(request), request.signal)
+    const timing=new DriverTiming(request.onTiming)
+    return this.guarded(() => this.compactOnce(request,timing), request.signal).finally(()=>timing.finish())
   }
-  private async compactOnce(request: CompactionRequest): Promise<CompactionResult> {
+  private async compactOnce(request: CompactionRequest,timing:DriverTiming): Promise<CompactionResult> {
     if (!this.profile.jsonObject) throw new Error('selected model does not support JSON object output')
     const response = await this.request({
       model: this.modelId,
@@ -849,8 +871,8 @@ export class OpenAIChatDriver implements ModelDriver {
       response_format: { type: 'json_object' },
       stream: this.options.auxiliaryStreaming ?? false,
       ...(this.options.auxiliaryStreaming ? { stream_options: { include_usage: true } } : {}),
-    }, request.signal)
-    const { content, model, diagnostics } = await this.auxiliaryPayload(response)
+    }, request.signal,timing)
+    const { content, model, diagnostics } = await this.auxiliaryPayload(response,timing)
     if (typeof content !== 'string' || !content.trim()) {
       throw new ModelDriverError('compaction returned no summary', { ...diagnostics, finishReasons: [] })
     }

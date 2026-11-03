@@ -635,7 +635,7 @@ it('native-v3 real Worker forces the authorized first read, then accepts busines
     assert.equal(state.run.status,'succeeded');assert.equal(state.message?.body,'Gather and Check')
     assert.equal(f.effects,1);assert.equal(f.calls,3);assert.ok(f.resourceChecks>0)
     assert.deepEqual(f.requests[0]!.tool_choice,{type:'function',function:{name:'probe__read'}})
-    assert.equal(f.requests[1]!.tool_choice,'auto')
+    assert.equal(f.requests[1]!.tool_choice,'required')
     assert.equal(f.rawPublicCalls.length,1,'pure business turns never fabricate public output')
   } finally {await f.close()}
 })

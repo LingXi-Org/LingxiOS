@@ -1,3 +1,4 @@
+import { readModelStageTimings } from './timing.js'
 import { providerCode } from './recovery.js'
 import { MODEL_PROTOCOL_DETAILS } from '../errors.js'
 
@@ -24,6 +25,8 @@ function finiteNonnegative(value: unknown): value is number {
  */
 export function publicModelDiagnostics(value: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {}
+  const stages=readModelStageTimings(field(value,'stageTimings'))
+  if(stages)out['stageTimings']=stages
   if (field(value, 'publicText') === 'unpublished_tool_companion') out['publicText'] = 'unpublished_tool_companion'
   for (const [key, allowed] of [['kind', kinds], ['category', categories], ['protocolCode', protocolCodes], ['protocolDetail', protocolDetails]] as const) {
     const candidate = field(value, key)

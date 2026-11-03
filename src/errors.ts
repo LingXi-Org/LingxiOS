@@ -94,7 +94,8 @@ export const MODEL_PROTOCOL_DETAILS = ['json_syntax', 'duplicate_field', 'unknow
   'operation_invalid', 'outcome_invalid', 'root_invalid', 'unicode_invalid', 'text_regression', 'depth_limit', 'size_limit',
   'parser_closed', 'identity_changed', 'tool_name_unknown', 'tool_id_invalid', 'tool_id_duplicate', 'tool_index_invalid',
   'tool_batch_invalid', 'tool_metadata_invalid', 'mixed_output_channels', 'terminal_with_business',
-  'public_answer_missing', 'public_answer_misordered'] as const
+  'public_answer_missing', 'public_answer_misordered', 'native_call_missing',
+  'operation_kind_invalid', 'operation_supersedes_invalid', 'operation_fields_invalid', 'tool_type_invalid', 'tool_function_invalid'] as const
 export type ModelProtocolDetail = typeof MODEL_PROTOCOL_DETAILS[number]
 
 export interface ModelDiagnostics {

@@ -8,6 +8,7 @@ export function modelProtocolCorrection(diagnostics:ModelDiagnostics,codeExecuti
     ? 'Use only exposed native tools or an allowed ipython call when needed.'
     : 'Python execution is disabled for this request. Use only exposed native tools when needed.'
   const code=diagnostics.protocolCode
+  if(code==='public_text_answer_required' && diagnostics.protocolDetail==='native_call_missing')return {category:'response_protocol',content:`Protocol correction: the previous response contained no native tool_calls. Its business actions were not dispatched. Use the native tool_calls channel: call public_answer for public answer text or a legal null terminal answer backed by sealed sources, or call the authorized business tools still needed. Do not put the public_answer JSON in assistant prose. Preserve existing receipts and sealed sources; never repeat completed or uncertain actions or append a restatement of sealed answer text. ${execution}`}
   if(code==='public_answer_first_required'){
     const failure=diagnostics.protocolDetail==='public_answer_missing'?'did not include public_answer'
       :diagnostics.protocolDetail==='public_answer_misordered'?'placed public_answer outside index 0'

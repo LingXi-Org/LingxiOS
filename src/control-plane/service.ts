@@ -1,3 +1,4 @@
+import { readModelStageTimings } from '../model/timing.js'
 import { executionTraceMetadata } from '../protocol/run-trace.js'
 import { userInputWait } from '../protocol/input-wait.js'
 import { abortable } from '../deadline.js'
@@ -283,7 +284,12 @@ export class ControlPlaneService {
       || observation.latencyMs < 0 || typeof observation.model !== 'string')) throw new ControlPlaneError(400, 'invalid model observation identity')
     // The control-plane clock owns both the durable start and settlement. A
     // worker/observer clock is not a timeline and cannot supply these timestamps.
-    if (observation) observation = { ...observation, executionTiming: { completedAt: Date.now(), cancelled: observation.failure?.category === 'cancelled' } }
+    if (observation) {
+      const {stageTimings,...rest}=observation
+      const safeTiming=readModelStageTimings(stageTimings)
+      observation={...rest,fence:proof.fence,...(safeTiming?{stageTimings:safeTiming}:{}),
+        executionTiming:{completedAt:Date.now(),cancelled:observation.failure?.category==='cancelled'}}
+    }
     const policy = this.deps.modelBudget
     const costMicros = policy ? Math.ceil((usage.inputTokens * policy.inputCostMicrosPerMillion
       + usage.outputTokens * policy.outputCostMicrosPerMillion) / 1_000_000) : usage.costMicros

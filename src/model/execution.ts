@@ -1,3 +1,4 @@
+import { ModelTimingCollector, type ModelStageTimings } from './timing.js'
 import { COMPACTION_PROMPT, textSha256, type PromptManifest } from '../context/compiler.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createHash } from 'node:crypto'
@@ -42,6 +43,9 @@ export interface ModelCallObservation {
   usage?: ModelUsage
   latencyMs: number
   firstContentMs?: number
+  stageTimings?: ModelStageTimings
+  fence?: number
+  requestVersion?: number
   configurationFingerprint?: string
   status: 'succeeded' | 'failed'
   error?: string
@@ -135,7 +139,8 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       const signal = AbortSignal.any([logicalSignal, rootTimeout])
       const began = performance.now()
       let result: T | undefined, failure: unknown
-      const diagnostics: Record<string, unknown> = {providerNotStarted:true}
+      const timing=new ModelTimingCollector()
+      const diagnostics: Record<string, unknown> = {providerNotStarted:true,timing}
       const admit=memoryVersion ? async () => {
         signal.throwIfAborted()
         // Same call id, already reserved: the store only validates the server-owned
@@ -159,6 +164,7 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       const outputTokens = usage?.available ? usage.outputTokens : output
       const costMicros = Math.ceil((inputTokens * limits.inputCostMicrosPerMillion + outputTokens * limits.outputCostMicrosPerMillion) / 1_000_000)
       tokens += inputTokens + outputTokens - input - output; cost += costMicros - reservedCost
+      const latencyMs=performance.now()-began
       const observation: ModelCallObservation = {
         ...(request.prompt ? { prompt: request.prompt } : {}), ...(instructionsSha256 ? { instructionsSha256 } : {}),
         callId, ...(attempt > 1 ? { logicalCallId } : {}), purpose, operation: operationKind,
@@ -166,7 +172,9 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
         ...(work.threadId !== undefined ? { threadId: work.threadId } : {}), ...(work.principalId ? { principalId: work.principalId } : {}),
         model: result?.model ?? callModel.modelId ?? 'unknown', usage: usage?.available ? usage : { available: false, inputTokens, outputTokens },
         cost: { amountMicros: costMicros, usage: usage?.available ? 'measured' : 'estimated', pricing: modelPricing(limits) },
-        latencyMs: performance.now() - began, status: result ? 'succeeded' : 'failed',
+        stageTimings:timing.snapshot(latencyMs),fence:work.fence,
+        ...(traceRequestVersion===undefined?{}:{requestVersion:traceRequestVersion}),
+        latencyMs, status: result ? 'succeeded' : 'failed',
         ...(typeof diagnostics['providerFirstContentMs'] === 'number' ? { firstContentMs: diagnostics['providerFirstContentMs'] } : {}),
         ...(callModel.configurationFingerprint ? { configurationFingerprint: callModel.configurationFingerprint } : {}),
         attempt, elapsedMs: performance.now() - logicalBegan,
@@ -176,6 +184,8 @@ export function modelExecution(host: Pick<HostPort, 'reserveModelCall' | 'record
       await host.recordModelUsage(work, callId, { inputTokens, outputTokens, costMicros }, observation)
       // Usage remains durable if the old lease can no longer emit telemetry.
       if (!request.signal?.aborted) await emit?.({ kind: 'model.request.finished', stage: result ? 'completed' : 'failed', visibility: 'internal', data: { ...observation } })
+      delete diagnostics['timing']
+      diagnostics['stageTimings']=observation.stageTimings
       if (result) return { ...result, callId, logicalCallId, ...(Object.keys(diagnostics).length ? {
         diagnostics: { ...('diagnostics' in result ? result.diagnostics as Record<string, unknown> : {}), ...diagnostics },
       } : {}) }
@@ -264,13 +274,15 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
         diagnostics['providerNotStarted']=true
         const gate=request.onAttempt?.(callId)
         const start=()=>admittedStart(selected as ModelDriver,signal,diagnostics,admit,beforeProvider=>{
+        const timing=diagnostics['timing'] as ModelTimingCollector
         const began = performance.now()
         let firstTextMs: number | undefined
         let active = true
-        const result = (selected as ModelDriver).run({ ...request, admission, signal, beforeProvider, onTextDelta: (delta,metadata) => {
+        const result = (selected as ModelDriver).run({ ...request, admission, signal, beforeProvider, onTiming:timing.update,
+          onTextOperation: operation=>timing.callback(()=>request.onTextOperation?.(operation)), onTextDelta: (delta,metadata) => {
             if (!active || signal.aborted) return
             if (delta) firstTextMs ??= performance.now() - began
-            return request.onTextDelta?.(delta,metadata)
+            return timing.callback(()=>request.onTextDelta?.(delta,metadata))
           } })
         const finished = () => {
           active = false
@@ -287,14 +299,14 @@ export function executionModel(host: Pick<HostPort, 'reserveModelCall' | 'record
     structured: request => {
       check(request)
       return invoke('structured', request, (signal,_id,diagnostics,selected,admit) =>
-        admittedStart(selected as ModelDriver,signal,diagnostics,admit,beforeProvider=>(selected as ModelDriver).structured({ ...request, admission, signal,beforeProvider })),model,route('structured',request))
+        admittedStart(selected as ModelDriver,signal,diagnostics,admit,beforeProvider=>(selected as ModelDriver).structured({ ...request, admission, signal,beforeProvider,onTiming:(diagnostics['timing'] as ModelTimingCollector).update })),model,route('structured',request))
     },
     compact: request => {
       const compiled = { ...request, instructions: COMPACTION_PROMPT.instructions, prompt: COMPACTION_PROMPT.manifest }
       check(compiled)
       return invoke('compaction', compiled, (signal,_id,diagnostics,selected,admit) =>
         admittedStart(selected as ModelDriver,signal,diagnostics,admit,beforeProvider=>(selected as ModelDriver).compact({ ...compiled,
-          admission: request.admission === 'background' ? 'background' : admission, signal,beforeProvider })),model,route('compaction',compiled))
+          onTiming:(diagnostics['timing'] as ModelTimingCollector).update, admission: request.admission === 'background' ? 'background' : admission, signal,beforeProvider })),model,route('compaction',compiled))
     },
   }
 }

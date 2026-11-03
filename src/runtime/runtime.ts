@@ -820,7 +820,8 @@ export class AgentRuntime {
                       answerSegments.fail(event.data as unknown as PublicTextIdentity)
                     return result
                   },generationSignal,
-                  this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined,model.publicTextProtocol))
+                  this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined,model.publicTextProtocol,
+                  timing=>this.event(work,runId,{kind:'public.text.publication.finished',stage:timing.failure?'failed':'completed',visibility:'internal',data:{...timing}})))
               }
               // Reserve the reply first; optional compaction must not consume its budget.
               if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
@@ -916,7 +917,7 @@ export class AgentRuntime {
       })
       for (const [field, name] of [['providerDurationMs', 'agentos_model_provider_seconds'], ['providerFirstContentMs', 'agentos_model_first_content_seconds']] as const) {
         const value = turn.diagnostics?.[field]
-        if (typeof value === 'number') this.metrics?.histogram(name, 'Provider latency; content may include protocol fields', LATENCY_BUCKETS).observe(value / 1000)
+        if (typeof value === 'number') this.metrics?.histogram(name, 'Observed model invocation latency including local callback waits', LATENCY_BUCKETS).observe(value / 1000)
       }
       await signals.refresh()
       if (signals.leaseLost()) throw signals.leaseLost()!
