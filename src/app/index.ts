@@ -626,7 +626,7 @@ export async function createLingxiOS(options: LingxiOSOptions) {
               ...checks.rows.filter(row => !String(row['checker']).startsWith('product:')).map(row => ({ checker: String(row['checker']), status: row['status'] as VerificationRecord['status'], evidence: {} })), ...nativeChecks])
             if (obligations.some(record => record.status !== 'passed')) throw new Error('delivery obligations are unfulfilled or no longer current')
             if (message.envelope.artifacts.some(artifact => !checks.rows.some(check => check['checker'] === `artifact:${artifact.path}` && check['status'] === 'passed'))) throw new Error('candidate files require current authoritative checks')
-            const actions = await candidateActions(client, work.id, message.envelope.requestVersion, integration?.tools ?? [])
+            const actions = await candidateActions(client, work, message.envelope.requestVersion, integration?.tools ?? [])
             if (actions.length > 1024 || actions.some(action => !checks.rows.some(check => check['checker'] === `action:${action.key}` && check['status'] === 'passed'))) throw new Error('candidate writes require current authoritative checks')
             const unresolved = await client.query(`SELECT 1 FROM lingxios.agent_action_intents intent
               LEFT JOIN lingxios.agent_action_ledger receipt USING(idempotency_key)

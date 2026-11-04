@@ -66,7 +66,7 @@ const taskDefinitions: Array<ToolDefinition & { parse(args: Record<string, unkno
         throw new Error('task.check_receipt requires idempotencyKey, a business action and exactly one complete expected value or expectedSha256')
       }
     } },
-  { name: 'task__check_resource', action: 'task.check_resource', description: 'Read authorized resource fields now and compare them to expected values.',
+  { name: 'task__check_resource', action: 'task.check_resource', description: 'Read authorized resource fields now and compare exact top-level fields to expected values. First read the resource and copy only fields actually present; nested objects compare in full, and dotted paths are not traversed. A missing field returns not_observed, never success. Repeating an unobservable check or rewriting the answer cannot confirm it; retain the limitation when no authorized action can resolve it.',
     // Keep these maps open explicitly; absent additionalProperties already meant true.
     parameters: { type: 'object', properties: { action: text, args: { type: 'object', additionalProperties: true }, expected: { type: 'object', additionalProperties: true, minProperties: 1, maxProperties: 16 } },
       required: ['action','args','expected'], additionalProperties: false }, effect: 'read', approval: false, parse: args => {
