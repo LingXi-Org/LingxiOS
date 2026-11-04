@@ -52,6 +52,9 @@ export class CorrectionBudget {
 export function progressFacts(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(progressFacts)
   if (!value || typeof value !== 'object') return undefined
+  const observation = value as { action?: string; result?: { value?: { status?: string } } }
+  // A failed/absent field observation is a retained gap, not new verified progress.
+  if (observation.action === 'task.check_resource' && observation.result?.value?.status !== 'pass') return undefined
   return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => {
     if (['version', 'revision', 'sha256', 'ok', 'executionState', 'status', 'action'].includes(key)) return [[key, item]]
     const nested = progressFacts(item)
