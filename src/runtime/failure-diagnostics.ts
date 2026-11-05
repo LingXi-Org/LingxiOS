@@ -33,7 +33,7 @@ const sourceUrl = new URL('../', import.meta.url)
 const sourceRoots = [fileURLToPath(sourceUrl),
   // tsx/Node source maps can name package/src while this module is loaded from
   // package/dist/src. Both roots come only from this module's own location.
-  ...(sourceUrl.pathname.endsWith('/dist/src/') ? [fileURLToPath(new URL('../../src/', sourceUrl))] : [])]
+  ...(sourceUrl.pathname.endsWith('/dist/src/') ? [fileURLToPath(new URL('../../src/', sourceUrl))] : [])].map(root => root.replaceAll('\\', '/'))
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const deployment = /^(?:unknown|[a-f0-9]{40}|[a-f0-9]{64})$/i
 const positive = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0
@@ -78,12 +78,13 @@ function frames(error: unknown): RuntimeFailureFrame[] {
   const stack = field(error, 'stack'), result: RuntimeFailureFrame[] = []
   if (typeof stack !== 'string') return result
   for (const text of stack.slice(0, 16_384).split('\n').slice(0, 64)) {
-    const match = /^\s*at (?:[^()\r\n]* \()?((?:file:\/\/\/|\/)[^()\r\n]*?):(\d+)(?::(\d+))?\)?$/.exec(text)
+    const match = /^\s*at (?:[^()\r\n]* \()?((?:file:\/\/\/|\/|[A-Za-z]:[\\/])[^()\r\n]*?):(\d+)(?::(\d+))?\)?$/.exec(text)
     if (!match) continue
     let source = match[1]!
     if (source.startsWith('file:')) {
       try { const url = new URL(source); if (url.search || url.hash) continue; source = fileURLToPath(url) } catch { continue }
     }
+    source = source.replaceAll('\\', '/')
     const sourceRoot = sourceRoots.find(root => source.startsWith(root))
     if (!sourceRoot) continue
     const module = source.slice(sourceRoot.length), line = Number(match[2]), column = match[3] === undefined ? undefined : Number(match[3])
