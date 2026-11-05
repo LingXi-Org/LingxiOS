@@ -1,6 +1,6 @@
 {
   "name": "@lingxi-org/lingxios",
-  "version": "4.0.0-slim.1",
+  "version": "4.0.0-slim.2",
   "description": "Durable agent execution for PostgreSQL with fenced workers, native tools, verified outcomes, and sandboxed Python.",
   "type": "module",
   "license": "MIT",
@@ -65,17 +65,5 @@
     "@streamparser/json": "0.0.26",
     "ajv": "8.17.1",
     "ajv-formats": "3.0.1"
-  },
-  "peerDependencies": {
-    "mammoth": "1.12.2",
-    "pdfjs-dist": "6.3.289"
-  },
-  "peerDependenciesMeta": {
-    "mammoth": {
-      "optional": true
-    },
-    "pdfjs-dist": {
-      "optional": true
-    }
   }
 }

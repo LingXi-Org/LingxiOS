@@ -12,7 +12,7 @@
 ```
 
 ```sh
-npm install @lingxi-org/lingxios@4.0.0-slim.1
+npm install @lingxi-org/lingxios@4.0.0-slim.2
 ```
 
 四个公开入口：
@@ -22,7 +22,7 @@ npm install @lingxi-org/lingxios@4.0.0-slim.1
 - `@lingxi-org/lingxios/eval`：资源后置条件核验、独立答案评审和校准汇总。
 - `@lingxi-org/lingxios/ui`：可在浏览器使用的消息与事件归约器。
 
-`4.0.0-slim.1` 以 `3.8.25` 为功能基准，保留其公开入口、CLI、协议兼容、升级资源、native-v3 工具选择、分阶段耗时诊断和链式写入回执核验。发布包仅包含 JavaScript、类型声明、数据库安装/升级资源和 Python runner；不附带测试目录、评测数据、历史报告或源码映射。运行时仍执行授权、审批、隔离和结果核验。
+`4.0.0-slim.2` 以 `3.8.25` 为功能基准，保留其公开入口、CLI、协议兼容、升级资源、native-v3 工具选择、分阶段耗时诊断和链式写入回执核验。发布包仅包含 JavaScript、类型声明、数据库安装/升级资源和 Python runner；不附带测试目录、评测数据、历史报告或源码映射。运行时仍执行授权、审批、隔离和结果核验。
 
 默认安装只依赖流式 JSON 解析和 JSON Schema 验证库，不再引入 LangChain/LangGraph。PDF/DOCX 文本提取为可选能力，使用时安装对应解析器：
 

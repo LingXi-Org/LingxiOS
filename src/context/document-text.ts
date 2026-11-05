@@ -13,7 +13,7 @@ export async function extractDocumentText(bytes: Uint8Array, format: DocumentFor
   const parser = format === 'pdf' ? 'pdfjs-dist/legacy/build/pdf.mjs' : format === 'docx' ? 'mammoth' : undefined
   if (parser) {
     try { import.meta.resolve(parser) }
-    catch { throw new Error(`Install the optional ${format === 'pdf' ? 'pdfjs-dist' : 'mammoth'} peer dependency to extract ${format.toUpperCase()} text`) }
+    catch { throw new Error(`Install the optional ${format === 'pdf' ? 'pdfjs-dist' : 'mammoth'} dependency to extract ${format.toUpperCase()} text`) }
   }
   const release = inputs.acquire('parsers', bytes.byteLength)
   return parsers.run(() => new Promise<string>((resolve, reject) => {
