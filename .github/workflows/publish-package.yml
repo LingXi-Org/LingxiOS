@@ -20,8 +20,11 @@ jobs:
         with:
           script: |
             const { name, version, publishConfig } = require('./package.json')
-            if (name !== '@lingxi-org/lingxios' || publishConfig?.registry !== 'https://npm.pkg.github.com') {
+            if (context.repo.owner.toLowerCase() !== 'lingxi-org' || name !== '@lingxi-org/lingxios' || publishConfig?.registry !== 'https://npm.pkg.github.com') {
               throw new Error('Publish only @lingxi-org/lingxios to GitHub Packages')
+            }
+            if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version) || publishConfig.tag !== 'latest') {
+              throw new Error('Publish only stable X.Y.Z versions with the latest tag')
             }
             if (context.ref !== `refs/tags/v${version}`) throw new Error('Tag does not match package version')
             const runs = await github.rest.actions.listWorkflowRuns({
@@ -37,6 +40,6 @@ jobs:
           cache: npm
           registry-url: https://npm.pkg.github.com
       - run: npm ci --ignore-scripts
-      - run: npm publish --access public
+      - run: npm publish --access public --registry=https://npm.pkg.github.com --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LINGXIOS_PACKAGES_TOKEN || secrets.GITHUB_TOKEN }}

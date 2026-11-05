@@ -35,6 +35,9 @@ jobs:
           assert.deepEqual(gradeResources(1, [{ id: 'check', resource: 'resource', expected: true }],
             [{ resource: 'resource', requestVersion: 1, value: true }]), [{ checkId: 'check', status: 'pass' }])
           const metadata = JSON.parse(await readFile('node_modules/@lingxi-org/lingxios/package.json', 'utf8'))
+          assert.equal(metadata.name, '@lingxi-org/lingxios')
+          assert.match(metadata.version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/)
+          assert.deepEqual(metadata.publishConfig, { registry: 'https://npm.pkg.github.com', tag: 'latest' })
           assert.deepEqual(Object.keys(metadata.dependencies).sort(), ['@streamparser/json', 'ajv', 'ajv-formats'])
           assert.equal(metadata.peerDependencies, undefined)
           for (const parser of ['mammoth', 'pdfjs-dist']) assert.throws(() => import.meta.resolve(parser))

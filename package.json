@@ -1,6 +1,6 @@
 {
   "name": "@lingxi-org/lingxios",
-  "version": "4.0.0-slim.2",
+  "version": "4.0.0",
   "description": "Durable agent execution for PostgreSQL with fenced workers, native tools, verified outcomes, and sandboxed Python.",
   "type": "module",
   "license": "MIT",
@@ -10,7 +10,7 @@
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com",
-    "tag": "next"
+    "tag": "latest"
   },
   "files": [
     "dist/src",
