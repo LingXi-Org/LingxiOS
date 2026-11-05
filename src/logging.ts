@@ -18,7 +18,7 @@ export interface Logger {
 
 export interface LoggerOptions {
   level?: LogLevel
-  /** Defaults to one JSON line on stderr. */
+  /** Injectable sink for tests; defaults to one JSON line on stderr. */
   sink?: (line: string) => void
 }
 

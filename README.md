@@ -8,20 +8,21 @@
 
 ```ini
 # .npmrc
-@lyyzka:registry=https://npm.pkg.github.com
+@lingxi-org:registry=https://npm.pkg.github.com
 ```
 
 ```sh
-npm install @lyyzka/lingxios@4.0.0-slim.0
+npm install @lingxi-org/lingxios@4.0.0-slim.1
 ```
 
-三个公开入口：
+四个公开入口：
 
-- `@lyyzka/lingxios`：控制面、工具、资源路径、记忆和协作契约。
-- `@lyyzka/lingxios/worker`：Worker、模型和 Kernel 接口。
-- `@lyyzka/lingxios/ui`：可在浏览器使用的消息与事件归约器。
+- `@lingxi-org/lingxios`：控制面、工具、资源路径、记忆和协作契约。
+- `@lingxi-org/lingxios/worker`：Worker、模型和 Kernel 接口。
+- `@lingxi-org/lingxios/eval`：资源后置条件核验、独立答案评审和校准汇总。
+- `@lingxi-org/lingxios/ui`：可在浏览器使用的消息与事件归约器。
 
-发布包仅包含 JavaScript、类型声明、数据库安装/升级资源和 Python runner。测试、评测、历史报告和源码映射不再提供；`@lyyzka/lingxios/eval` 和 `lingxios-eval` 已移除。运行时仍执行授权、审批、隔离和结果核验。
+`4.0.0-slim.1` 以 `3.8.25` 为功能基准，保留其公开入口、CLI、协议兼容、升级资源、native-v3 工具选择、分阶段耗时诊断和链式写入回执核验。发布包仅包含 JavaScript、类型声明、数据库安装/升级资源和 Python runner；不附带测试目录、评测数据、历史报告或源码映射。运行时仍执行授权、审批、隔离和结果核验。
 
 默认安装只依赖流式 JSON 解析和 JSON Schema 验证库，不再引入 LangChain/LangGraph。PDF/DOCX 文本提取为可选能力，使用时安装对应解析器：
 
@@ -35,8 +36,8 @@ npm install mammoth@1.12.2    # DOCX
 ## 使用
 
 ```ts
-import { createLingxiOS } from '@lyyzka/lingxios'
-import { createWorker } from '@lyyzka/lingxios/worker'
+import { createLingxiOS } from '@lingxi-org/lingxios'
+import { createWorker } from '@lingxi-org/lingxios/worker'
 import { pool } from './database.js'
 import { context, delivery, tools } from './native-agent-bindings.js'
 
@@ -70,15 +71,17 @@ await control.stop()
 
 ## 数据库与升级
 
-`packageResources()` 返回 `schema`、`schema013`、`migration016` 和 `runner` 的绝对路径。全新安装由宿主显式执行 `schema`，当前 schema 为 14；schema 13 使用 `migration016` 升级。启动只检查 schema，不自动执行 DDL。禁止将全新安装 schema 应用于现有数据库。
+`packageResources()` 与 `3.8.25` 一致，返回 `schema`、`schema011`、`schema012`、`schema013`、`migration008`、`memoryReset009`、`migration010`–`migration016`、`rollback015` 和 `runner` 的绝对路径。全新安装由宿主显式执行 `schema`，当前 schema 为 14；schema 13 使用 `migration016` 升级。启动只检查 schema，不自动执行 DDL。禁止将全新安装 schema 应用于现有数据库。
 
-升级前停止入口、排空任务、停止旧 Worker、处理未知效果和待审批动作，并备份一致的数据库与产物。schema 14 无需数据库迁移。早于 schema 13 的安装先使用历史 3.8.16 包及宿主迁移流程到达 schema 14；其中 schema 8 的记忆重置会删除旧记忆，须检查历史步骤。当前包不提供 schema011/schema012、迁移 008–015 或 rollback015，宿主须更新旧资源引用。
+升级前停止入口、排空任务、停止旧 Worker、处理未知效果和待审批动作，并备份一致的数据库与产物。schema 14 无需数据库迁移。早于 schema 13 的安装按宿主既有迁移流程依次执行对应资源；其中 schema 8 的记忆重置会删除旧记忆，须检查历史步骤。保留的历史 schema 与 rollback 资源仅用于匹配其版本的升级或恢复流程，不代表可以对当前数据库任意降级。
 
-旧 `purpose-json-v1` 模型配置不再支持，新任务使用 v2/v3。既有任务应由匹配的旧部署完成或排空，再升级宿主和 Worker；不要重写行为绑定以通过兼容性检查。回滚需要匹配的旧应用及一致的数据库/产物备份，并先核对外部效果；恢复备份会丢失备份后的写入，无自动降级迁移。
+保留 `3.8.25` 的 `purpose-json-v1`、v2/v3 和 native-v1/v2/v3 模型配置兼容；PDF/DOCX 提取需安装对应可选解析器。既有任务应由匹配的旧部署完成或排空，再升级宿主和 Worker；不要重写行为绑定以通过兼容性检查。回滚需要匹配的旧应用及一致的数据库/产物备份，并先核对外部效果；恢复备份会丢失备份后的写入，无自动降级迁移。
 
-生产部署、沙箱与恢复约束见 [部署说明](https://github.com/LingXi-Org/LingxiOS/blob/main/deploy/README.md)。包附带 `lingxios-worker` 和 `lingxios-doctor` CLI；后者可通过 `--database-module path/to/pool.js` 使用导出 `pool` 的宿主模块。
+生产部署、沙箱与恢复约束见 [部署说明](https://github.com/LingXi-Org/LingxiOS/blob/main/deploy/README.md)。包附带 `lingxios-worker`、`lingxios-eval` 和 `lingxios-doctor` CLI；eval 使用 `--observations case.json` 核验记录的资源观察，doctor 可通过 `--database-module path/to/pool.js` 使用导出 `pool` 的宿主模块。
 
 ## 构建与发布
+
+后续版本统一发布为 GitHub Packages 的 `@lingxi-org/lingxios`；发布工作流会校验包名和 registry，不再发布到个人 scope。当前 4.x 预发布使用 `next` 标签，稳定版 `latest` 保持 `3.8.25`。
 
 ```sh
 npm ci --ignore-scripts

@@ -6,6 +6,7 @@ import { snapshotPublicTextSources, type PublicTextSources } from '../protocol/a
 import { validateToolBatch, compileToolSchemas } from './tool-batch.js'
 import { snapshotOutcomeDeclaration, type OutcomeDeclaration } from '../model/outcome-declaration.js'
 import { PublicTextAttemptWriter, isPublicTextPublicationFailure, isPublicTextSafetyFailure } from './public-text.js'
+import type { PublicTextIdentity } from '../protocol/public-text.js'
 import { isMemoryDeletionReceipt } from '../memory/confirmation.js'
 import { waitContractViolation } from '../tools/contracts.js'
 import { closePendingCallsForWait } from './wait.js'
@@ -124,7 +125,7 @@ export interface AgentRuntimeOptions {
 }
 
 export type { ModelCallObservation, ModelCallObserver, RootModelBudgetOptions } from '../model/execution.js'
-import { executionModel, DEFAULT_MODEL_BUDGET, type RootModelBudgetOptions } from '../model/execution.js'
+import { executionModel, DEFAULT_MODEL_BUDGET, type ModelCallObserver, type RootModelBudgetOptions } from '../model/execution.js'
 
 export interface ModelTracePolicy {
   recordPayloads?: boolean
@@ -486,7 +487,7 @@ export class AgentRuntime {
       if (!priorBinding && (context.executionCheckpoint || context.executionSteps?.some(step => step.kind === 'runtime.checkpoint'))) {
         throw new Error('unbound execution must resume with the original pinned worker configuration')
       }
-      const binding = { runtime: releaseVersions.runtime, ...(this.model.publicTextProtocol==='purpose-json-v3'?{publicTextSelection:'public-v3-internal-v2-v1'}:{}), semanticReview: this.semanticReview,
+      const binding = { runtime: releaseVersions.runtime, ...(this.model.publicTextProtocol==='purpose-json-v3'?{publicTextSelection:'public-v3-failed-candidate-v2',answerCorrectionPolicy:'preserve-sealed-binding-errors-v1'}:{}), semanticReview: this.semanticReview,
         ...(semanticReviewPolicy ? { semanticReviewPolicy } : {}), harness: context.harness?.hash ?? null, prompt: this.promptContractVersion,
         model: deepModel.modelId ?? null, provider: deepModel.configurationFingerprint ?? null,
         ...(deepModel.publicAnswerTool?{publicAnswerTool:deepModel.publicAnswerTool}:{}),
@@ -518,7 +519,7 @@ export class AgentRuntime {
     let finalPublicTextPartId: string | undefined
     let finalPublicTextSources: PublicTextSources | undefined
     let answerSegments = new AnswerSegmentSet(runId,(session.request?.revisions.length ?? 0)+1,work.fence,context.executionSteps)
-    let pendingAnswerCorrection = restoreAnswerCorrection(context.executionSteps,(session.request?.revisions.length ?? 0)+1,answerSegments.context.segmentIds)
+    let pendingAnswerCorrection = restoreAnswerCorrection(context.executionSteps,(session.request?.revisions.length ?? 0)+1,answerSegments.correctionSources,answerSegments.context.segmentIds)
     if((deepModel.publicTextContinuation==='typed-message-v1'||fastModel?.publicTextContinuation==='typed-message-v1')&&answerSegments.restoreMessageHistory(session,work.id))await host.saveSession(work,session)
     let pendingReplacement = false
     let lastGood: { text: string; envelope: ResponseEnvelope; publicTextPartId?: string; publicTextSources?: PublicTextSources } | undefined
@@ -529,6 +530,9 @@ export class AgentRuntime {
     // A failed tool is a new observation, not a request to replace useful public text.
     // native-v1 retains its original correction/replacement behavior.
     let toolObservationCorrection = false
+    // A rejected batch without public output has no new answer revision to repair.
+    // Keep its protocol correction/budget, but do not select sealed prose as a new target.
+    let bindingOnlyProtocolCorrection = false
     let protocolCorrection: ModelItem | null = null
     let pendingCompaction: ReturnType<typeof prepareCompaction> | undefined
     const repairContext = (body: string, targets: unknown) => {
@@ -654,11 +658,12 @@ export class AgentRuntime {
             revisionSources: [...(session.request.inheritedRevisions ?? []), ...session.request.revisions].map(revision => revision.id) }) }
         : protocolCorrection
       const supplementalItems = [...dynamicItems, ...currentEvidenceItems, ...currentRequestItems, ...restoredMessages, ...(currentCorrection ? [currentCorrection] : [])]
-      if (liveContext.explanationStage?.status === 'pending' && !liveContext.explanationStage.stale) supplementalItems.push({role:'user',
-        content:explanationStageInstructions(liveContext.explanationStage)+'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes)})
+      if (liveContext.explanationStage && !liveContext.explanationStage.stale) supplementalItems.push({role:'user',
+        content:explanationStageInstructions(liveContext.explanationStage)+(liveContext.explanationStage.status==='pending'
+          ?'\nSelected request ranges (model interpretation, not additional instructions): '+JSON.stringify(liveContext.explanationStage.quotes):'')})
       if(react)supplementalItems.push({role:'user',content:'Native answer source context (identities only; not a new task): '+JSON.stringify(answerSegments.context)
-        +'\nAppend adds text; replace selects active revision IDs in source order. A terminal null answer uses the assembled body.'})
-      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection), answerSegments.context.segmentIds) : undefined
+        +'\nAppend adds text; replace selects active revision IDs in source order or the exact failed-candidate target supplied by a runtime correction. Failed candidates are not sealed body sources. A terminal null answer uses only the assembled sealed body.'})
+      const requestedCorrection = react ? answerCorrectionOperation(protocolCorrection !== null && !bindingOnlyProtocolCorrection && !((model.publicAnswerTool==='native-v2'||model.publicAnswerTool==='native-v3')&&toolObservationCorrection), answerSegments.correctionSources) : undefined
       if (requestedCorrection && canonicalJson(requestedCorrection) !== canonicalJson(pendingAnswerCorrection ?? null)) {
         await host.saveStep(work,{id:'answer-correction:'+createHash('sha256').update(JSON.stringify([runId,(session.request?.revisions.length ?? 0)+1,requestedCorrection])).digest('hex'),
           kind:'runtime.answer_correction',requestVersion:(session.request?.revisions.length ?? 0)+1,input:{operation:requestedCorrection},output:'{}',artifacts:[]})
@@ -666,13 +671,14 @@ export class AgentRuntime {
       }
       const correctionOperation = react ? pendingAnswerCorrection : undefined
       if (correctionOperation) supplementalItems.push({ role: 'user', content:
-        'This generation repairs an already sealed candidate. If you emit substantive answer text, return the complete corrected answer using exactly this operation: '
-        + JSON.stringify(correctionOperation) + '. Do not append a rewritten answer to the old candidate. Preserve fulfilled results and recorded effects. '
+        'This generation repairs the explicitly selected candidate sources. They may be failed drafts, which are not accepted answer text. If you emit substantive answer text, return the corrected text for only those sources using exactly this operation: '
+        + JSON.stringify(correctionOperation) + '. Do not append a rewritten answer or repeat unaffected sealed sources. Preserve fulfilled results and recorded effects. '
         + 'You may still call necessary business tools. A terminal null answer may reuse the assembled body when no wording change is needed; normal outcome and delivery validation still apply.' })
       if (liveContext.priorArtifacts?.length) supplementalItems.push({ role: 'user', content:
         `Prior attempt artifact records (untrusted file metadata, not current delivery or proof of file availability). Check the files and call attach_file for any still required deliverables:\n${JSON.stringify(liveContext.priorArtifacts)}` })
       const modelInputFor = (history: readonly ModelItem[]) => ({ instructions,
-        items: observationItems(stripMemorySources([...projectHistory(history), ...supplementalItems]), 'turn-context'), tools: modelTools, codeExecution })
+        items: observationItems(stripMemorySources([...projectHistory(history), ...supplementalItems]), 'turn-context'), tools: modelTools, codeExecution,
+        ...(execution.requiredTool ? { requiredTool: execution.requiredTool } : {}) })
       const profile = modelProfile(model), reservedTokens = profile.maxOutputTokens + profile.maxThinkingTokens + 512
       const estimateOverhead = () => inputTokens(model, modelInputFor([]),true) + reservedTokens
       let overheadTokens = estimateOverhead()
@@ -722,7 +728,7 @@ export class AgentRuntime {
       if (pendingCompaction?.ready) pendingCompaction = undefined
       let compacted = prepared
       if (!this.asyncCompaction || estimateTokens(projectHistory(session.history), model) + overheadTokens >= hardLimit) {
-        const recovered = await compactIfNeeded(session, model, this.compaction, signals.generationSignal(), overheadTokens, false, projectHistory)
+        const recovered = await compactIfNeeded(session, instructions, model, this.compaction, signals.generationSignal(), overheadTokens, false, projectHistory)
           .catch((error): CompactionOutcome => {
             if (!signals.hasSteer() && (!memoryForModel || !(error instanceof HardLimitExceededError))) throw error
             return { compacted: false }
@@ -780,10 +786,11 @@ export class AgentRuntime {
       const preview = !publishes && liveContext.previewAllowed && model.previewFormat ? this.previewFor(work, signals.lifecycle.signal) : undefined
       let providerBegan = performance.now()
       let firstBody = false
-      const generationOperation = protocolCorrection && !(model.publicAnswerTool==='native-v2'&&toolObservationCorrection) || correctionOperation ? 'correction' : 'generation'
+      const generationOperation = protocolCorrection && !((model.publicAnswerTool==='native-v2'||model.publicAnswerTool==='native-v3')&&toolObservationCorrection) || correctionOperation ? 'correction' : 'generation'
       try {
         protocolCorrection = null
         toolObservationCorrection = false
+        bindingOnlyProtocolCorrection = false
         const generationSignal = signals.generationSignal()
         turn = await model.run({
           operation: generationOperation,
@@ -791,6 +798,7 @@ export class AgentRuntime {
           ...(session.promptContext.manifest ? { prompt: session.promptContext.manifest } : {}),
           items: modelItems,
           tools: modelTools,
+          ...(execution.requiredTool ? { requiredTool: execution.requiredTool } : {}),
           codeExecution,
           ...(react ? {answerContext:answerSegments.context} : {}),
           signal: generationSignal,
@@ -803,8 +811,17 @@ export class AgentRuntime {
                 const requestVersion=(session.request?.revisions.length ?? 0)+1
                 const partId='public:'+createHash('sha256').update(JSON.stringify([runId,requestVersion,work.fence,callId,0])).digest('hex')
                 this.publications.set(runId,new PublicTextAttemptWriter({version:1,requestVersion,fence:work.fence,attemptId:callId,partId,partIndex:0,...react?{messageId:answerSegments.messageId}:{}},
-                  event=>this.event(work,runId,event),generationSignal,
-                  this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined,model.publicTextProtocol))
+                  async event=>{
+                    const result=await this.event(work,runId,event)
+                    // The host atomically stores this metadata with the ended
+                    // event. Mirror only acknowledged failed answer candidates;
+                    // failed writes and commentary cannot become replace targets.
+                    if(event.kind==='public.text.ended'&&event.data?.['version']===3&&event.data['purpose']==='answer'&&event.data['reason']==='failed')
+                      answerSegments.fail(event.data as unknown as PublicTextIdentity)
+                    return result
+                  },generationSignal,
+                  this.policy.publicTextSafety ? input=>this.policy.publicTextSafety!(input,liveContext) : undefined,model.publicTextProtocol,
+                  timing=>this.event(work,runId,{kind:'output.publication.finished',stage:timing.failure?'failed':'completed',visibility:'internal',data:{...timing}})))
               }
               // Reserve the reply first; optional compaction must not consume its budget.
               if (this.asyncCompaction && !pendingCompaction && session.history.length > 0
@@ -853,7 +870,7 @@ export class AgentRuntime {
           },
         })
       } catch (error) {
-        await this.publications.get(runId)?.end(signals.hasSteer() ? 'superseded' : signals.lifecycle.signal.aborted ? 'cancelled' : 'failed').catch(()=>{})
+        await this.publications.get(runId)?.end(signals.hasSteer() ? 'superseded' : signals.lifecycle.signal.aborted ? 'cancelled' : 'failed')
         preview?.discard()
         if (signals.hasSteer() && !signals.lifecycle.signal.aborted) continue
         if (error instanceof ModelBudgetExceededError && pendingCompaction) {
@@ -863,6 +880,7 @@ export class AgentRuntime {
         await this.event(work, runId, {
           kind: 'model.failed', stage: 'failed', visibility: 'internal',
           data: { hop: hop + 1, model: model.modelId ?? 'unknown', error: publicFailure(error),
+            ...(error instanceof ModelBudgetExceededError ? { budgetLimit: error.diagnostics } : {}),
             ...(error instanceof ModelDriverError ? { modelDiagnostics: publicModelDiagnostics(error.diagnostics) } : {}),
           },
         })
@@ -874,6 +892,10 @@ export class AgentRuntime {
           const correction=modelProtocolCorrection(error.diagnostics,codeExecution,model.publicTextProtocol)
           if(budget.consume(correction.category,error.diagnostics.protocolCode ?? 'model protocol violation')){
             protocolCorrection={role:'user',content:correction.content}
+            const sources=answerSegments.correctionSources,sealed=answerSegments.context.segmentIds
+            bindingOnlyProtocolCorrection=(model.publicAnswerTool==='native-v2'||model.publicAnswerTool==='native-v3')
+              &&error.diagnostics.protocolCode==='public_answer_first_required'
+              &&sources.length===sealed.length&&sources.every((source,index)=>source===sealed[index])
             continue
           }
         }
@@ -895,7 +917,7 @@ export class AgentRuntime {
       })
       for (const [field, name] of [['providerDurationMs', 'agentos_model_provider_seconds'], ['providerFirstContentMs', 'agentos_model_first_content_seconds']] as const) {
         const value = turn.diagnostics?.[field]
-        if (typeof value === 'number') this.metrics?.histogram(name, 'Provider latency; content may include protocol fields', LATENCY_BUCKETS).observe(value / 1000)
+        if (typeof value === 'number') this.metrics?.histogram(name, 'Observed model invocation latency including local callback waits', LATENCY_BUCKETS).observe(value / 1000)
       }
       await signals.refresh()
       if (signals.leaseLost()) throw signals.leaseLost()!
@@ -914,13 +936,17 @@ export class AgentRuntime {
       const calls = turn.output.filter(
         (item): item is Extract<ModelItem, { type: 'function_call' }> => 'type' in item && item.type === 'function_call',
       )
+      if (execution.requiredTool && (calls.length !== 1 || calls[0]?.name !== execution.requiredTool)) {
+        await this.publications.get(runId)?.end('failed')
+        throw new ModelDriverError('required tool selection changed', { kind: 'protocol', category: 'protocol', protocolCode: 'tool_identity_invalid', finishReasons: [] })
+      }
       try {
         if (!react) {
           await this.publications.get(runId)?.finish(turn.text)
           if(calls.length)await this.publications.get(runId)?.end('tool')
         }
       } catch(error) {
-        await this.publications.get(runId)?.end('failed').catch(()=>{})
+        await this.publications.get(runId)?.end('failed')
         if(isPublicTextSafetyFailure(error)&&budget.consume('response_protocol','public text safety rejected')){
           protocolCorrection={role:'user',content:'The public response was withheld by the trusted streaming safety policy. Return safe user-facing content without private reasoning or internal protocol.'}
           continue
@@ -943,13 +969,13 @@ export class AgentRuntime {
       if (model.publicTextProtocol === 'purpose-json-v2' || react || turn.outcomeDeclaration !== undefined || turn.publicTextPhase!==undefined) {
         try {
           if ((!react && model.publicTextProtocol !== 'purpose-json-v2') || turn.finalCandidate !== undefined) throw new Error('outcome declaration requires an explicit outcome protocol')
-          if(turn.publicTextPhase!==undefined && (!intermediate || !react || model.publicTextContinuation!=='typed-message-v1' || calls.length && model.publicAnswerTool!=='native-v2' || !turn.text.trim() || !turn.answerOperation || turn.answerIsNull===true || turn.outcomeDeclaration!==undefined))throw new Error('invalid intermediate public message')
+          if(turn.publicTextPhase!==undefined && (!intermediate || !react || model.publicTextContinuation!=='typed-message-v1' || calls.length && !['native-v2','native-v3'].includes(model.publicAnswerTool??'') || !turn.text.trim() || !turn.answerOperation || turn.answerIsNull===true || turn.outcomeDeclaration!==undefined))throw new Error('invalid intermediate public message')
           if (calls.length) { if (turn.outcomeDeclaration !== undefined) throw new Error('tool turns cannot declare a terminal outcome') }
           else if(!intermediate) declaration = snapshotOutcomeDeclaration(turn.outcomeDeclaration)
         } catch {
           // Custom drivers have the same fail-closed boundary as the wire driver.
           // No returned tool call executes while its declaration is invalid.
-          await this.publications.get(runId)?.end('failed').catch(()=>{})
+          await this.publications.get(runId)?.end('failed')
           if (!react && !calls.length) await rememberCandidate(turn.text, liveContext, ['Final outcome declaration is invalid'])
           const correction = modelProtocolCorrection({kind:'protocol',finishReasons:[],protocolCode:'public_text_invalid'},codeExecution,model.publicTextProtocol)
           if (!budget.consume('response_protocol','invalid outcome declaration')) {
@@ -966,14 +992,14 @@ export class AgentRuntime {
           // Validate the entire batch before sealing any candidate or dispatching any effect.
           validateToolBatch(calls,modelTools,codeExecution,model.profile?.parallelTools)
           if(model.publicAnswerTool==='native-v2'&&!turn.publicAnswerCall)throw new Error('mixed batch requires public output binding')
-          if(model.publicAnswerTool==='native-v1'&&!turn.publicAnswerCall
+          if((model.publicAnswerTool==='native-v1'||model.publicAnswerTool==='native-v3')&&!turn.publicAnswerCall
             &&(!calls.length||turn.text!==''||turn.answerOperation!==undefined||turn.answerIsNull!==undefined
               ||turn.publicTextPhase!==undefined||turn.outcomeDeclaration!==undefined
               ||turn.output.some(item=>'role' in item||item.type!=='function_call')))throw new Error('public output requires its native call binding')
           if(turn.publicAnswerCall){
             const decoded=decodePublicAnswerCall(turn.publicAnswerCall)
             if(!model.publicAnswerTool||(model.publicAnswerTool==='native-v1'&&(calls.length||turn.output.length))
-              ||model.publicAnswerTool==='native-v2'&&(turn.output.length!==calls.length||calls.length>0&&!intermediate||calls.some(call=>call.callId===turn.publicAnswerCall!.callId))
+              ||(model.publicAnswerTool==='native-v2'||model.publicAnswerTool==='native-v3')&&(turn.output.length!==calls.length||calls.length>0&&!intermediate||calls.some(call=>call.callId===turn.publicAnswerCall!.callId))
               || decoded.text!==(turn.answerIsNull?null:turn.text)
               || canonicalJson(decoded.operation)!==canonicalJson(turn.answerOperation)
               || canonicalJson(decoded.outcome)!==canonicalJson(intermediate?null:turn.outcomeDeclaration))throw new Error('invalid public output binding')
@@ -989,7 +1015,7 @@ export class AgentRuntime {
             await publication.end(calls.length ? 'tool' : 'completed')
             const record=await publication.seal(turn.text,turn.publicAnswerCall
               ?{version:2,phase:intermediate?'intermediate':'terminal',memorySources:derivedSources,publicAnswerCall:turn.publicAnswerCall,
-                ...(intermediate&&turn.answerOperation.kind==='append'&&liveContext.explanationStage?.status==='pending'&&!liveContext.explanationStage.stale
+                ...(intermediate&&liveContext.explanationStage?.status==='pending'&&!liveContext.explanationStage.stale
                   ?{explanationStageId:liveContext.explanationStage.id}:{})}
               :intermediate?{version:1,phase:'intermediate',memorySources:derivedSources}:undefined)
             answerSegments.seal(record)
@@ -1007,7 +1033,7 @@ export class AgentRuntime {
           }
         } catch (error) {
           if (error instanceof LeaseLostError || error instanceof RunCancelledError || signals.lifecycle.signal.aborted || isPublicTextPublicationFailure(error)) throw error
-          await this.publications.get(runId)?.end('failed').catch(()=>{})
+          await this.publications.get(runId)?.end('failed')
           if (!budget.consume('response_protocol','invalid answer source or tool batch')) {
             terminalError=new AgentOSError('response_protocol_exhausted','Answer source or tool protocol correction exhausted')
             break
@@ -1510,7 +1536,7 @@ export class AgentRuntime {
       if (failures.length) {
         const failure = JSON.stringify(failures.map(receipt => [receipt.action, receipt.result.code ?? receipt.result.executionState ?? 'tool_error']))
         if (!budget.consume('kernel_error', failure)) throw new AgentOSError('kernel_error_exhausted', 'Tool execution failed after bounded correction')
-        correction = { role: 'user', content: 'Inspect the recorded failures before proceeding. Reconcile unknown effects; do not repeat them under a new identity.' }
+        correction = { role: 'user', content: 'Inspect the recorded failures before proceeding. For invalid_input with executionState=no_effect, correct the arguments against the exposed schema and recorded safe cause code, then submit a new call. Request references must select exact current human text, never rewritten or whitespace-normalized quotations. Reconcile unknown effects; do not repeat them under a new identity.' }
       } else {
         const facts = progressFacts({ artifacts: execution.artifacts, observations: receipts.map(receipt => ({ action: receipt.action, result: receipt.result })) })
         if (JSON.stringify(facts) !== '{}') budget.observe(facts)

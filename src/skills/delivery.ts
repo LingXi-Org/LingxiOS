@@ -28,9 +28,9 @@ async function requireExplanationCapability(context: ActionContext): Promise<voi
   const rows = (await context.database.query(`SELECT input FROM lingxios.agent_steps
     WHERE work_id=$1 AND kind='runtime.binding' AND completed_at IS NOT NULL LIMIT 2`, [context.work.id])).rows
   const binding = rows[0]?.['input'] as Record<string,unknown> | undefined
-  if (rows.length !== 1 || !binding || !['native-v1','native-v2'].includes(String(binding?.['publicAnswerTool']))
+  if (rows.length !== 1 || !binding || !['native-v1','native-v2','native-v3'].includes(String(binding?.['publicAnswerTool']))
     || binding['publicTextContinuation'] !== 'typed-message-v1' || binding['publicTextProtocol'] !== 'purpose-json-v3'
-    || binding['fastProvider'] !== undefined && (!['native-v1','native-v2'].includes(String(binding['fastPublicAnswerTool']))
+    || binding['fastProvider'] !== undefined && (!['native-v1','native-v2','native-v3'].includes(String(binding['fastPublicAnswerTool']))
       || binding['fastPublicTextContinuation'] !== 'typed-message-v1' || binding['fastPublicTextProtocol'] !== 'purpose-json-v3')) {
     throw new Error('explanation workflow requires the pinned native public answer capability')
   }
@@ -55,7 +55,7 @@ export function skillActivationTool(skills: readonly SkillDefinition[], allowed:
   }
   return {
     name: 'skills__activate', action: 'skills.activate', effect: 'transaction', approval: false,
-    description: 'Begin authoring under the indexed skill delivery contract. For a supported explanation-before-authoring workflow with directly supplied facts, explanation selects exact current human request quotes for the explanation, authoring, facts and optional language requirement. Reference-only reading uses skills.load. Activation records the delivery obligation; the product verifier checks the delivered result.',
+    description: 'Begin authoring under the indexed skill delivery contract. explanation is optional: use it only for an explicitly requested explanation-before-authoring workflow with directly supplied facts; omit it for authoring alone or evidence that must first be retrieved. Select exact current-human request text, preserving whitespace. Prefer {sourceRef} for a whole request source (up to 2000 characters), or {sourceRef,start,end} with exact UTF-16 offsets to select a nonempty continuous range or disambiguate repeats. sourceRef is the source identifier on the existing trust=request context item. Unique exact quote strings remain supported. Never paraphrase, join fragments, or invent facts to fill the fields. Reference-only reading uses skills.load. Activation records the delivery obligation; the product verifier checks the delivered result.',
     parameters: { type: 'object', properties: { name: { type: 'string' }, version: { type: 'string' }, hash: { type: 'string' },
       ...(entries.some(entry => entry.skill.workflow?.explanationBeforeAuthoring) ? { explanation: explanationDeclarationSchema } : {}) }, required: ['name','version','hash'], additionalProperties: false },
     semanticVersion: textSha256(canonicalJson(entries.map(e => e.index))),

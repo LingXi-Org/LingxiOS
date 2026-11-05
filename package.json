@@ -1,21 +1,24 @@
 {
-  "name": "@lyyzka/lingxios",
-  "version": "4.0.0-slim.0",
+  "name": "@lingxi-org/lingxios",
+  "version": "4.0.0-slim.1",
   "description": "Durable agent execution for PostgreSQL with fenced workers, native tools, verified outcomes, and sandboxed Python.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lyyzka/LingxiOS.git"
+    "url": "git+https://github.com/LingXi-Org/LingxiOS.git"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://npm.pkg.github.com",
+    "tag": "next"
   },
   "files": [
     "dist/src",
     "db/schema.sql",
+    "db/schema-011.sql",
+    "db/schema-012.sql",
     "db/schema-013.sql",
-    "db/migrations/016-skill-delivery.sql",
+    "db/migrations",
     "kernel/runner.py"
   ],
   "engines": {
@@ -32,6 +35,10 @@
       "types": "./dist/src/worker/index.d.ts",
       "import": "./dist/src/worker/index.js"
     },
+    "./eval": {
+      "types": "./dist/src/eval/index.d.ts",
+      "import": "./dist/src/eval/index.js"
+    },
     "./ui": {
       "types": "./dist/src/ui/index.d.ts",
       "import": "./dist/src/ui/index.js"
@@ -39,6 +46,7 @@
   },
   "bin": {
     "lingxios-worker": "dist/src/worker/main.js",
+    "lingxios-eval": "dist/src/cli/eval.js",
     "lingxios-doctor": "dist/src/cli/doctor.js"
   },
   "scripts": {

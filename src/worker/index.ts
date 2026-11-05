@@ -29,3 +29,5 @@ export async function startWorker(env: NodeJS.ProcessEnv = process.env,
   try { await worker.start(); return worker }
   catch (error) { await worker.stop(); throw error }
 }
+
+export type { ModelStageTimings, ModelTimingUpdate } from '../model/timing.js'

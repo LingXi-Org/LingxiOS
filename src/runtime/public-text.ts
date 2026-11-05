@@ -1,3 +1,4 @@
+import { PublicationTiming, type PublicTextPublicationTiming } from './publication-timing.js'
 import type { PublicTextProtocol } from '../model/outcome-declaration.js'
 import type { PublicTextEndReason, PublicTextIdentity, PublicTextSafetyInput, PublicTextSafetyDecision } from '../protocol/public-text.js'
 import type { RunEvent } from '../protocol/types.js'
@@ -8,7 +9,7 @@ import { snapshotPublicTextOperation, type PublicTextOperation } from '../protoc
 /** Persistence failure never retries the provider or exposes an uncommitted buffer. */
 export class PublicTextPublicationError extends ModelDriverError {
   constructor(readonly stage: PublicationFailure['stage']='unknown', readonly rejection: PublicationFailure['code']='unknown', cause?: unknown){
-    super('public text could not be persisted',{kind:'provider',category:'unknown',finishReasons:[]},cause===undefined?undefined:{cause})
+    super('public text could not be persisted',{kind:'output',category:'unknown',finishReasons:[]},cause===undefined?undefined:{cause})
   }
 }
 export interface PublicationFailure {
@@ -59,6 +60,8 @@ export class PublicTextWriter {
   private assessedLength=0
   private assessments=0
   private chunks=0
+  private publishedLength=0
+  private readonly publishedHash=createHash('sha256')
   private closed=false
   private suspended=false
   private finished=false
@@ -68,7 +71,8 @@ export class PublicTextWriter {
   private heldTimer:ReturnType<typeof setTimeout>|undefined
   constructor(private readonly identity:PublicTextIdentity,
     private readonly emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>,private readonly signal:AbortSignal,
-    private readonly assess?:((input:Readonly<PublicTextSafetyInput>)=>PublicTextSafetyDecision)|undefined){}
+    private readonly assess?:((input:Readonly<PublicTextSafetyInput>)=>PublicTextSafetyDecision)|undefined,
+    private readonly sealable=false){}
 
   /** Only successfully appended deltas can be associated with a final candidate. */
   get partId():string|undefined{return this.chunks?this.identity.partId:undefined}
@@ -145,8 +149,20 @@ export class PublicTextWriter {
     if(this.finished)return
     this.clearHeldTimer()
     if(this.timer){clearTimeout(this.timer);this.timer=undefined}
+    // A coalescing assessment may already be awaiting its durable append.
+    // Hash/length must describe that ACK before deriving the final suffix.
+    await this.tail
+    this.signal.throwIfAborted()
     const through=this.approval(finalText,true)
-    if(!this.suspended){
+    if(this.suspended&&this.sealable){
+      // EOF is the existing validated model result, not another growing buffer.
+      // Resume only an exact acknowledged prefix after final safety approval.
+      if(Buffer.byteLength(finalText)>MAX_RECEIVED_BYTES||finalText.length<this.publishedLength
+        ||createHash('sha256').update(finalText.slice(0,this.publishedLength)).digest('hex')!==this.publishedHash.copy().digest('hex'))
+        throw new PublicTextSafetyError('invalid_decision')
+      await this.publish(finalText.slice(this.publishedLength))
+      this.approvedThrough=through
+    }else if(!this.suspended){
       if(!finalText.startsWith(this.received))throw new PublicTextSafetyError('invalid_decision')
       // EOF safety checks the whole result, but publication only archives
       // bytes actually received through onTextDelta. A non-streaming driver
@@ -166,7 +182,9 @@ export class PublicTextWriter {
     if(this.suspended||this.closed)return
     this.suspended=true;this.received='';this.text='';this.clearHeldTimer()
     if(this.timer)clearTimeout(this.timer);this.timer=undefined
-    await this.close('interrupted')
+    // A v3 answer still needs its final safety decision and durable seal.
+    // Commentary/legacy streams retain their bounded interrupted preview.
+    if(!this.sealable)await this.close('interrupted')
   }
   private flush():Promise<void>{
     if(this.timer){clearTimeout(this.timer);this.timer=undefined}
@@ -179,6 +197,7 @@ export class PublicTextWriter {
         if(!chunk)return
         this.signal.throwIfAborted()
         await this.emit({kind:'public.text.delta',stage:'delta',visibility:'user',data:{...this.identity,chunkIndex:this.chunks,text:chunk}})
+        if(this.sealable){this.publishedLength+=chunk.length;this.publishedHash.update(chunk)}
         this.chunks++;chunk='';bytes=0
       }
       for(const point of pending){const size=Buffer.byteLength(point);if(bytes+size>4096)await append();chunk+=point;bytes+=size}
@@ -192,12 +211,17 @@ export class PublicTextWriter {
     if(this.closed)return
     this.closed=true
     await this.tail
-    if(this.chunks&&!this.signal.aborted)await this.emit({kind:'public.text.ended',stage:'completed',visibility:'user',data:{...this.identity,chunkCount:this.chunks,reason}})
+    if(this.chunks&&!this.signal.aborted){
+      try{await this.emit({kind:'public.text.ended',stage:'completed',visibility:'user',data:{...this.identity,chunkCount:this.chunks,reason}})}
+      catch(error){this.failure=new PublicTextPublicationError('unknown','persistence_rejected',error);throw this.failure}
+    }
   }
   async end(reason:PublicTextEndReason):Promise<void>{
     this.clearHeldTimer()
     if(this.timer){clearTimeout(this.timer);this.timer=undefined}
     if(this.signal.aborted){this.text='';this.received='';await this.tail.catch(()=>{});this.closed=true;return}
+    if(this.failure instanceof PublicTextPublicationError)throw this.failure
+
     if(this.closed)return
     if(reason==='completed'||reason==='tool')await this.finish()
     else{this.text='';this.received=''}
@@ -206,16 +230,22 @@ export class PublicTextWriter {
   dispose(){this.closed=true;this.text='';this.received='';this.clearHeldTimer();if(this.timer)clearTimeout(this.timer);this.timer=undefined}
 }
 
-/** One attempt, two ordered public purposes. Legacy drivers keep one unknown-purpose part. */
+/** One attempt, separately identified public purposes. Legacy drivers keep one unknown-purpose part. */
 export class PublicTextAttemptWriter {
   private readonly writers=new Map<'legacy'|'commentary'|'answer',PublicTextWriter>()
   private answerStarted=false
   private operation:PublicTextOperation|undefined
   private sealed=false
+  private readonly emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>
+  private readonly timing:PublicationTiming
   constructor(private readonly identity:PublicTextIdentity,
-    private readonly emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>,private readonly signal:AbortSignal,
+    emit:(event:Omit<RunEvent,'runId'|'seq'>)=>Promise<unknown>,private readonly signal:AbortSignal,
     private readonly assess:((input:Readonly<PublicTextSafetyInput>)=>PublicTextSafetyDecision)|undefined,
-    private readonly protocol:PublicTextProtocol|undefined){}
+    private readonly protocol:PublicTextProtocol|undefined,
+    onTiming?:((timing:PublicTextPublicationTiming)=>Promise<unknown>)|undefined){
+      this.timing=new PublicationTiming(identity,signal,onTiming)
+      this.emit=event=>this.timing.measure(event,()=>emit(event))
+    }
   get partId(){return this.writers.get(this.protocol?'answer':'legacy')?.partId}
   get answerRevisionId(){return this.identity.partId+':answer'}
   get segmentIdentity():PublicTextIdentity|undefined {
@@ -234,7 +264,9 @@ export class PublicTextAttemptWriter {
   async push(text:string,metadata?:{purpose:import('../protocol/public-text.js').PublicTextPurpose}){
     const key=this.protocol?metadata?.purpose:'legacy'
     if(!key||!['legacy','commentary','answer'].includes(key)||!this.protocol&&metadata
-      ||key==='commentary'&&this.answerStarted)throw new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',finishReasons:[]})
+      // Native v3 JSON object members are unordered. Its parser validates field
+      // identity/types; commentary may first arrive after streamed answer text.
+      ||key==='commentary'&&this.answerStarted&&this.protocol!=='purpose-json-v3')throw new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',protocolCode:'public_text_invalid',finishReasons:[]})
     if(this.protocol==='purpose-json-v3'&&key==='answer'&&!this.operation)throw new PublicTextPublicationError('push','missing_operation')
     if(key==='answer'&&!this.answerStarted){
       this.answerStarted=true
@@ -244,7 +276,7 @@ export class PublicTextAttemptWriter {
     if(!writer){
       const {messageId:_message,segmentId:_segment,operation:_operation,supersedes:_supersedes,...legacy}=this.identity
       writer=new PublicTextWriter(key==='legacy'?this.identity:key==='answer'&&this.protocol==='purpose-json-v3'?this.segmentIdentity!:
-        {...legacy,version:2,purpose:key,partIndex:key==='answer'?1:0,partId:this.identity.partId+':'+key},this.emit,this.signal,this.assess)
+        {...legacy,version:2,purpose:key,partIndex:key==='answer'?1:0,partId:this.identity.partId+':'+key},this.emit,this.signal,this.assess,key==='answer'&&this.protocol==='purpose-json-v3')
       this.writers.set(key,writer)
     }
     await writer.push(text)
@@ -253,7 +285,9 @@ export class PublicTextAttemptWriter {
     await this.writers.get('commentary')?.finish()
     await this.writers.get(this.protocol?'answer':'legacy')?.finish(text)
   }
-  async end(reason:PublicTextEndReason){for(const writer of this.writers.values())await writer.end(reason)}
+  async end(reason:PublicTextEndReason){
+    try {for(const writer of this.writers.values())await writer.end(reason)}finally{await this.timing.flush()}
+  }
   async seal(text:string,publicTextRecovery?:import('../protocol/public-text-recovery.js').PublicTextRecovery){
     const writer=this.writers.get('answer'),identity=this.segmentIdentity
     if(!identity||!writer?.partId||this.sealed)throw new PublicTextPublicationError('seal','source_state')
@@ -266,7 +300,7 @@ export class PublicTextAttemptWriter {
       // A storage/authorization rejection is not a model-format correction.
       // Never continue into a business tool after failing to persist its output.
       throw new PublicTextPublicationError('seal','persistence_rejected',error)
-    }
+    } finally { await this.timing.flush() }
     this.sealed=true
     return {identity,text,bodyHash,...(publicTextRecovery?{recovery:publicTextRecovery}:{})}
   }

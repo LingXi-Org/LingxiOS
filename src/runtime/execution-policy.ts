@@ -25,6 +25,7 @@ export interface ExecutionSnapshot {
   grants: CapabilityGrant[]
   tools: ToolDefinition[]
   hash: string
+  requiredTool?: string
 }
 
 /** Evaluate policy once per hop; never let a worker policy widen the control-plane catalog. */
@@ -42,6 +43,8 @@ export function executionSnapshot(context: TurnContext, policy: RuntimePolicy): 
   const configured = context.work.meta?.['codeExecution']
   const proposedCode = policy.codeExecutionMode?.(context) ?? 'enabled'
   const codeExecution = context.work.meta?.['executionClass'] !== 'conversation' && mode === 'execute' && (configured === undefined || configured === 'enabled') && proposedCode === 'enabled' ? 'enabled' : 'disabled'
-  const value = { mode, codeExecution, grants, tools } as const
+  const requiredTool = policy.requiredTool?.(context)
+  if (requiredTool !== undefined && !tools.some(tool => tool.name === requiredTool)) throw new Error('required tool is not currently authorized')
+  const value = { mode, codeExecution, grants, tools, ...(requiredTool ? { requiredTool } : {}) } as const
   return { ...value, hash: fingerprint(value) }
 }

@@ -24,11 +24,14 @@ jobs:
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict'
           import { access } from 'node:fs/promises'
-          import { createLingxiOS, packageResources } from '@lyyzka/lingxios'
-          import { createWorker } from '@lyyzka/lingxios/worker'
-          import * as ui from '@lyyzka/lingxios/ui'
+          import { createLingxiOS, packageResources } from '@lingxi-org/lingxios'
+          import { createWorker } from '@lingxi-org/lingxios/worker'
+          import * as ui from '@lingxi-org/lingxios/ui'
+          import { gradeResources } from '@lingxi-org/lingxios/eval'
           assert.equal(typeof createLingxiOS, 'function')
           assert.equal(typeof createWorker, 'function')
           assert.ok(Object.keys(ui).length)
+          assert.deepEqual(gradeResources(1, [{ id: 'check', resource: 'resource', expected: true }],
+            [{ resource: 'resource', requestVersion: 1, value: true }]), [{ checkId: 'check', status: 'pass' }])
           await Promise.all(Object.values(packageResources()).map(path => access(path)))
           JS

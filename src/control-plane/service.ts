@@ -1,3 +1,4 @@
+import { readModelStageTimings } from '../model/timing.js'
 import { executionTraceMetadata } from '../protocol/run-trace.js'
 import { userInputWait } from '../protocol/input-wait.js'
 import { abortable } from '../deadline.js'
@@ -37,6 +38,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { snapshotEvidence } from '../context/evidence.js'
 import { createResponseEnvelope, snapshotArtifacts } from '../outcome/envelope.js'
 import { MEMORY_DELETION_CONFIRMATION } from '../memory/confirmation.js'
+import { parseFinalCandidate } from '../outcome/assessment.js'
 import { businessActionDeliveryGap, requiresReview, validateCompletion } from '../outcome/completion.js'
 import type { KernelArtifact } from '../protocol/types.js'
 import { errorMessage } from '../errors.js'
@@ -196,7 +198,7 @@ export class ControlPlaneService {
 
   async saveStep(proof: LeaseProof, step: import('./steps.js').ExecutionStep, signal?: AbortSignal): Promise<void> {
     const work = await this.requireLease(proof, { rejectCancelled: true })
-    if (step?.kind === 'runtime.action_trace' || step?.kind === 'runtime.answer_segment') throw new ControlPlaneError(400, 'native trace and sealed answer steps are reserved')
+    if (step?.kind === 'runtime.action_trace' || step?.kind === 'runtime.answer_segment' || step?.kind === 'runtime.answer_candidate_failure') throw new ControlPlaneError(400, 'native trace and answer publication steps are reserved')
     if (!step || typeof step.id !== 'string' || !step.id || step.id.length > 512
       || !Number.isSafeInteger(step.requestVersion) || step.requestVersion < 1 || typeof step.kind !== 'string'
       || !step.input || typeof step.input !== 'object' || Array.isArray(step.input)
@@ -282,7 +284,12 @@ export class ControlPlaneService {
       || observation.latencyMs < 0 || typeof observation.model !== 'string')) throw new ControlPlaneError(400, 'invalid model observation identity')
     // The control-plane clock owns both the durable start and settlement. A
     // worker/observer clock is not a timeline and cannot supply these timestamps.
-    if (observation) observation = { ...observation, executionTiming: { completedAt: Date.now(), cancelled: observation.failure?.category === 'cancelled' } }
+    if (observation) {
+      const {stageTimings,...rest}=observation
+      const safeTiming=readModelStageTimings(stageTimings)
+      observation={...rest,fence:proof.fence,...(safeTiming?{stageTimings:safeTiming}:{}),
+        executionTiming:{completedAt:Date.now(),cancelled:observation.failure?.category==='cancelled'}}
+    }
     const policy = this.deps.modelBudget
     const costMicros = policy ? Math.ceil((usage.inputTokens * policy.inputCostMicrosPerMillion
       + usage.outputTokens * policy.outputCostMicrosPerMillion) / 1_000_000) : usage.costMicros

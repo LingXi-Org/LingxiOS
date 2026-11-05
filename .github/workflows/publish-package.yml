@@ -19,7 +19,10 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const { version } = require('./package.json')
+            const { name, version, publishConfig } = require('./package.json')
+            if (name !== '@lingxi-org/lingxios' || publishConfig?.registry !== 'https://npm.pkg.github.com') {
+              throw new Error('Publish only @lingxi-org/lingxios to GitHub Packages')
+            }
             if (context.ref !== `refs/tags/v${version}`) throw new Error('Tag does not match package version')
             const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner, repo: context.repo.repo, workflow_id: 'release.yml',

@@ -246,13 +246,27 @@ export function publicAnswerSegments(view:RunView):PublicAnswerSegmentView[]{
     }),...parts.filter(part=>!selected.has(part.partId)).map(part=>fromPart(part,part.operation==='replace'
       &&!commit.sources.segments.some(source=>source.segmentId===part.segmentId)?'pending-replacement':'replaced'))]
   }
-  const active=parts.filter(part=>part.operation==='append'),raw=active.map(part=>part.text).join(''),trimmed=raw.trim(),left=raw.length-raw.trimStart().length
+  // An unsealed failed append has no valid body to displace. A correction can
+  // stream into that same logical slot; repairs of sealed sources remain held
+  // until the authoritative commit. Never infer lineage from matching text.
+  const byId=new Map(parts.map(part=>[part.partId,part])),slots=new Map<string,PublicTextPart>()
+  const failedAppendRoot=(part:PublicTextPart):PublicTextPart|undefined=>{
+    if(part.operation==='append')return part
+    if(part.supersedes?.length!==1)return undefined
+    const target=byId.get(part.supersedes[0]!)
+    if(!target||target.firstSeq>=part.firstSeq||target.endedSeq===null||target.endedSeq>=part.firstSeq||target.reason!=='failed'||target.sealedSeq
+      ||target.segmentId!==part.segmentId||target.fence>part.fence)return undefined
+    return failedAppendRoot(target)
+  }
+  for(const part of parts){const root=failedAppendRoot(part);if(root)slots.set(root.partId,part)}
+  const active=[...slots.values()],activeIds=new Set(active.map(part=>part.partId))
+  const raw=active.map(part=>part.text).join(''),trimmed=raw.trim(),left=raw.length-raw.trimStart().length
   let offset=0
   return [...active.map(part=>{
     const start=Math.max(0,Math.min(trimmed.length,offset-left));offset+=part.text.length
     const end=Math.max(start,Math.min(trimmed.length,offset-left))
     return fromPart(part,part.sealedSeq?'sealed':part.status==='incomplete'||part.endedSeq!==null?'incomplete':'streaming',trimmed.slice(start,end),start,end)
-  }),...parts.filter(part=>part.operation==='replace').map(part=>fromPart(part,'pending-replacement'))]
+  }),...parts.filter(part=>!activeIds.has(part.partId)).map(part=>fromPart(part,failedAppendRoot(part)?'replaced':'pending-replacement'))]
 }
 
 /** Use a consistent public readRunState snapshot after replay and after every control operation. */

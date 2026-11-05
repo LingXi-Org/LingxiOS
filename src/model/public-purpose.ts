@@ -1,7 +1,18 @@
 import { parseOutcomeTail, type OutcomeDeclaration, type PublicTextProtocol } from './outcome-declaration.js'
-import { ModelDriverError } from '../errors.js'
+import { ModelDriverError, type ModelProtocolDetail } from '../errors.js'
 import type { PublicTextPurpose } from '../protocol/public-text.js'
 import { snapshotPublicTextOperation, type PublicTextOperation } from '../protocol/answer-segments.js'
+
+export const PUBLIC_PURPOSE_INSTRUCTIONS = `Public output wire contract (purpose-json-v1):
+Encode assistant content as exactly one JSON object with two string fields IN THIS ORDER:
+{"commentary":"","answer":""}. This encoding replaces plain-text output formatting only.
+commentary is optional concise PUBLIC progress/status for the user, never private reasoning, analysis, deliberation, or chain-of-thought.
+answer is the substantive user-facing answer, explanation, requested code, or deliverable, with no process preamble or status prose mixed in.
+Do not move substantive answers into commentary. Do not put private reasoning in either field. No other keys, markdown fences, or trailing text.
+When calling a tool, commentary may describe the public action and answer may contain substantive content already available to the user.
+Keep such content in answer even when tools are called; do not relabel it as commentary. With no tool calls, answer must be nonempty.
+Use the ordinary native tool_calls channel for tools; never encode tools into these text fields.
+Previously unwrapped assistant history is already decoded; only the new response uses this JSON encoding.`
 
 export const PUBLIC_PURPOSE_V2_INSTRUCTIONS = `Public output wire contract (purpose-json-v2):
 Encode assistant content as exactly one JSON object IN THIS ORDER:
@@ -16,20 +27,20 @@ Do not add a separate review or rewrite merely to produce this declaration. No o
 When calling native tools, encode any public text with outcome:null; a tool-only message may omit content. Never declare a terminal outcome on a tool-calling turn.
 Use the ordinary native tool_calls channel for tools, never encode tools into text. Previously unwrapped history is already decoded; only the new response uses this encoding.`
 
-export function publicPurposeInstructions(protocol: PublicTextProtocol, profile?: {
+export function publicPurposeInstructions(protocol: PublicTextProtocol = 'purpose-json-v1', profile?: {
   parallelTools?: boolean; jsonObjectWithTools?: boolean
 }, continuation?: 'typed-message-v1'): string {
   if(protocol==='purpose-json-v3')return (continuation ? PUBLIC_PURPOSE_V3_MESSAGE_INSTRUCTIONS : PUBLIC_PURPOSE_V3_INSTRUCTIONS)
     + (profile?.parallelTools === false ? '\nThis profile permits at most ONE native tool call per model turn. Choose the next necessary action; wait for its result before requesting another. Do not add a second progress-report call alongside the needed action; the existing tool lifecycle reports progress.' : '')
     + (profile?.jsonObjectWithTools === false ? continuation ? '\nThis profile disables provider JSON response mode while tools are exposed. Assistant content must still use the complete typed v3 object. Untyped companion prose is withheld; native tools keep their original exposed business parameters.' : '\nThis profile disables provider JSON response mode while native tools are exposed. That is not permission to send plain text: assistant content still uses the complete purpose-json-v3 object above. Untyped tool companion text is withheld, so put useful known content in answer within this SAME turn, never in an extra introductory call.' : '')
-  return PUBLIC_PURPOSE_V2_INSTRUCTIONS
+  return protocol === 'purpose-json-v2' ? PUBLIC_PURPOSE_V2_INSTRUCTIONS : PUBLIC_PURPOSE_INSTRUCTIONS
 }
 
 export const PUBLIC_PURPOSE_V3_INSTRUCTIONS = `Public output wire contract (purpose-json-v3):
 Encode exactly one JSON object IN THIS ORDER:
 {"operation":{"kind":"append","supersedes":[]},"commentary":"","answer":"Useful new answer text","outcome":{"status":"satisfied","gaps":[]}}.
 operation precedes all text. append continues the SAME answer message; never repeat previous answer text. Supply any necessary spaces or newlines yourself: segments concatenate exactly, then the full body is trimmed once.
-To correct earlier answer segments, use kind replace and list their exact currently active segment IDs in supersedes. Never invent IDs. The corrected candidate remains provisional until full delivery validation succeeds; failed replacement leaves the old answer intact.
+To correct earlier answer segments, use kind replace and list their exact currently active segment IDs in supersedes, or use the exact failed-candidate correction target supplied by the runtime. Never invent IDs or repeat unaffected sealed text. Failed drafts are not sealed body sources. The corrected candidate remains provisional until full delivery validation succeeds; failed replacement leaves the old answer intact.
 commentary is optional PUBLIC progress, never reasoning. answer contains only useful user-facing content, never private analysis. Hidden reasoning is not a public answer.
 A native tool turn may carry useful answer text with outcome:null, or omit content entirely. Native tools use tool_calls, never JSON text. All tool calls must be complete and valid before any dispatch.
 A terminal turn has no tools and declares outcome with exactly status then gaps. status is satisfied only when the full accumulated requested result was delivered; partial or blocked require truthful nonempty gaps. Do not invent actions, receipts or delivery.
@@ -51,8 +62,8 @@ export const PUBLIC_PURPOSE_V3_MESSAGE_INSTRUCTIONS = PUBLIC_PURPOSE_V3_INSTRUCT
     'When useful facts are already supplied and work remains, preserve that explanation in the typed answer, either with the next native tool call or as an intermediate message.')
   + '\nMessage lifecycle capability (typed-message-v1): A complete object with nonempty substantive answer and outcome:null may end an intermediate public message without tool_calls. It seals that answer item and continues the SAME execution; it does not declare completion. Use this only for actual useful content, never an empty message or status preface. No introductory call is required. A simple completed answer still declares its terminal outcome in one generation. Only an explicit outcome object ends execution and invokes full delivery validation. A null answer is permitted only with that terminal declaration and existing sealed sources.'
 
-export function publicPurposeError(protocolCode:'public_text_invalid'|'public_text_incomplete'|'public_text_answer_required'='public_text_invalid'):ModelDriverError {
-  return new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',protocolCode,finishReasons:[]})
+export function publicPurposeError(protocolCode:'public_text_invalid'|'public_text_incomplete'|'public_text_answer_required'='public_text_invalid',protocolDetail?:ModelProtocolDetail):ModelDriverError {
+  return new ModelDriverError('invalid public text protocol',{kind:'protocol',category:'protocol',protocolCode,...(protocolDetail?{protocolDetail}:{}),finishReasons:[]})
 }
 /** Bounded framing state only: released body characters are never buffered until EOF. */
 export class PublicPurposeParser {
@@ -63,7 +74,9 @@ export class PublicPurposeParser {
   answerIsNull=false
   private operationPrefix=''
   private nullOffset=0
-  constructor(private readonly protocol:PublicTextProtocol) {}
+  constructor(private readonly protocol:PublicTextProtocol='purpose-json-v1') {
+    if(protocol!=='purpose-json-v1')Object.assign(this.tokens,{10:',',11:'"outcome"',12:':'})
+  }
   private stage=0
   private offset=0
   private framing=0
@@ -71,8 +84,8 @@ export class PublicPurposeParser {
   private escape=''
   private surrogate=''
   private invalid=false
-  private readonly tokens:Record<number,string>={0:'{',1:'"commentary"',2:':',3:'"',5:',',6:'"answer"',7:':',8:'"',10:',',11:'"outcome"',12:':'}
-  get complete(){return !this.invalid&&this.finished}
+  private readonly tokens:Record<number,string>={0:'{',1:'"commentary"',2:':',3:'"',5:',',6:'"answer"',7:':',8:'"',10:'}'}
+  get complete(){return !this.invalid&&(this.protocol!=='purpose-json-v1'?this.finished:this.stage===11)}
   push(chunk:string):Array<{text:string;purpose:PublicTextPurpose}> {
     if(this.invalid)throw publicPurposeError()
     this.size+=chunk.length
@@ -105,7 +118,7 @@ export class PublicPurposeParser {
     }
     try {
       for(const character of chunk){
-        if(this.stage===13){
+        if(this.protocol!=='purpose-json-v1'&&this.stage===13){
           this.tail+=character
           if(this.tail.length>32768||this.finished)throw publicPurposeError()
           continue
@@ -139,7 +152,7 @@ export class PublicPurposeParser {
     return out
   }
   finish(){
-    if(!this.invalid&&this.stage===13){
+    if(this.protocol!=='purpose-json-v1'&&!this.invalid&&this.stage===13){
       try{this.outcome=parseOutcomeTail(this.tail);this.finished=true}catch{this.invalid=true;throw publicPurposeError()}
     }
     if(!this.complete)throw publicPurposeError(this.invalid?'public_text_invalid':'public_text_incomplete')

@@ -12,6 +12,8 @@ export interface ModelProfile {
   jsonObject: boolean
   /** JSON response mode alongside native tools; omitted means supported for compatibility. */
   jsonObjectWithTools?: boolean
+  /** Native `tool_choice:required`; omitted preserves OpenAI-compatible support. */
+  requiredToolChoice?: boolean
   parallelTools: boolean
 }
 

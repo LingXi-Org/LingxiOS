@@ -52,7 +52,7 @@ export async function inspectObligations(database: SqlQueryable, work: Omit<Work
   const request = await requestSnapshot(database, work.id, candidate.requestVersion)
   const obligations = snapshotObligations(request.obligations ?? [])
   if (!obligations.length) return []
-  const actions = obligations.some(item => item.kind === 'external-delivery') ? await candidateActions(database, work.id, candidate.requestVersion, tools) : []
+  const actions = obligations.some(item => item.kind === 'external-delivery') ? await candidateActions(database, work, candidate.requestVersion, tools) : []
   const records: VerificationRecord[] = []
   for (const obligation of obligations) {
     let passed = false

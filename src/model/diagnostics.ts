@@ -1,10 +1,13 @@
+import { readModelStageTimings } from './timing.js'
 import { providerCode } from './recovery.js'
+import { MODEL_PROTOCOL_DETAILS } from '../errors.js'
 
-const kinds = new Set(['provider', 'protocol'])
+const kinds = new Set(['provider', 'protocol', 'output'])
 const categories = new Set(['authorization', 'quota', 'rate_limit', 'timeout', 'network', 'unavailable',
   'protocol', 'cancelled', 'circuit_open', 'unknown'])
 const finishReasons = new Set(['stop', 'length', 'tool_calls', 'function_call', 'content_filter', 'missing', 'unknown'])
-const protocolCodes = new Set(['native_envelope_invalid', 'terminal_outcome_required', 'public_text_invalid', 'public_text_incomplete', 'public_text_answer_required', 'tool_identity_invalid', 'response_empty'])
+const protocolCodes = new Set(['native_envelope_invalid', 'terminal_outcome_required', 'public_text_invalid', 'public_text_incomplete', 'public_text_answer_required', 'public_answer_first_required', 'tool_identity_invalid', 'response_empty'])
+const protocolDetails = new Set<string>(MODEL_PROTOCOL_DETAILS)
 
 function field(value: unknown, key: string): unknown {
   try { return value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : undefined }
@@ -22,8 +25,12 @@ function finiteNonnegative(value: unknown): value is number {
  */
 export function publicModelDiagnostics(value: unknown): Record<string, unknown> {
   const out: Record<string, unknown> = {}
+  const stages=readModelStageTimings(field(value,'stageTimings'))
+  if(stages)out['stageTimings']=stages
   if (field(value, 'publicText') === 'unpublished_tool_companion') out['publicText'] = 'unpublished_tool_companion'
-  for (const [key, allowed] of [['kind', kinds], ['category', categories], ['protocolCode', protocolCodes]] as const) {
+  const callback = field(value, 'outputCallback')
+  if (callback === 'operation' || callback === 'delta') out['outputCallback'] = callback
+  for (const [key, allowed] of [['kind', kinds], ['category', categories], ['protocolCode', protocolCodes], ['protocolDetail', protocolDetails]] as const) {
     const candidate = field(value, key)
     if (typeof candidate === 'string' && allowed.has(candidate)) out[key] = candidate
   }
